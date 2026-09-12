@@ -5,22 +5,19 @@ includes a small MCP worker: `scripts/worker.mjs` + `workspace.mjs` (Node.js 22+
 task lookup, supplied inputs, direct text-file read/write/delete, and completion submission—no Git,
 shell, process control or account credentials. Text-only tasks do not need it.
 
-## One-time connection
-
-Run `worker.mjs` with `WEBGPT_DATA_DIR` set to a private, persistent directory outside the project.
-It binds MCP to `127.0.0.1:43137/mcp` and a parent-only controller to `127.0.0.1:43139`.
-Connect only MCP through a supported authenticated private tunnel to ChatGPT; never expose the
-controller or publish the generated `controller.key`. Honor required connection approval. No public
-unauthenticated endpoint or browser-private API is needed. Registering the connector is not enough:
-verify its file tools are actually callable by the selected WebGPT chat.
-ChatGPT's plugin permission is separate from the project boundary: a low-risk-only setting may
-block file replacement/deletion. If the user explicitly requests all project actions, set Allow
-all actions for this worker only, not the global default; otherwise honor their chosen permission.
+For first use or missing connectivity, read [setup.md](setup.md). Use one worker for direct editing
+and completion delivery; no separate callback receiver, arbitrary HTTP tool or shell in WebGPT.
 
 ## Per task
 
-The parent reads `controller.key` locally and calls the loopback controller with
-`Authorization: Bearer <controller-key>`. Never send that key to WebGPT. POST `/register`:
+The parent imports `request` from the installed `scripts/client.mjs`, or uses the CLI with a local
+JSON payload file. The client reads `controller.key` privately; never send that key to WebGPT.
+
+```text
+node <skill>/scripts/client.mjs register <private-task.json>
+```
+
+Registration payload:
 
 ```json
 {
@@ -47,8 +44,13 @@ Send the returned **task token** privately to its WebGPT worker. It calls:
 3. `write_file(token,path,text,expectedSha256)` to create (`null` revision) or replace (read revision),
    or `delete_file(token,path,expectedSha256)` to remove a read file. These directly change local files;
    Codex does not apply a returned patch. No recursive deletion. Content is UTF-8, at most 1 MiB/file.
-4. `submit_result(token,status,summary,result)` after edits. Include changed paths/receipts, checks
-   and limitations; unexecuted checks are NOT_RUN. This closes file access and removes backup checks.
+   MCP project-relative paths always use `/`, including on Windows.
+4. `submit_result(token,status,summary,result)` after edits, then stop. Status is `completed`,
+   `failed` or `cancelled`. Include changed paths/receipts, checks and limitations; unexecuted checks
+   are NOT_RUN. This saves the result, closes file access and removes backup checks.
+
+The seventh tool, `read_input(token,name)`, reads a named string supplied in `inputs`. With no
+workspace grant, only `get_task`, `read_input` and `submit_result` are available to the task.
 
 The service rejects stale revisions, symlinks/hardlinks, traversal and Git metadata access; Git
 remains the parent's responsibility. Other project text files need no individual grant. Never
@@ -58,10 +60,41 @@ This is for cooperative developer workspaces, not isolation from hostile local f
 
 ## Completion and lifecycle
 
-GET `/wait` returns on a terminal event, a 15-minute backup deadline, or at most 55 seconds.
-Resume empty waits without scanning chats. GET `/status` is read-only. POST `/ack` with `{id}` only
-after saving/verifying the event artifact and SHA; `/checked` advances one due task's backup;
-`/cancel` disables abandoned tasks. Terminal tasks never get periodic checks again. No after-final
-parent wake-up is provided. Keep the shared service running; delete task chats per SKILL.md.
+```js
+// Import using the actual installed script's file URL; no user-specific adapter is needed.
+const { request } = await import(clientModuleUrl);
+const notice = await request('wait');
+```
 
-Test locally: `node --test scripts/worker.test.mjs scripts/workspace.test.mjs`.
+Or run `node <skill>/scripts/client.mjs wait`. It returns on a terminal event, a 15-minute backup
+deadline, or at most 55 seconds; with no active or uncollected tasks it returns immediately.
+Resume empty waits without scanning chats. Run useful independent work while awaiting results.
+
+- `events`: verify the saved artifact's SHA-256 and relevant output/diffs, record disposition, then
+  `await request('ack', {id})`. Events persist until acknowledged, including across service restarts.
+- `backupDue`: check only each named running chat once, then `await request('checked', {id})`.
+  If output is complete but its callback failed, save it and request a narrow `submit_result` retry.
+  Never send a fabricated worker-success event. Identical terminal submissions are safe to retry;
+  conflicting results are rejected.
+- Acknowledgment revokes the task token and redacts its inputs/instructions from active state;
+  supervisor cancellation does the same. Retained artifacts/recovery copies remain private evidence.
+  Retries are valid only before acknowledgment, not with a retired token.
+- Abandoned tasks: stop their actual generation separately, preserve partial output and
+  `await request('cancel', {id})`. Cancellation disables the registration, not the browser chat.
+- `await request('status')` is read-only. CLI POST actions take a JSON file containing `{ "id": "..." }`.
+
+Terminal tasks lose deadlines immediately, independent of collection/chat deletion. Once the
+batch is terminal, stop waiting; never reschedule its checks. State and results survive restarts.
+The active parent handles due browser checks; this is not a cron job or after-final wake-up service,
+and timed-out wait resumptions can still cost tokens. Keep the shared worker running and preserve
+the task/chat ledger for recovery; delete task chats per SKILL.md.
+
+On restart, applied recovery journals restore missing change receipts. An incomplete/unreadable
+journal produces `recoveryRequired` in `status`/`wait` and `get_task`, blocking further edits and
+successful completion for that task. Inspect its journal, original and current file without guessing
+or silently restoring. Preserve partial output, cancel the affected registration after inspection,
+and register any narrow correction in the same chat with a new task token. Stop waiting on that
+blocked task; other independent tasks can continue. No crash-durability guarantee is made for
+filesystem/hardware failure beyond these local recovery records.
+
+Test locally: `node --test scripts/*.test.mjs` from the installed skill directory.

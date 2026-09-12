@@ -9,12 +9,15 @@ Split work into short, parallel chats. Codex saves and verifies results, then de
 Paste this into Codex:
 
 ```text
-Install the webgpt skill from https://github.com/Nhahan/WebGPT,
-using the skill at skills/webgpt. Preserve any existing installation
-and ask before replacing it. Check that you can control a signed-in
-ChatGPT browser session. For direct coding, set up the bundled local
-workspace worker and its private connection; verify actual file edits.
+Install https://github.com/Nhahan/WebGPT/tree/main/skills/webgpt
+and follow its references/setup.md to finish setup and verify it.
 ```
+
+Requires Codex browser control and ChatGPT access to the requested mode. Direct coding and
+completion notifications additionally require Node.js 22+, ChatGPT developer mode and an eligible
+Platform organization/workspace with Secure MCP Tunnel access. Without that connection, only
+text-based tasks are available. Codex follows [the setup guide](skills/webgpt/references/setup.md);
+sign-in and account permissions may require your action.
 
 ## Use
 
@@ -29,7 +32,5 @@ webgpt p Research this topic and summarize the findings.
 ```
 
 `xh` = Extra High · `p` = Pro. Add your request after either prefix.
-
-Requires Codex browser control and a signed-in ChatGPT session. Direct coding uses the included workspace worker or an existing local-project connector.
 
 [MIT license](LICENSE)
