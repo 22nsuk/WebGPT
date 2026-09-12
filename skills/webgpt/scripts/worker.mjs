@@ -3,14 +3,15 @@ import { randomUUID, createHash } from 'node:crypto';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, renameSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { grantWorkspace, grantsOverlap, readWorkspace, changeWorkspace } from './workspace.mjs';
+import { grantWorkspace, listWorkspace, readWorkspace, changeWorkspace } from './workspace.mjs';
 
 const schema = properties => ({type:'object',properties,required:Object.keys(properties),additionalProperties:false});
 const str = {type:'string'};
 export const tools = [
-  {name:'read_file',description:'Read a task-owned local project text file and its SHA256 revision. Missing allowed file returns exists:false. Use the task token and a granted relative path.',inputSchema:schema({token:str,path:str}),annotations:{readOnlyHint:true,openWorldHint:false}},
-  {name:'write_file',description:'Directly create or replace a task-owned local project file. Read first; expectedSha256 must match its revision, or null for a new file. Original is backed up. No Git or shell.',inputSchema:schema({token:str,path:str,text:str,expectedSha256:{type:['string','null']}}),annotations:{readOnlyHint:false,destructiveHint:true,openWorldHint:false}},
-  {name:'delete_file',description:'Directly delete an existing task-owned project file after reading it. Requires matching expectedSha256; original and path are saved for recovery. No directory or recursive deletion.',inputSchema:schema({token:str,path:str,expectedSha256:str}),annotations:{readOnlyHint:false,destructiveHint:true,openWorldHint:false}},
+  {name:'list_files',description:'List one directory in the local project. Use path . for the project root. No per-file permission setup.',inputSchema:schema({token:str,path:str}),annotations:{readOnlyHint:true,openWorldHint:false}},
+  {name:'read_file',description:'Read any text file in the registered local project and its SHA256 revision. Missing file returns exists:false. Use the task token and project-relative path.',inputSchema:schema({token:str,path:str}),annotations:{readOnlyHint:true,openWorldHint:false}},
+  {name:'write_file',description:'Directly create or replace a local project text file. No per-file grants. Read first; expectedSha256 must match its revision, or null for a new file. Original is backed up. No Git or shell.',inputSchema:schema({token:str,path:str,text:str,expectedSha256:{type:['string','null']}}),annotations:{readOnlyHint:false,destructiveHint:true,openWorldHint:false}},
+  {name:'delete_file',description:'Directly delete an existing local project file after reading it. Requires matching expectedSha256; original and path are saved for recovery. No directory or recursive deletion.',inputSchema:schema({token:str,path:str,expectedSha256:str}),annotations:{readOnlyHint:false,destructiveHint:true,openWorldHint:false}},
   {name:'get_task',description:'Read the assigned task and input names using its private task token. No repository or Git setup needed.',inputSchema:schema({token:str}),annotations:{readOnlyHint:true,openWorldHint:false}},
   {name:'read_input',description:'Read one explicitly supplied input by name; no arbitrary filesystem access.',inputSchema:schema({token:str,name:str}),annotations:{readOnlyHint:true,openWorldHint:false}},
   {name:'submit_result',description:'Save the complete result (report or code patch) and notify the supervisor. Terminal: stops backup checks. Retry identical submission safely. Do not delete the chat.',inputSchema:schema({token:str,status:{type:'string',enum:['completed','failed','cancelled']},summary:str,result:str}),annotations:{readOnlyHint:false,destructiveHint:false,idempotentHint:true,openWorldHint:false}}
@@ -31,8 +32,9 @@ export async function start({dir,port=43137,controlPort=43139,backupMs=900000}={
     const t=tasks.find(t=>t.token===args.token);if(!t)throw Error('unknown task token');
     if(name==='get_task')return {id:t.id,instructions:t.instructions,inputs:Object.keys(t.inputs),status:t.status,workspace:t.workspace??null,changes:t.changes??[]};
     if(name==='read_input'){if(!Object.hasOwn(t.inputs,args.name))throw Error('unknown input');return {name:args.name,text:t.inputs[args.name]};}
-    if(['read_file','write_file','delete_file'].includes(name)) {
+    if(['list_files','read_file','write_file','delete_file'].includes(name)) {
       if(t.status!=='running')throw Error('task is terminal; file access closed');
+      if(name==='list_files')return listWorkspace(t.workspace,args.path);
       if(name==='read_file')return readWorkspace(t.workspace,args.path);
       const receipt=changeWorkspace(t.workspace,dir,t.id,args,name==='delete_file');
       (t.changes??=[]).push(receipt);persist();return receipt;
@@ -52,7 +54,7 @@ export async function start({dir,port=43137,controlPort=43139,backupMs=900000}={
     let m;try{m=await body(req);}catch{return json(res,400,{error:'invalid request'});}
     if(m.method==='notifications/initialized'){res.writeHead(202);return res.end();}
     let result;
-    if(m.method==='initialize')result={protocolVersion:m.params?.protocolVersion??'2025-03-26',capabilities:{tools:{}},serverInfo:{name:'webgpt-worker',version:'1.1.0'},instructions:'Read get_task with your private task token. For implementation, directly read/create/edit/delete granted local files; use revision hashes from read_file. Review-only grants cannot write. Submit result once with change receipts, evidence and limitations. No Git, PR, shell, or process control. Supervisor verifies results and deletes the chat after collection.'};
+    if(m.method==='initialize')result={protocolVersion:m.params?.protocolVersion??'2025-03-26',capabilities:{tools:{}},serverInfo:{name:'webgpt-worker',version:'1.2.0'},instructions:'Read get_task with your private task token. Directly list/read/create/edit/delete files throughout the registered local project; no per-file grants. Use revision hashes from read_file. Review-only tasks cannot write. Coordinate disjoint edits with other workers. Submit result once with change receipts, evidence and limitations. No Git, PR, shell, or process control. Supervisor verifies results and deletes the chat after collection.'};
     else if(m.method==='tools/list')result={tools};
     else if(m.method==='tools/call'){try{const out=call(m.params.name,m.params.arguments??{});result={content:[{type:'text',text:JSON.stringify(out)}],structuredContent:out,isError:false};}catch(e){result={content:[{type:'text',text:e.message}],isError:true};}}
     else return json(res,200,{jsonrpc:'2.0',id:m.id??null,error:{code:-32601,message:'method not found'}});
@@ -72,7 +74,6 @@ export async function start({dir,port=43137,controlPort=43139,backupMs=900000}={
       if(req.url==='/register'){
         if(!/^[a-zA-Z0-9_-]{1,80}$/.test(a.id)||tasks.some(t=>t.id===a.id)||typeof a.instructions!=='string'||!a.inputs||typeof a.inputs!=='object'||Array.isArray(a.inputs)||Object.values(a.inputs).some(v=>typeof v!=='string'))throw Error('invalid task');
         const workspace=grantWorkspace(a.workspace);
-        if(tasks.some(t=>t.status==='running' && grantsOverlap(workspace,t.workspace)))throw Error('workspace ownership overlaps active task');
         const t={id:a.id,token:randomUUID(),instructions:a.instructions,inputs:a.inputs,workspace,changes:[],status:'running',nextCheck:Date.now()+backupMs,collected:false};tasks.push(t);persist();wake();return json(res,200,{id:t.id,token:t.token});
       }
       const t=tasks.find(t=>t.id===a.id);if(!t)throw Error('unknown task');

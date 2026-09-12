@@ -13,6 +13,9 @@ Connect only MCP through a supported authenticated private tunnel to ChatGPT; ne
 controller or publish the generated `controller.key`. Honor required connection approval. No public
 unauthenticated endpoint or browser-private API is needed. Registering the connector is not enough:
 verify its file tools are actually callable by the selected WebGPT chat.
+ChatGPT's plugin permission is separate from the project boundary: a low-risk-only setting may
+block file replacement/deletion. If the user explicitly requests all project actions, set Allow
+all actions for this worker only, not the global default; otherwise honor their chosen permission.
 
 ## Per task
 
@@ -26,30 +29,30 @@ The parent reads `controller.key` locally and calls the loopback controller with
   "inputs": {},
   "workspace": {
     "root": "/absolute/project",
-    "mode": "edit",
-    "read": ["AGENTS.md", "src/related.ts"],
-    "write": ["src/owned.ts", "src/new.test.ts"]
+    "mode": "edit"
   }
 }
 ```
 
-Paths are exact relative text-file paths, not globs/directories. Written files are readable too.
-Use `mode:"read", write:[]` for review/analysis. Omit workspace for text-only work. Keep grants
-small and disjoint; live reader/writer overlaps are rejected. Only the parent can register grants.
-Scope additional files in a later task; a worker cannot expand its own grant.
+The project root is the permission boundary; no per-file lists or permission expansion are needed.
+Use `mode:"read"` for review/analysis; omit workspace for text-only work. Concurrent workers may
+share the project, with disjoint responsibilities coordinated in prompts. Revision checks reject
+stale edits. Only the parent can choose the project root and mode.
 
 Send the returned **task token** privately to its WebGPT worker. It calls:
 
-1. `get_task(token)` to learn instructions and granted files.
-2. `read_file(token,path)` to get text and SHA-256 (missing allowed files return `exists:false`).
+1. `get_task(token)` to learn instructions and project root; `list_files(token,path)` lists a directory
+   (`.` for root, up to 500 entries with a truncation flag).
+2. `read_file(token,path)` to get text and SHA-256 (missing files return `exists:false`).
 3. `write_file(token,path,text,expectedSha256)` to create (`null` revision) or replace (read revision),
    or `delete_file(token,path,expectedSha256)` to remove a read file. These directly change local files;
    Codex does not apply a returned patch. No recursive deletion. Content is UTF-8, at most 1 MiB/file.
 4. `submit_result(token,status,summary,result)` after edits. Include changed paths/receipts, checks
    and limitations; unexecuted checks are NOT_RUN. This closes file access and removes backup checks.
 
-The service rejects stale revisions, symlinks/hardlinks, traversal, protected credential/VCS paths
-and out-of-scope writes. Originals and operation receipts are retained under the private data
+The service rejects stale revisions, symlinks/hardlinks, traversal and Git metadata access; Git
+remains the parent's responsibility. Other project text files need no individual grant. Never
+transmit secrets unnecessarily. Originals and operation receipts are retained under the private data
 directory's `recovery/<task-id>/`; deletions are recoverable by the parent, never silently restored.
 This is for cooperative developer workspaces, not isolation from hostile local filesystem races.
 

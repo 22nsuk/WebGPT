@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, resolve, sep } from 'node:path';
 import { homedir } from 'node:os';
 
@@ -8,31 +8,24 @@ const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const metadata = path => { try { return lstatSync(path); } catch (e) { if (e.code === 'ENOENT') return null; throw e; } };
 function relativeFile(path) {
   if (typeof path !== 'string' || !path || isAbsolute(path) || /[\\\x00-\x1f]/.test(path)
-      || path.split('/').some(p => !p || p === '.' || p === '..' || ['.git','.ssh','.aws','node_modules'].includes(p) || p === '.env' || p.startsWith('.env.'))) throw Error('invalid or protected file path');
+      || path.split('/').some(p => !p || p === '.' || p === '..' || p === '.git')) throw Error('invalid path or Git metadata');
   return path;
 }
 export function grantWorkspace(input) {
   if (input == null) return null;
   if (!input || typeof input.root !== 'string' || !isAbsolute(input.root)
-      || !['read','edit'].includes(input.mode) || !Array.isArray(input.read) || !Array.isArray(input.write)
-      || input.read.length + input.write.length > 512) throw Error('invalid workspace grant');
+      || !['read','edit'].includes(input.mode) || 'read' in input || 'write' in input) throw Error('use workspace root and mode only');
   const root = realpathSync(input.root), stat = lstatSync(root);
   if (!stat.isDirectory() || root === sep || root === realpathSync(homedir())) throw Error('project root required');
-  if (input.mode === 'read' && input.write.length) throw Error('read-only task cannot grant writes');
-  return {root, device:stat.dev, inode:stat.ino, mode:input.mode,
-    read:[...new Set(input.read.map(relativeFile))], write:[...new Set(input.write.map(relativeFile))]};
+  return {root, device:stat.dev, inode:stat.ino, mode:input.mode};
 }
-export function grantsOverlap(a,b) {
-  if (!a || !b) return false;
-  const targets = grant => [...grant.read,...grant.write].map(p=>resolve(grant.root,p));
-  const intersects = (w, all) => w.some(p=>all.includes(p));
-  return intersects(a.write.map(p=>resolve(a.root,p)),targets(b)) || intersects(b.write.map(p=>resolve(b.root,p)),targets(a));
-}
-function target(grant,path,writing=false,createParents=false) {
-  relativeFile(path);
-  if (!grant || !(writing ? grant.mode==='edit' && grant.write.includes(path) : [...grant.read,...grant.write].includes(path))) throw Error('file outside task scope');
+function target(grant,path,writing=false,createParents=false,directory=false) {
+  if (!(directory && path === '.')) relativeFile(path);
+  if (!grant || !['read','edit'].includes(grant.mode) || writing && grant.mode!=='edit') throw Error('workspace absent or read-only');
+  if ('read' in grant || 'write' in grant) throw Error('legacy file grant; register a project workspace');
   const rootStat = lstatSync(grant.root);
   if (rootStat.isSymbolicLink() || rootStat.dev!==grant.device || rootStat.ino!==grant.inode) throw Error('workspace root changed');
+  if(directory && path === '.') return grant.root;
   let cursor=grant.root;
   const parts=path.split('/');
   for(let i=0;i<parts.length;i++) {
@@ -40,7 +33,7 @@ function target(grant,path,writing=false,createParents=false) {
     let stat=metadata(cursor);
     if (!stat && i<parts.length-1 && createParents) {mkdirSync(cursor,{mode:0o755});stat=lstatSync(cursor);}
     if (!stat) return resolve(grant.root,path);
-    if(stat.isSymbolicLink() || (i<parts.length-1 ? !stat.isDirectory() : !stat.isFile() || stat.nlink!==1)) throw Error('symlink, hardlink or non-file target rejected');
+    if(stat.isSymbolicLink() || (i<parts.length-1 || directory ? !stat.isDirectory() : !stat.isFile() || stat.nlink!==1)) throw Error('symlink, hardlink or invalid target type');
   }
   return cursor;
 }
@@ -56,12 +49,16 @@ function snapshot(path) {
   } finally {closeSync(fd);}
 }
 export function readWorkspace(grant,path) {return {path,...snapshot(target(grant,path))};}
+export function listWorkspace(grant,path) {
+  const entries=readdirSync(target(grant,path,false,false,true),{withFileTypes:true}).filter(e=>e.name!=='.git').sort((a,b)=>a.name.localeCompare(b.name));
+  return {path,entries:entries.slice(0,500).map(e=>({name:e.name,type:e.isSymbolicLink()?'symlink':e.isDirectory()?'directory':'file'})),truncated:entries.length>500};
+}
 export function changeWorkspace(grant,dir,taskId,{path,text,expectedSha256},deleting=false) {
   if(expectedSha256!==null && (typeof expectedSha256!=='string' || !/^[0-9a-f]{64}$/.test(expectedSha256))) throw Error('expectedSha256 required (null only for create)');
   if(!deleting && (typeof text!=='string' || text.includes('\0') || Buffer.byteLength(text)>MAX_BYTES)) throw Error('text must be <=1 MiB');
   // Validate scope before creating any directory.
   relativeFile(path);
-  if(!grant || grant.mode!=='edit' || !grant.write.includes(path)) throw Error('file outside write scope');
+  if(!grant || grant.mode!=='edit') throw Error('workspace absent or read-only');
   const file=target(grant,path,true,!deleting && expectedSha256===null), before=snapshot(file);
   if(before.sha256!==expectedSha256 || deleting && !before.exists) throw Error('file revision conflict; read before changing');
   const recovery=resolve(dir,'recovery',taskId);mkdirSync(recovery,{recursive:true,mode:0o700});

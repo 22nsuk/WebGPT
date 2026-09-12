@@ -21,13 +21,14 @@ unrelated tabs.
   condition—not entire parent/repository/worker transcripts, credentials or unrelated files.
 - Keep one local ledger: task ID, objective, ownership, allowed inputs/actions, URL/tab IDs, output
   path, work/cleanup states and last backup check.
-- For development, WebGPT directly reads, creates, edits and deletes task-owned local project files
+- For development, WebGPT directly reads, creates, edits and deletes local project files
   through a working, authorized workspace connector. Do not default to returning patches for Codex
   or the user to apply. For analysis/review/check-only requests, use read-only access unless changes
   are separately requested.
 - Before dispatch, verify the connector reaches the exact project and exposes the required file
-  operations in the worker's chat—not merely in Codex. Bound access to owned paths; protect other
-  sessions' edits, secrets and unrelated files. Read before overwriting/deleting, reject stale
+  operations in the worker's chat—not merely in Codex. Register only the project root and edit/read
+  mode, not per-file allowlists. Coordinate disjoint work through task instructions, not extra grants.
+  Preserve other sessions' edits, secrets and unrelated files. Read before overwriting/deleting, reject stale
   revisions, and preserve recoverable originals for material deletion.
 - Missing direct access blocks implementation: report the missing connection/capability; never
   silently substitute parent-applied patches or claim direct edits. Text-only work needs no connector.
@@ -35,7 +36,7 @@ unrelated tabs.
   direct file access grants no extra Git/PR/push, process-control or out-of-scope authority.
 
 For the bundled direct-edit worker, read [workspace.md](references/workspace.md) during connection
-setup; reuse the service and register only a small file grant per task.
+setup; reuse the service and register the project root per task.
 
 Prepare prompt, UI mode, attachments and callback registration before typing. Fill and immediately
 submit in one browser-tool call where supported, using already-observed documented controls.

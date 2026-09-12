@@ -3,13 +3,13 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, symlinkSync, linkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { grantWorkspace, grantsOverlap, readWorkspace, changeWorkspace } from './workspace.mjs';
+import { grantWorkspace, listWorkspace, readWorkspace, changeWorkspace } from './workspace.mjs';
 import { start } from './worker.mjs';
 
 const fixture = fn => {
   const dir=mkdtempSync(join(tmpdir(),'webgpt-files-'));
   const root=join(dir,'project');mkdirSync(root);
-  const grant=grantWorkspace({root,mode:'edit',read:[],write:['source.txt','new/fresh.txt','alias.txt']});
+  const grant=grantWorkspace({root,mode:'edit'});
   return Promise.resolve().then(()=>fn({dir,root,grant})).finally(()=>rmSync(dir,{recursive:true}));
 };
 test('direct create/edit/delete preserves content, revisions and recoverable originals',()=>fixture(({dir,root,grant})=>{
@@ -28,15 +28,15 @@ test('direct create/edit/delete preserves content, revisions and recoverable ori
 }));
 test('scope, read-only, traversal, protected files, symlinks and hardlinks fail closed',()=>fixture(({dir,root,grant})=>{
   writeFileSync(join(root,'source.txt'),'safe');
-  const readonly=grantWorkspace({root,mode:'read',read:['source.txt'],write:[]});
+  const readonly=grantWorkspace({root,mode:'read'});
   assert.equal(readWorkspace(readonly,'source.txt').text,'safe');
-  for(const path of ['../outside','/etc/passwd','unowned.txt','.git/config','.env','new/../source.txt']) {
+  for(const path of ['../outside','/etc/passwd','.git/config','new/../source.txt']) {
     assert.throws(()=>readWorkspace(grant,path));
     assert.throws(()=>changeWorkspace(grant,dir,'task',{path,text:'bad',expectedSha256:null}));
   }
-  assert.throws(()=>changeWorkspace(readonly,dir,'task',{path:'source.txt',text:'bad',expectedSha256:null}),/write scope/);
-  assert.throws(()=>grantWorkspace({root,mode:'read',read:[],write:['source.txt']}),/read-only/);
-  assert.throws(()=>grantWorkspace({root:'/',mode:'edit',read:[],write:[]}),/project root/);
+  assert.throws(()=>changeWorkspace(readonly,dir,'task',{path:'source.txt',text:'bad',expectedSha256:null}),/read-only/);
+  assert.throws(()=>grantWorkspace({root,mode:'read',read:[],write:['source.txt']}),/root and mode only/);
+  assert.throws(()=>grantWorkspace({root:'/',mode:'edit'}),/project root/);
   writeFileSync(join(dir,'outside.txt'),'private');symlinkSync(join(dir,'outside.txt'),join(root,'alias.txt'));
   assert.throws(()=>readWorkspace(grant,'alias.txt'),/symlink/);
   symlinkSync(dir,join(root,'new'));
@@ -54,24 +54,29 @@ test('binary and oversized files cannot be read or replaced',()=>fixture(({dir,r
   assert.throws(()=>changeWorkspace(grant,dir,'task',{path:'new/fresh.txt',text:'x'.repeat(1024*1024+1),expectedSha256:null}),/1 MiB/);
   assert.equal(existsSync(join(root,'new')),false);
 }));
-test('overlapping reader/writer grants are rejected while independent tasks may run',()=>fixture(({root,grant})=>{
-  const read=grantWorkspace({root,mode:'read',read:['source.txt'],write:[]});
-  assert.equal(grantsOverlap(grant,read),true);assert.equal(grantsOverlap(read,grant),true);
-  assert.equal(grantsOverlap(read,read),false);
-  assert.equal(grantsOverlap(grant,grantWorkspace({root,mode:'edit',read:[],write:['separate.txt']})),false);
+test('one project grant can discover and edit newly chosen files without per-file registration',()=>fixture(({root,dir,grant})=>{
+  writeFileSync(join(root,'discovered.txt'),'existing');
+  assert.deepEqual(listWorkspace(grant,'.').entries,[{name:'discovered.txt',type:'file'}]);
+  const before=readWorkspace(grant,'discovered.txt');
+  changeWorkspace(grant,dir,'task',{path:'discovered.txt',text:'changed',expectedSha256:before.sha256});
+  changeWorkspace(grant,dir,'task',{path:'arbitrary/new.ts',text:'export const n = 1;',expectedSha256:null});
+  assert.equal(readWorkspace(grant,'arbitrary/new.ts').text,'export const n = 1;');
+  assert.deepEqual(listWorkspace(grant,'arbitrary').entries,[{name:'new.ts',type:'file'}]);
+  assert.throws(()=>listWorkspace(grant,'../'),/invalid/);
 }));
 test('MCP applies files directly, isolates tokens, blocks terminal writes and keeps old text-only tasks compatible',()=>fixture(async({dir,root})=>{
   const service=await start({dir:join(dir,'state'),port:0,controlPort:0});
   const admin=async(path,body)=>{const response=await fetch(`http://127.0.0.1:${service.controlPort}${path}`,{method:'POST',headers:{authorization:'Bearer '+service.key},body:JSON.stringify(body)});return {status:response.status,value:await response.json()};};
   const call=async(name,args)=>{const r=await fetch(`http://127.0.0.1:${service.mcpPort}/mcp`,{method:'POST',body:JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/call',params:{name,arguments:args}})});return (await r.json()).result;};
   try {
-    const registration={id:'editor',instructions:'edit',inputs:{},workspace:{root,mode:'edit',read:[],write:['created.txt']}};
+    const registration={id:'editor',instructions:'edit',inputs:{},workspace:{root,mode:'edit'}};
     const registered=await admin('/register',registration);assert.equal(registered.status,200);
-    assert.equal((await admin('/register',{...registration,id:'overlap'})).status,400);
+    assert.equal((await admin('/register',{...registration,id:'parallel'})).status,200);
     const token=registered.value.token;
     assert.equal((await call('write_file',{token:'wrong',path:'created.txt',text:'bad',expectedSha256:null})).isError,true);
     const changed=await call('write_file',{token,path:'created.txt',text:'from MCP',expectedSha256:null});
     assert.equal(changed.isError,false);assert.equal(readFileSync(join(root,'created.txt'),'utf8'),'from MCP');
+    assert.deepEqual((await call('list_files',{token,path:'.'})).structuredContent.entries,[{name:'created.txt',type:'file'}]);
     assert.equal((await call('get_task',{token})).structuredContent.changes.length,1);
     assert.equal((await call('submit_result',{token,status:'completed',summary:'done',result:'saved'})).isError,false);
     assert.equal((await call('delete_file',{token,path:'created.txt',expectedSha256:changed.structuredContent.afterSha256})).isError,true);
