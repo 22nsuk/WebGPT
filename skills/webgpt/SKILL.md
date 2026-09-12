@@ -5,91 +5,84 @@ description: Delegate short independent tasks to parallel conversations in the u
 
 # WebGPT
 
-Codex coordinates and verifies; Web ChatGPT does the delegated work. Do not substitute Codex
-subagents, CLI workers or API models. This skill requires supported browser control of a signed-in
-ChatGPT session. If unavailable, explain the missing capability; do not invent access, scrape
-private account APIs, copy session cookies, or take over unrelated tabs.
-
 ## Dispatch
 
-1. Verify the requested mode in the UI: `xh|xhigh` means Extra High (default), `p|pro` means Pro.
-   Do not silently substitute if the mode or account feature is unavailable.
-2. Split work into short, independently verifiable deliverables, one owned chat per task. Run
-   independent tasks in parallel within service/tool limits. Stage dependencies; never assign
-   overlapping file writes. Keep small corrections in the same chat, and use new chats for
-   substantial follow-on work. Reduce concurrency on throttling rather than repeatedly retrying.
-3. Give each worker a self-contained prompt: objective, necessary inputs, allowed actions,
-   deliverable, focused checks and stopping condition. Share only authorized task data, not the
-   entire parent conversation, repository, credentials or unrelated files.
-4. Keep a local ledger of task ID, ownership, conversation URL/tab IDs, output path, work state,
-   cleanup state and last backup check. Do not include long worker transcripts in parent context.
+Use signed-in Web ChatGPT through documented, authorized browser controls; Codex coordinates and
+verifies, never substitutes CLI/native subagents or API models. If access is unavailable, report
+the missing capability; never invent access, use private account APIs, copy cookies or take over
+unrelated tabs.
 
-Provide selected source text through the chat and collect its response. Use only documented,
-authorized tools when exchanging files or completion signals. Coding workers return patches or replacement
-files; Codex reviews, integrates and verifies them under repository rules. Delegation does not
-grant Git, PR, push, process-control or extra filesystem authority.
+- Verify the UI mode: `xh|xhigh` = Extra High (default), `p|pro` = Pro; never silently substitute.
+- Give independent, short, verifiable tasks separate parallel chats within service/tool limits.
+  Stage dependencies; forbid overlapping writes. Keep narrow corrections in the same chat; give
+  substantial follow-ons new chats. Reduce concurrency on throttling, not repeated retries.
+- Prompt naturally in the user's language, without a title/preamble; let ChatGPT auto-title.
+  Include objective, necessary authorized inputs, permissions, deliverable, focused checks and stop
+  condition—not entire parent/repository/worker transcripts, credentials or unrelated files.
+- Keep one local ledger: task ID, objective, ownership, allowed inputs/actions, URL/tab IDs, output
+  path, work/cleanup states and last backup check.
+- Send selected source text through chat; exchange files/signals only through documented,
+  authorized tools. Coding workers return patches/replacement files; Codex reviews, integrates and
+  verifies under repository rules. Delegation grants no Git/PR/push, process or extra file authority.
 
-Ask the task naturally in the user's language, without a separate title or redundant preamble.
-Let ChatGPT generate its own conversation title from the request.
-
-Prepare the complete prompt, mode, required attachments and any callback registration before typing.
-Once ready, fill the composer and immediately submit in the same browser-tool invocation when
-supported, using documented controls already identified in the UI. Do not insert a screenshot,
-snapshot, model round trip, commentary or fixed sleep between filling and submitting. Wait only
-for the send control to become actionable if necessary. Verify submission afterward; if its status
-is uncertain, inspect before retrying to avoid duplicate prompts.
+Prepare prompt, UI mode, attachments and callback registration before typing. Fill and immediately
+submit in one browser-tool call where supported, using already-observed documented controls.
+Between them, no screenshot/snapshot, model round trip, commentary or fixed sleep; wait only for
+Send to become actionable. Verify afterward; inspect uncertain submission before retrying to
+prevent duplicates.
 
 ## Collect
 
-Prefer a supported completion event over repeated chat inspection. Read
-[notifications.md](references/notifications.md) only when setting up callbacks. Register before
-dispatch. Workers save results before sending a compact terminal signal; failures include partial
-output and limitations. A completion signal is a claim, not verification.
+Prefer supported completion events over polling. Read [notifications.md](references/notifications.md)
+when setting up callbacks; register before dispatch. Workers save output before a compact terminal
+signal (failure includes partial output and limitations). Signals/summaries are claims, not proof.
 
-Without a callback, use one targeted check every **15 minutes** per unfinished chat. With callbacks,
-keep the same check as a backup for missing signals. Use host-supported waits between checks;
-do not repeatedly capture screenshots or full conversations. Host wait limits can require short
-resumptions; those may consume tokens, but do not justify rechecking every chat.
+Use host/runtime waits or useful independent coordination. Every **15 minutes**, check each due,
+unfinished chat once—as callback backup, or the fallback without callbacks. No repeated screenshots,
+chat/log reads or whole-worker checks on wait resumptions. Resume timed-out waits as needed; this
+costs tokens. Collect finished output even without its callback; otherwise record blockers and wait,
+never resend merely because work continues.
 
-Collect finished tasks promptly, without waiting for the whole batch. Preserve full results and
-evidence in local files; read the relevant output/diff and return only a concise summary and file
-references to parent context. Distinguish PASS, FAIL and NOT_RUN. Correct narrowly; do not repeat
-an unchanged failed approach or replace whole conversations just to retry.
+Collect each finished task promptly, not after the batch. Save full results/evidence locally, inspect
+relevant output/diffs against the requested outcome, and return only status, short summary, artifact
+references and focused checks. Distinguish PASS/FAIL/NOT_RUN; acknowledge callbacks after collection.
+Correct narrowly in the same chat. On repeated unchanged failure, preserve partial work and the
+specific limitation; do not repeat the approach or create replacement chats.
 
-**Remove each terminal task from periodic checks immediately.** Acknowledgment and chat deletion
-are tracked separately. Cancel abandoned registrations. End the wait loop when no active tasks
-remain. Keep the parent execution active while monitoring; neither this skill nor its optional
-receiver wakes Codex after a final answer or runtime shutdown. Never claim a background schedule
-was installed. Preserve pending task IDs and evidence before an unavoidable handoff.
+Remove terminal tasks from periodic checks immediately, independently of acknowledgment/deletion.
+Cancel abandoned registrations/deadlines; end waits when none remain. Keep the parent execution
+active: neither skill nor receiver wakes it after final answer/runtime shutdown. Do not claim an
+installed background schedule. Preserve pending IDs/evidence for unavoidable handoff and reconcile
+on resume.
 
 ## Close
 
-Track work (`RUNNING → COLLECTED → VERIFIED`, or `FAILED/CANCELLED`) separately from cleanup
-(`PENDING → DELETED → CLOSED`, or `BLOCKED` with the exact reason).
+Track work (`RUNNING → COLLECTED → VERIFIED` or `FAILED/CANCELLED`) separately from cleanup
+(`PENDING → DELETED → CLOSED` or `BLOCKED` with reason/next action). Codex owns verified cleanup.
 
-Tell every worker: “Return/save the deliverable, evidence and limitations, send a completion signal
-if configured, then stop. Do not delete this chat or its only result before collection is acknowledged.
-Do not stop shared services.”
+Tell each worker: “Save/return deliverable, evidence/check status and limitations; send the configured
+terminal signal, then stop generating/starting actions. Do not delete the chat/only result before
+saved-output acknowledgment or stop shared services/browser processes.”
 
-After saving output and recording its accepted, rejected or partial disposition:
+After saving output and recording accepted/rejected/partial disposition, including failures:
 
-1. Stop any still-running generation for this task. Never erase uncollected output.
-2. Requesting this workflow includes permanent deletion of the conversations created for that task
-   after their results are saved. Do not ask for initial, per-chat or repeated deletion consent.
-   Delete the exact owned task chat, not archive it, and accept the site's confirmation dialog.
-   This does not authorize deleting personal or unrelated chats. If a higher-priority browser-tool
-   rule mandates separate action-time confirmation, honor only that required exception.
-3. Verify deletion through redirect/unavailability and disappearance of its exact recent-chat entry
-   when exposed. Close all owned tabs/mirrors. Closing a tab alone is not deletion proof.
-4. Reconcile failed/recovery chats too. On blocked cleanup, retain their IDs and report the next
-   action. Do not call them closed. Preserve unrelated browser sessions and shared services.
+1. Stop remaining owned generation; never erase active work, uncollected output or its only copy.
+2. Workflow requests include permanent deletion of chats created for that task. Ask no initial,
+   per-chat or repeated consent; delete the exact owned chat (not archive) and accept its dialog.
+   Exclude personal/unrelated chats. Honor only separately mandated higher-priority tool confirmation.
+3. Verify URL redirect/unavailability and exact Recent entry disappearance where exposed, then close
+   all owned tabs/mirrors. Tab closure, model claims or unrelated navigation are not deletion proof;
+   missing evidence means unverified, not complete. Preserve saved results/evidence.
+4. Reconcile every task chat, including failed setup/recovery. If authentication/UI/confirmation
+   blocks cleanup, retain URL/tab IDs, report BLOCKED and next action, retry when access returns;
+   never claim closure. Preserve other sessions, browsers and shared services.
+5. Close only an owned per-batch receiver after collection; retain its journal/results.
 
-Use the shortest supported cleanup sequence: open the exact chat's menu, select Delete, accept
-the matching dialog, verify deletion, then close its owned tab. Batch already-grounded actions in
-one browser-tool invocation where supported; use only targeted reads needed to identify new
-controls or verify the target/outcome. No fixed sleeps, redundant full-page snapshots, commentary
-or model round trips between known actions. Do not skip target validation or mandatory tool gates.
+Batch grounded menu → Delete → matching-dialog acceptance → verification → tab closure actions
+in one tool call where supported. Use targeted reads only for new controls or target/outcome checks;
+no fixed sleeps, redundant full snapshots, commentary or model round trips between known actions.
+Never skip target validation or mandatory tool gates.
 
-Self-deletion is optional and only valid with a genuinely exposed, documented capability after
-output acknowledgment. Otherwise Codex handles cleanup. Do not invent self-termination APIs.
-Close an owned per-batch receiver after collection; keep its journal and result files.
+Self-deletion is optional only through a documented, exposed, authorized capability after saved-output
+acknowledgment; Codex still verifies deletion/closes tabs. Otherwise delete directly; invent no
+self-termination APIs.
