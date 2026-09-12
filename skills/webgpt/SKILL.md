@@ -58,7 +58,8 @@ on resume.
 ## Close
 
 Track work (`RUNNING → COLLECTED → VERIFIED` or `FAILED/CANCELLED`) separately from cleanup
-(`PENDING → DELETED → CLOSED` or `BLOCKED` with reason/next action). Codex owns verified cleanup.
+(`PENDING → DELETED` or `BLOCKED` with reason/next action). Verified chat deletion completes cleanup;
+closing the ChatGPT website/tab is not required.
 
 Tell each worker: “Save/return deliverable, evidence/check status and limitations; send the configured
 terminal signal, then stop generating/starting actions. Do not delete the chat/only result before
@@ -69,20 +70,25 @@ After saving output and recording accepted/rejected/partial disposition, includi
 1. Stop remaining owned generation; never erase active work, uncollected output or its only copy.
 2. Workflow requests include permanent deletion of chats created for that task. Ask no initial,
    per-chat or repeated consent; delete the exact owned chat (not archive) and accept its dialog.
-   Exclude personal/unrelated chats. Honor only separately mandated higher-priority tool confirmation.
-3. Verify URL redirect/unavailability and exact Recent entry disappearance where exposed, then close
-   all owned tabs/mirrors. Tab closure, model claims or unrelated navigation are not deletion proof;
-   missing evidence means unverified, not complete. Preserve saved results/evidence.
+   Apply the actual tool policy: when it allows pre-approval for test-only data explicitly designated
+   disposable by the user in a named test workflow, use that approval without asking again.
+   Do not misclassify it under the general permanent-deletion rule or relabel ordinary chats as tests.
+   Exclude personal/unrelated chats; honor action-time confirmation only where genuinely required.
+3. Verify URL redirect/unavailability and exact Recent entry disappearance where exposed.
+   Keep the resulting ChatGPT home tab open; where agent tabs auto-close, use the documented
+   keep-open/deliverable mechanism to honor this preference. Do not close/reopen the site for cleanup.
+   Tab closure, model claims or unrelated navigation are not deletion proof; missing evidence means
+   unverified, not complete. Preserve saved results/evidence.
 4. Reconcile every task chat, including failed setup/recovery. If authentication/UI/confirmation
    blocks cleanup, retain URL/tab IDs, report BLOCKED and next action, retry when access returns;
-   never claim closure. Preserve other sessions, browsers and shared services.
+   never claim deletion. Preserve other sessions, browsers and shared services.
 5. Close only an owned per-batch receiver after collection; retain its journal/results.
 
-Batch grounded menu → Delete → matching-dialog acceptance → verification → tab closure actions
+Batch grounded menu → Delete → matching-dialog acceptance → verification actions
 in one tool call where supported. Use targeted reads only for new controls or target/outcome checks;
 no fixed sleeps, redundant full snapshots, commentary or model round trips between known actions.
 Never skip target validation or mandatory tool gates.
 
 Self-deletion is optional only through a documented, exposed, authorized capability after saved-output
-acknowledgment; Codex still verifies deletion/closes tabs. Otherwise delete directly; invent no
+acknowledgment; Codex still verifies deletion and keeps the site open. Otherwise delete directly; invent no
 self-termination APIs.

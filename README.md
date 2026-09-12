@@ -2,7 +2,7 @@
 
 A Codex skill that delegates work to your signed-in ChatGPT.
 
-Split work into short, parallel chats. Keep detailed results in files. Let Codex verify and combine them, then delete the task chats with your permission.
+Split work into short, parallel chats. Codex saves and verifies results, then deletes the task chats. The ChatGPT tab stays open.
 
 ## Install
 
