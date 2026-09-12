@@ -14,9 +14,6 @@ Follow the included references/setup.md and set up everything needed.
 Handle checks, installation and configuration yourself; assume no setup knowledge.
 During installation, ask me only for actions you cannot perform, such as
 sign-in or permission approvals, then continue when I finish.
-Verify direct project edits, completion notifications and chat/tab cleanup
-before declaring installation complete. Save and reuse the setup without
-asking me to configure it again during normal use.
 ```
 
 ## Use
