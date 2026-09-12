@@ -4,6 +4,12 @@ For Codex installing this skill: complete the steps below, then report what is r
 blocked. Installing files alone does not enable browser control or direct coding. Never claim
 success from a local health check alone. Reuse a verified connection; do not create one per task.
 
+Handle setup autonomously. Request user-only sign-in, local credential entry and necessary setup
+approvals only during installation; resolve them before declaring it complete. Save and reuse the
+verified configuration without repeating setup questions during normal use. If it later becomes
+unusable, report the blocker rather than silently restarting installation or claiming readiness.
+Mandatory security confirmations still apply.
+
 ## 1. Install and check access
 
 Install `skills/webgpt` from `Nhahan/WebGPT` using Codex's skill installer. Resolve all paths from
