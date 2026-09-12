@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { execFile } from 'node:child_process';
@@ -57,6 +57,17 @@ test('client CLI works from an unrelated directory with configured private data'
   });
   assert.deepEqual(JSON.parse(stdout), { events: [], backupDue: [] });
   assert.ok(!stdout.includes(readFileSync(join(dir, 'controller.key'), 'utf8')));
+}));
+
+test('client and worker CLIs execute through a symlinked installation path', () => fixture(async ({ dir, config }) => {
+  const scripts = join(dir, 'installed scripts');
+  symlinkSync(dirname(fileURLToPath(import.meta.url)), scripts, 'dir');
+  const file = join(dir, 'config.json'); writeFileSync(file, JSON.stringify(config));
+  const env = { ...process.env, WEBGPT_CONFIG: file, WEBGPT_DATA_DIR: dir };
+  const { stdout } = await execute(process.execPath, [join(scripts, 'client.mjs'), 'status'], { env });
+  assert.deepEqual(JSON.parse(stdout), { events: [], backupDue: [] });
+  // Startup must actually execute and reject the live owner's lock, not exit silently with code 0.
+  await assert.rejects(execute(process.execPath, [join(scripts, 'worker.mjs')], { env }), /data directory locked/);
 }));
 
 test('controller authenticates, rejects invalid calls, and returns errors without keys', () => fixture(async ({ service, admin }) => {

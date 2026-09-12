@@ -1,6 +1,6 @@
 import { createServer } from 'node:http';
 import { randomUUID, createHash } from 'node:crypto';
-import { mkdirSync, writeFileSync, readFileSync, existsSync, renameSync, readdirSync, unlinkSync, rmdirSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, renameSync, readdirSync, unlinkSync, rmdirSync, realpathSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -118,7 +118,7 @@ export async function start({dir,port=43137,controlPort=43139,backupMs=900000,no
   return {mcpPort:mcp.address().port,controlPort:control.address().port,key,close:async()=>{if(closed)return;closed=true;wake();await Promise.all([mcp,control].map(s=>new Promise(r=>{s.closeAllConnections();s.close(r);})));release();}};
   }catch(e){release();throw e;}
 }
-if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href){
+if(process.argv[1]&&import.meta.url===pathToFileURL(realpathSync(process.argv[1])).href){
   const config=configuration();
   const service=await start({dir:config.dataDir,port:config.mcpPort,controlPort:config.controlPort});
   console.log(JSON.stringify({ready:true,mcpPort:service.mcpPort,controlPort:service.controlPort}));
