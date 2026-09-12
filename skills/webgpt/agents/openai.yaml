@@ -1,0 +1,4 @@
+interface:
+  display_name: "WebGPT"
+  short_description: "Delegate short parallel tasks to Web ChatGPT"
+  default_prompt: "Use $webgpt to split this task into independent checks and summarize verified results."
