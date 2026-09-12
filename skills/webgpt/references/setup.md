@@ -69,6 +69,8 @@ when overriding defaults. `WEBGPT_CONFIG` selects another configuration file; `W
 overrides only the data directory. Give the worker and client the same configuration/environment.
 Keep data/configuration outside projects and installed skill files, private to the current user.
 Do not publish `controller.key`, task tokens, results, recovery copies or tunnel credentials.
+On POSIX, set the owned WebGPT data directory to mode `0700` and verify it before starting the worker;
+recursive directory creation does not restrict an already-existing directory's permissions.
 On Windows, verify directory ACLs explicitly; POSIX file modes alone do not establish privacy.
 
 Check that both ports are free, or belong to the exact existing WebGPT service, before starting.
