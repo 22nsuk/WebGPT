@@ -29,9 +29,8 @@ authorized tools when exchanging files or completion signals. Coding workers ret
 files; Codex reviews, integrates and verifies them under repository rules. Delegation does not
 grant Git, PR, push, process-control or extra filesystem authority.
 
-Start the first prompt with a short, specific task topic in the user's language, followed by a
-blank line and the request: `Inventory save regression\n\nFind the cause of ...`. Put setup details
-and tool instructions afterward so the opening clearly conveys the topic for the automatic title.
+Ask the task naturally in the user's language, without a separate title or redundant preamble.
+Let ChatGPT generate its own conversation title from the request.
 
 ## Collect
 
@@ -70,7 +69,9 @@ After saving output and recording its accepted, rejected or partial disposition:
 1. Stop any still-running generation for this task. Never erase uncollected output.
 2. Delete the exact owned task conversation, not merely archive it, with the user's authorization
    and any action-time confirmation the browser tool requires. This skill does not itself grant
-   deletion permission. Never delete personal chats or bypass confirmation requirements.
+   deletion permission. Accept the site's dialog once authorized; do not ask again for the same
+   already-confirmed deletion. Do not add confirmation steps beyond those the tool requires.
+   Never delete personal chats or bypass mandatory confirmation requirements.
 3. Verify deletion through redirect/unavailability and disappearance of its exact recent-chat entry
    when exposed. Close all owned tabs/mirrors. Closing a tab alone is not deletion proof.
 4. Reconcile failed/recovery chats too. On blocked cleanup, retain their IDs and report the next
