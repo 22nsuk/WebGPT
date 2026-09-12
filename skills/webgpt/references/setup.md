@@ -130,6 +130,7 @@ mode; do not claim direct editing works or apply WebGPT's patches as a substitut
 
 Run `node --test <skill>/scripts/*.test.mjs` (expand the file list on shells without glob expansion).
 Then follow [workspace.md](workspace.md) to register one edit task for an **owned temporary project**.
+Record its task ID and owned chat/tab IDs in the private setup note as they are created.
 In a real chat using the requested mode (Extra High or Pro), have WebGPT create a probe file,
 read and modify it using its SHA, read and delete it using the new SHA, then `submit_result`
 with receipts and limitations. The parent verifies the on-disk result, recovery copies, saved result
@@ -137,6 +138,11 @@ SHA, callback receipt and empty backup deadline for the finished task, then ackn
 that task chat under SKILL.md.
 Close its task-owned tabs and verify their absence per SKILL.md; preserve unrelated tabs.
 Clean only the owned probe after recording evidence.
+
+If the probe fails, preserve the actual response and any partial file-operation evidence. If its
+terminal callback cannot arrive, cancel the local registration immediately so backup checks stop.
+Delete the finished probe chat and close its task tabs before pausing for account setup; keep only
+the actionable sign-in/approval tab open. Repair the connection before registering another probe.
 
 Record a compact, private setup note alongside runtime data: installed path/revision, configuration
 path, worker/tunnel startup method, connection name, browser/mode and PASS/FAIL/NOT_RUN evidence.
