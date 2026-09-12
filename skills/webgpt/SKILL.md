@@ -29,20 +29,9 @@ authorized tools when exchanging files or completion signals. Coding workers ret
 files; Codex reviews, integrates and verifies them under repository rules. Delegation does not
 grant Git, PR, push, process-control or extra filesystem authority.
 
-## Visible task titles
-
-Use a normal saved conversation, not Temporary Chat, so active tasks appear in the browser's
-Recent list. After the first prompt creates a conversation URL, open that exact chat's options
-and use the supported Rename action to set a short, topic-first title in the user's language
-(for example, "Inventory save regression"). Give parallel tasks distinct subtopic titles.
-Do not use the whole prompt, callback tokens, file paths or generic "New chat" as the title.
-
-Record the title with the conversation URL in the task ledger. Verify once that the matching
-Recent entry shows it; a browser tab/group name or a request for WebGPT to rename itself is not
-enough. If renaming is unavailable during generation, retry at the next scheduled check without
-interrupting the worker. Report unavailable history controls rather than changing account-wide
-privacy settings. Keep the title while working; normal result-preservation and deletion rules
-still apply after completion.
+Start the first prompt with a short, specific task topic in the user's language, followed by a
+blank line and the request: `Inventory save regression\n\nFind the cause of ...`. Put setup details
+and tool instructions afterward so the opening clearly conveys the topic for the automatic title.
 
 ## Collect
 
