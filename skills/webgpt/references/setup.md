@@ -156,13 +156,14 @@ do not claim direct editing works or apply WebGPT's patches as a substitute.
 Run `node --test <skill>/scripts/*.test.mjs` (expand the file list on shells without glob expansion).
 Then follow [workspace.md](workspace.md) to register one edit task for an **owned temporary project**.
 Record its task ID and owned chat/tab IDs in the private setup note as they are created.
-In a real chat using the requested mode (Extra High or Pro), have WebGPT create a probe file,
-read and modify it using its SHA, read and delete it using the new SHA, then `submit_result`
-with receipts and limitations. The parent verifies the on-disk result, recovery copies, saved result
-SHA, callback receipt and empty backup deadline for the finished task, then acknowledges and deletes
-that task chat under SKILL.md.
-Close its task-owned tabs and verify their absence per SKILL.md; preserve unrelated tabs.
-Clean only the owned probe after recording evidence.
+In a real chat using the requested mode (Extra High or Pro), give WebGPT a natural, outcome-oriented
+probe: exercise direct file creation/editing/deletion, revision-safe writes and terminal completion
+reporting on an owned disposable file, and return receipts, evidence and limitations. State what the
+probe must prove rather than prescribing the tool order; let WebGPT choose the exact sequence within
+the temporary project grant. The parent verifies the final on-disk state, recovery copies, saved
+result SHA, callback receipt and empty backup deadline, then acknowledges and deletes that task chat
+under SKILL.md. Close its task-owned tabs and verify their absence per SKILL.md; preserve unrelated
+tabs. Clean only the owned probe after recording evidence.
 
 If the probe fails, before deleting it save the exact error shown in the tool-call UI and correlate
 that error with any partial file-operation or callback receipts. A model summary alone does not

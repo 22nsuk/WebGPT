@@ -19,9 +19,12 @@ Do not invent access, copy cookies, use private browser APIs or take over unrela
   Reuse the chat for related follow-ups; separate unrelated work. Avoid duplicate work and reduce
   concurrency on throttling rather than repeatedly retrying.
 - Prompt naturally in the user's language and requested format. Otherwise omit a title/preamble
-  and let ChatGPT auto-title. Do not add chat-cleanup instructions. Include the objective, relevant
-  context and deliverable; specify ownership, permissions, checks and stop conditions where applicable.
-  Supply source material in full when needed for the task; omit credentials and unrelated data.
+  and let ChatGPT auto-title. Do not add chat-cleanup instructions. Delegate like a capable colleague:
+  explain the objective, relevant context and deliverable/success criteria, plus ownership,
+  permissions, required checks or stop conditions when material. Then let WebGPT choose its tools,
+  implementation, checks and useful next steps within those boundaries; do not copy the workspace
+  protocol or prescribe routine tool-by-tool sequences. Supply source material in full when needed
+  for the task; omit credentials and unrelated data.
 - Keep a private ledger: task ID, objective, ownership, allowed inputs/actions, URL/tab IDs (including recovery tabs), output
   paths, work/cleanup states and last backup check. Preserve it for handoffs.
 - Development means WebGPT directly reads/creates/edits/deletes project files through a verified

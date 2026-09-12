@@ -23,10 +23,15 @@ Registration payload:
 ```json
 {
   "id": "unique-task-id",
-  "instructions": "Complete the assigned task, report checks and limitations, then submit_result.",
+  "instructions": "Improve the onboarding docs for first-time users. Preserve compatibility notes. Success: concise updated files with focused checks, change receipts and any limitations.",
   "inputs": {}
 }
 ```
+
+Write `instructions` like a brief to a capable colleague: give the goal, relevant context, success
+criteria and only material constraints. Do not paste the tool protocol below into each task. Within
+the authorized request and workspace grant, WebGPT chooses the tools, implementation, checks and
+useful next steps without routine reconfirmation.
 
 For local files, add `"workspace":{"root":"/absolute/project","mode":"edit"}` to the payload.
 The root is the permission boundary; no per-file lists or permission expansion are needed.
@@ -34,22 +39,26 @@ Use `mode:"read"` for review/analysis; omit workspace for text-only work. Concur
 share the project, with disjoint responsibilities coordinated in prompts. Revision checks reject
 stale edits. Only the parent can choose the project root and mode.
 
-Send the returned **task token** privately to its WebGPT worker. It calls:
+Send the returned **task token** privately to its WebGPT worker.
 
-1. `get_task(token)` to learn instructions, input names and any workspace grant.
-   `read_input(token,name)` reads a named string supplied in `inputs`.
-2. When local files are needed and granted, `list_files(token,path)` lists a directory
-   (`.` for root, up to 500 entries with a truncation flag), and `read_file(token,path)` gets text
-   and SHA-256 (missing files return `exists:false`).
-3. For requested edits only, use `write_file(token,path,text,expectedSha256)` to create (`null` revision)
-   or replace (read revision), or `delete_file(token,path,expectedSha256)` to remove a read file.
-   These directly change local files; Codex does not apply a returned patch. No recursive deletion.
-   Content is UTF-8, at most 1 MiB/file.
-   MCP project-relative paths always use `/`, including on Windows.
-4. `submit_result(token,status,summary,result)` when the task ends, with or without file changes, then stop.
-   Status is `completed`, `failed` or `cancelled`. Include the deliverable, any changed paths/receipts,
-   checks and limitations; unexecuted checks are NOT_RUN. This saves the result, closes file access
-   and removes backup checks.
+### Worker tool reference
+
+This is the protocol available to the worker, not a sequence to copy into ordinary delegation prompts:
+
+- `get_task(token)` returns instructions, input names and any workspace grant;
+  `read_input(token,name)` reads a named string supplied in `inputs`.
+- When local files are needed and granted, `list_files(token,path)` lists a directory
+  (`.` for root, up to 500 entries with a truncation flag), and `read_file(token,path)` gets text
+  and SHA-256 (missing files return `exists:false`).
+- For requested edits, `write_file(token,path,text,expectedSha256)` creates (`null` revision) or
+  replaces a file using its read revision; `delete_file(token,path,expectedSha256)` removes a read
+  file. These directly change local files; Codex does not apply a returned patch. No recursive
+  deletion. Content is UTF-8, at most 1 MiB/file. MCP project-relative paths always use `/`,
+  including on Windows.
+- `submit_result(token,status,summary,result)` ends the task with status `completed`, `failed` or
+  `cancelled`. Include the deliverable, any changed paths/receipts, checks and limitations;
+  unexecuted checks are NOT_RUN. Submission saves the result, closes file access and removes backup
+  checks, after which the worker stops.
 
 With no workspace grant, only `get_task`, `read_input` and `submit_result` are available to the task.
 
