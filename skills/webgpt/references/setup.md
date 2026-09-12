@@ -4,11 +4,13 @@ For Codex installing this skill: complete the steps below, then report what is r
 blocked. Installing files alone does not enable browser control or direct coding. Never claim
 success from a local health check alone. Reuse a verified connection; do not create one per task.
 
-Handle setup autonomously. Request user-only sign-in, local credential entry and necessary setup
-approvals only during installation; resolve them before declaring it complete. Save and reuse the
-verified configuration without repeating setup questions during normal use. If it later becomes
-unusable, report the blocker rather than silently restarting installation or claiming readiness.
-Mandatory security confirmations still apply.
+Assume no setup knowledge. Check and install/configure missing prerequisites through supported
+methods instead of handing the user a prerequisite checklist. During installation, request only
+user-only actions such as sign-in, local credential entry and necessary approvals, with a clear
+next step; resume setup after each action. Resolve them and verify the full workflow before
+declaring installation complete. Save and reuse the verified configuration without repeating setup
+questions during normal use. If it later becomes unusable, report the blocker rather than silently
+restarting installation or claiming readiness. Mandatory security confirmations still apply.
 
 ## 1. Install and check access
 
@@ -20,8 +22,9 @@ for verification and recovery; install that commit so a concurrent upstream upda
 the candidate. The README intentionally follows the latest version, not a permanently pinned release.
 
 Check documented browser-control tools, a signed-in ChatGPT session, and access to the requested
-Extra High or Pro mode. If a tool or account capability is missing, state exactly which one; let
-the user handle sign-in and account approvals. Never copy cookies or use private browser APIs.
+Extra High or Pro mode. Set up missing supported tools; guide the user through any required sign-in
+or account approvals, then recheck and continue. Report a blocker only when no supported setup path
+is available. Never copy cookies or use private browser APIs.
 
 Text-only delegation can run without a workspace connection, with 15-minute completion checks.
 For direct coding **and event-driven completion**, continue below. An existing authorized connector

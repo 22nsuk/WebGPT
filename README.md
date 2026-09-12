@@ -10,18 +10,14 @@ Paste this into Codex:
 
 ```text
 Install https://github.com/Nhahan/WebGPT/tree/main/skills/webgpt
-Follow references/setup.md to configure browser control, the local Worker,
-and the ChatGPT WebGPT Worker plugin through a private MCP tunnel.
-Ask me for sign-in, local credential entry or required setup approvals
-only until installation is complete. Handle everything else yourself.
-Verify direct file edits, completion notifications and chat/tab cleanup
-before declaring success. Save and reuse the setup without asking me
-to configure it again during normal use.
+Follow the included references/setup.md and set up everything needed.
+Handle checks, installation and configuration yourself; assume no setup knowledge.
+During installation, ask me only for actions you cannot perform, such as
+sign-in or permission approvals, then continue when I finish.
+Verify direct project edits, completion notifications and chat/tab cleanup
+before declaring installation complete. Save and reuse the setup without
+asking me to configure it again during normal use.
 ```
-
-Full setup requires Codex browser control, the requested ChatGPT mode, Node.js 22+,
-ChatGPT developer mode and Secure MCP Tunnel access. Without the private connection,
-only text-based tasks are available. [Setup details](skills/webgpt/references/setup.md).
 
 ## Use
 
