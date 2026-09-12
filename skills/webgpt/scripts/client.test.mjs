@@ -38,9 +38,11 @@ test('portable config uses absolute paths and independent ports, with explicit o
     const file = join(dir, 'config.json');
     const saved = { dataDir: join(dir, 'private data'), mcpPort: 12340, controlPort: 12341 };
     writeFileSync(file, JSON.stringify(saved));
-    assert.deepEqual(configuration({ WEBGPT_CONFIG: file }), saved);
+    assert.deepEqual(configuration({ WEBGPT_CONFIG: file }), {...saved, publicMcp:false});
+    writeFileSync(file, JSON.stringify({...saved, publicMcp:true}));
+    assert.equal(configuration({ WEBGPT_CONFIG: file }).publicMcp, true);
     assert.equal(configuration({ WEBGPT_CONFIG: file, WEBGPT_DATA_DIR: dir }).dataDir, dir);
-    for (const invalid of [[], null, { dataDir: 'relative' }, { mcpPort: 0 }, { controlPort: '12341' }, { mcpPort: 43139 }]) {
+    for (const invalid of [[], null, { publicMcp:'true' }, { dataDir: 'relative' }, { mcpPort: 0 }, { controlPort: '12341' }, { mcpPort: 43139 }]) {
       writeFileSync(file, JSON.stringify(invalid));
       assert.throws(() => configuration({ WEBGPT_CONFIG: file }));
     }

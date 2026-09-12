@@ -13,8 +13,10 @@ export function configuration(env = process.env) {
     dataDir: env.WEBGPT_DATA_DIR ?? saved.dataDir ?? join(homedir(), '.local', 'share', 'webgpt'),
     mcpPort: saved.mcpPort ?? 43137,
     controlPort: saved.controlPort ?? 43139,
+    publicMcp: saved.publicMcp ?? false,
   };
   if (typeof config.dataDir !== 'string' || !isAbsolute(config.dataDir)) throw Error('dataDir must be absolute');
+  if (typeof config.publicMcp !== 'boolean') throw Error('publicMcp must be boolean');
   for (const key of ['mcpPort', 'controlPort']) {
     if (!Number.isInteger(config[key]) || config[key] < 1 || config[key] > 65535) throw Error('invalid ' + key);
   }

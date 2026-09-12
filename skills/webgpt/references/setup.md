@@ -4,7 +4,7 @@ For Codex installing this skill: complete the steps below, then report what is r
 blocked. Installing files alone does not enable browser control or direct coding. Never claim
 success from a local health check alone. Reuse a verified connection; do not create one per task.
 Follow the capability checks in order: installed files → actual ChatGPT browser access → existing
-connection or private connection setup → end-to-end probe. Do not delegate installation to WebGPT.
+connection or HTTPS connection setup → end-to-end probe. Do not delegate installation to WebGPT.
 
 Assume no setup knowledge. Check and install/configure missing prerequisites through supported
 methods instead of handing the user a prerequisite checklist. During installation, request only
@@ -60,12 +60,14 @@ Both the worker and `scripts/client.mjs` read the same optional
 {
   "dataDir": "/absolute/private/webgpt-data",
   "mcpPort": 43137,
-  "controlPort": 43139
+  "controlPort": 43139,
+  "publicMcp": true
 }
 ```
 
 Use real OS-appropriate absolute paths, not these placeholders. Only create this configuration
-when overriding defaults. `WEBGPT_CONFIG` selects another configuration file; `WEBGPT_DATA_DIR`
+when overriding defaults; set `publicMcp:true` before forwarding MCP over public HTTPS.
+`WEBGPT_CONFIG` selects another configuration file; `WEBGPT_DATA_DIR`
 overrides only the data directory. Give the worker and client the same configuration/environment.
 Keep data/configuration outside projects and installed skill files, private to the current user.
 Do not publish `controller.key`, task tokens, results, recovery copies or tunnel credentials.
@@ -88,45 +90,54 @@ The worker enforces this with `worker.lock/owner.json`. A crash can leave a lock
 recorded host/PID and that no worker still uses this directory before moving that exact stale lock
 to an owned recovery location and restarting. Never delete an unverified lock or stop another owner.
 
-## 3. Connect privately to ChatGPT
+## 3. Connect to ChatGPT without Platform credentials
 
-Only after browser access is verified and no working equivalent connection is available, set up
-OpenAI's [Secure MCP Tunnel](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels).
-This requires ChatGPT developer-mode access and an eligible Platform organization/workspace with
-tunnel permissions. These capabilities are account-dependent; the skill cannot grant them.
+Reuse the signed-in ChatGPT account and compatible connection. New setup uses an HTTPS endpoint,
+not OpenAI Secure MCP Tunnel: do not request Platform login, organization roles, API keys or tunnel
+credentials. A working existing transport can remain unless the user requests its replacement.
 
-1. Install the platform's `tunnel-client` for this OS and read `tunnel-client help quickstart`.
-   Help output lists destinations, not a checklist of pages to open. Navigate only to the page
-   needed for the current step, through the browser you can control. Open organization roles or
-   administrator settings only to resolve an observed permission denial, not as routine setup.
-2. Inspect the official Tunnels settings and create/reuse a tunnel with the existing authorized
-   browser or CLI. Its runtime key needs Tunnels Read + Use; creating a tunnel needs Manage.
-   Reuse a valid local secret reference where available. If a new secret or approval requires the
-   user, prepare the exact screen or private local input and ask only for that action, then perform
-   the remaining setup yourself. Never request secrets in chat or print them in command output.
-3. With the real tunnel ID and chosen MCP port, create a private profile:
+1. Enable `publicMcp:true` in the shared configuration and restart only the owned idle worker.
+   It creates private `mcp-path.key` (256-bit random hex); the only MCP route becomes
+   `/mcp/<that-key>`. Check that `/mcp` and a wrong-key route return 404, a valid-route initialize
+   succeeds, and tool calls with an invalid task token fail before making the endpoint reachable.
+   The controller remains loopback-only and must never be forwarded.
+2. Reuse an authorized HTTPS forwarding service if available. Otherwise install `cloudflared`
+   from its official distribution and use a [Quick Tunnel](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/trycloudflare/):
 
    ```text
-   tunnel-client init --sample sample_mcp_remote_no_auth --profile webgpt --tunnel-id tunnel_... --mcp-server-url http://127.0.0.1:43137/mcp --health-listen-addr 127.0.0.1:43138
-   tunnel-client doctor --profile webgpt --explain
-   tunnel-client run --profile webgpt
+   cloudflared tunnel --url http://127.0.0.1:43137
    ```
 
-   Use an unused profile/health port; do not overwrite an existing profile. Supply the runtime key
-   locally as `CONTROL_PLANE_API_KEY` or a supported secret reference. The no-auth sample describes
-   the **loopback MCP backend**, not a public unauthenticated server: the tunnel authenticates access.
-   Never tunnel the controller. For persistent operation, use the client's documented managed
-   runtime or an owned OS service; record the exact profile and startup method. Do not stop healthy
-   shared services after each chat.
-4. While worker and tunnel are ready, open ChatGPT's Plugins page and add **WebGPT Worker** using
-   Connection: Tunnel and that tunnel ID. Honor account approval gates. Verify that the selected
-   chat can invoke the seven tools listed in [workspace.md](workspace.md). If write actions are
-   blocked, check this connection's action permissions, not global defaults. Enable all project
-   actions only when authorized by the user; use read-only task grants for reviews.
+   Substitute the configured MCP port. This needs no Cloudflare account or OpenAI Platform login.
+   Keep the owned process running and record its PID/service and emitted HTTPS origin. Do not
+   overwrite another cloudflared configuration or stop another tunnel. If a default config
+   interferes, use an isolated supported configuration rather than renaming the user's files.
+   This forwards requests through Cloudflare, which terminates HTTPS; it is not a private-network
+   tunnel. Never expose the controller, a file server or the project directory.
+3. Form the connection URL from that origin plus `/mcp/<mcp-path.key>`. Treat the complete URL as
+   a credential: read it privately into the connection form, never publish it or put it in task
+   prompts, screenshots or ordinary logs. Do not navigate to it in a browser. The route key gates
+   MCP discovery; independent task tokens still gate every file operation and completion.
+   Verify public initialize/tools discovery and rejected wrong-key requests without printing keys.
+4. In ChatGPT's Plugins settings, update **WebGPT Worker** to Connection: URL and the complete
+   endpoint. Choose no OAuth authentication: the URL capability plus task tokens are the worker's
+   authentication, not an unrestricted endpoint. If the UI cannot change connection type/URL,
+   create a replacement and verify it before removing the exact obsolete registration. Preserve
+   unrelated plugins. Reuse existing sign-in/developer-mode access; ask only for actual missing
+   user-only approvals. Verify all seven tools in [workspace.md](workspace.md) and their action
+   permissions. Use read-only task grants for reviews.
 
-No public app publication, Git integration, model API calls or API-model substitution is needed.
-If private connection setup is blocked, report the missing permission and the available text-only
-mode; do not claim direct editing works or apply WebGPT's patches as a substitute.
+Quick Tunnels are development services without an uptime guarantee; their origin changes when
+recreated. Keep a live tunnel across tasks. On restart, compare its actual origin and update the
+existing ChatGPT connection (or replace it only if the UI requires), then recheck before dispatch.
+Do not promise a permanent URL or unattended recovery. The worker uses JSON HTTP responses,
+not SSE, which Quick Tunnels do not support. For stable hosting, reuse a user-authorized stable
+HTTPS endpoint; do not silently require a new paid service/account. If the URL leaks, stop the owned
+tunnel, rotate the path key while the worker is stopped, and update the connection.
+
+No public plugin publication, Git integration, model API calls or API-model substitution is needed.
+If connection setup is blocked, report the exact limitation and available text-only mode;
+do not claim direct editing works or apply WebGPT's patches as a substitute.
 
 ## 4. Verify the installed path
 
@@ -156,5 +167,5 @@ before pausing. After the user responds, continue the same installation rather t
 
 Repository acceptance was exercised on macOS with Node.js 22 and 26, including isolated local
 worker/client startup, CRUD, callbacks and restart tests. The existing authenticated WebGPT path
-was exercised separately. Fresh-account tunnel provisioning, Linux and Windows end-to-end behavior
+was exercised separately. The HTTPS replacement's fresh-install browser probe and Linux/Windows end-to-end behavior
 remain NOT_RUN; perform the probe above on the user's actual installation before reporting it ready.
