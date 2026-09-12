@@ -164,8 +164,12 @@ that task chat under SKILL.md.
 Close its task-owned tabs and verify their absence per SKILL.md; preserve unrelated tabs.
 Clean only the owned probe after recording evidence.
 
-If the probe fails, preserve the actual response and any partial file-operation evidence. If its
-terminal callback cannot arrive, cancel the local registration immediately so backup checks stop.
+If the probe fails, before deleting it save the exact error shown in the tool-call UI and correlate
+that error with any partial file-operation or callback receipts. A model summary alone does not
+confirm a platform denial or broken feature. Record installation status separately from operation
+verification. Security refusals remain non-bypassable; report them exactly and do not infer or claim
+a prior platform cause without direct evidence. If its terminal callback cannot arrive, cancel the
+local registration immediately so backup checks stop.
 Delete the finished probe chat and close its task tabs before pausing for account setup; keep only
 the actionable sign-in/approval tab open. Repair the connection before registering another probe.
 

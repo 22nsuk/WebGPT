@@ -86,3 +86,30 @@ test('MCP applies files directly, isolates tokens, blocks terminal writes and ke
     assert.equal((await admin('/register',{...registration,id:'after-terminal'})).status,200);
   } finally {await service.close();}
 }));
+test('MCP create/edit/delete enforces revisions, backups and operation receipts',()=>fixture(async({dir,root})=>{
+  const service=await start({dir:join(dir,'state'),port:0,controlPort:0});
+  const admin=async(path,body)=>{const response=await fetch(`http://127.0.0.1:${service.controlPort}${path}`,{method:'POST',headers:{authorization:'Bearer '+service.key},body:JSON.stringify(body)});return {status:response.status,value:await response.json()};};
+  const call=async(name,args)=>{const r=await fetch(`http://127.0.0.1:${service.mcpPort}/mcp`,{method:'POST',body:JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/call',params:{name,arguments:args}})});return (await r.json()).result;};
+  try {
+    const registered=await admin('/register',{id:'crud-regression',instructions:'exercise MCP CRUD',inputs:{},workspace:{root,mode:'edit'}});assert.equal(registered.status,200);
+    const token=registered.value.token;
+    const missing=await call('read_file',{token,path:'cycle.txt'});assert.equal(missing.isError,false);assert.equal(missing.structuredContent.exists,false);
+    const created=await call('write_file',{token,path:'cycle.txt',text:'first\n',expectedSha256:null});
+    assert.equal(created.isError,false);assert.equal(created.structuredContent.action,'create');assert.equal(created.structuredContent.beforeSha256,null);assert.equal(created.structuredContent.backup,null);
+    assert.equal(readFileSync(join(root,'cycle.txt'),'utf8'),'first\n');
+    const first=await call('read_file',{token,path:'cycle.txt'});assert.equal(first.isError,false);assert.equal(first.structuredContent.sha256,created.structuredContent.afterSha256);
+    const edited=await call('write_file',{token,path:'cycle.txt',text:'second\n',expectedSha256:first.structuredContent.sha256});
+    assert.equal(edited.isError,false);assert.equal(edited.structuredContent.action,'edit');assert.equal(edited.structuredContent.beforeSha256,first.structuredContent.sha256);
+    assert.equal(readFileSync(join(root,'cycle.txt'),'utf8'),'second\n');assert.equal(readFileSync(edited.structuredContent.backup,'utf8'),'first\n');
+    const stale=await call('write_file',{token,path:'cycle.txt',text:'stale\n',expectedSha256:first.structuredContent.sha256});assert.equal(stale.isError,true);
+    assert.equal(readFileSync(join(root,'cycle.txt'),'utf8'),'second\n');
+    const second=await call('read_file',{token,path:'cycle.txt'});assert.equal(second.isError,false);assert.equal(second.structuredContent.sha256,edited.structuredContent.afterSha256);
+    const deleted=await call('delete_file',{token,path:'cycle.txt',expectedSha256:second.structuredContent.sha256});
+    assert.equal(deleted.isError,false);assert.equal(deleted.structuredContent.action,'delete');assert.equal(deleted.structuredContent.beforeSha256,second.structuredContent.sha256);assert.equal(deleted.structuredContent.afterSha256,null);
+    assert.equal(existsSync(join(root,'cycle.txt')),false);assert.equal(readFileSync(deleted.structuredContent.backup,'utf8'),'second\n');
+    const absent=await call('read_file',{token,path:'cycle.txt'});assert.equal(absent.isError,false);assert.equal(absent.structuredContent.exists,false);
+    const receipts=[created.structuredContent,edited.structuredContent,deleted.structuredContent];assert.deepEqual(receipts.map(({path,action})=>({path,action})),[{path:'cycle.txt',action:'create'},{path:'cycle.txt',action:'edit'},{path:'cycle.txt',action:'delete'}]);
+    assert.ok(receipts.every(receipt=>typeof receipt.operation==='string'&&receipt.operation.length>0));
+    const task=await call('get_task',{token});assert.equal(task.isError,false);assert.deepEqual(task.structuredContent.changes.map(change=>change.operation),receipts.map(receipt=>receipt.operation));
+  } finally {await service.close();}
+}));
