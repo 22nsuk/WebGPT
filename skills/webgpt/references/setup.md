@@ -90,7 +90,9 @@ node <skill>/scripts/client.mjs status
 ```
 
 Keep the worker running using an owned persistent terminal or the OS's existing service manager;
-record how to start/check it again. Reuse the same data directory so tasks survive restarts. Do not
+record how to start/check it again. Use the OS service manager for operation after Codex exits;
+a child terminal process is not evidence that the worker survives CLI shutdown.
+Reuse the same data directory so tasks survive restarts. Do not
 start two workers against one data directory or replace scripts while tasks are active.
 The worker enforces this with `worker.lock/owner.json`. A crash can leave a lock: verify the
 recorded host/PID and that no worker still uses this directory before moving that exact stale lock
