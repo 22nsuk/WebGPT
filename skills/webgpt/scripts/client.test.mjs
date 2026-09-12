@@ -63,7 +63,7 @@ test('client CLI works from an unrelated directory with configured private data'
 
 test('client and worker CLIs execute through a symlinked installation path', () => fixture(async ({ dir, config }) => {
   const scripts = join(dir, 'installed scripts');
-  symlinkSync(dirname(fileURLToPath(import.meta.url)), scripts, 'dir');
+  symlinkSync(dirname(fileURLToPath(import.meta.url)), scripts, process.platform === 'win32' ? 'junction' : 'dir');
   const file = join(dir, 'config.json'); writeFileSync(file, JSON.stringify(config));
   const env = { ...process.env, WEBGPT_CONFIG: file, WEBGPT_DATA_DIR: dir };
   const { stdout } = await execute(process.execPath, [join(scripts, 'client.mjs'), 'status'], { env });
