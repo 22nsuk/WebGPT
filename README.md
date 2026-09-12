@@ -17,12 +17,17 @@ ChatGPT browser session; tell me if setup is needed.
 
 ## Use
 
+Tell Codex:
+
 ```text
-Use $webgpt to review this project. Split independent checks into
-short parallel chats, save the findings, and summarize what matters.
+webgpt xh Review this project and find bugs.
 ```
 
-Use `xh` for Extra High (default), or `p` for Pro. Availability depends on your ChatGPT account.
+```text
+webgpt p Research this topic and summarize the findings.
+```
+
+`xh` = Extra High · `p` = Pro. Add your request after either prefix.
 
 Requires Codex browser control and a signed-in ChatGPT session.
 
