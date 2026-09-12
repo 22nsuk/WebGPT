@@ -106,7 +106,8 @@ In a real Extra High chat, have WebGPT create a probe file, read and modify it u
 read and delete it using the new SHA, then `submit_result` with receipts and limitations. The parent
 verifies the on-disk result, recovery copies, saved result SHA, callback receipt and empty backup
 deadline for the finished task, then acknowledges and deletes that task chat under SKILL.md.
-Keep the ChatGPT home tab open. Clean only the owned probe after recording evidence.
+Close its task-owned tabs and verify their absence per SKILL.md; preserve unrelated tabs.
+Clean only the owned probe after recording evidence.
 
 Record a compact, private setup note alongside runtime data: installed path/revision, configuration
 path, worker/tunnel startup method, connection name, browser/mode and PASS/FAIL/NOT_RUN evidence.

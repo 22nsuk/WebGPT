@@ -19,7 +19,7 @@ copy cookies, use private browser APIs or take over unrelated tabs.
 - Prompt naturally in the user's language without a title/preamble or chat-cleanup instructions;
   let ChatGPT auto-title. Include objective, necessary inputs, ownership, permissions, deliverable,
   focused checks and stop condition, not full transcripts, credentials or unrelated files.
-- Keep a private ledger: task ID, objective, ownership, allowed inputs/actions, URL/tab IDs, output
+- Keep a private ledger: task ID, objective, ownership, allowed inputs/actions, URL/tab IDs (including recovery tabs), output
   paths, work/cleanup states and last backup check. Preserve it for handoffs.
 - Development means WebGPT directly reads/creates/edits/deletes project files through a verified
   connector. Use [workspace.md](references/workspace.md) for task registration and completion.
@@ -60,7 +60,8 @@ cancel abandoned registrations/deadlines and end waits when the batch is termina
 ## Close
 
 Track work (`RUNNING → COLLECTED → VERIFIED` or `FAILED/CANCELLED`) separately from cleanup
-(`PENDING → DELETED` or `BLOCKED` with reason/next action). After saving output and recording its
+(`PENDING → CHAT_DELETED → DONE` or `BLOCKED` with reason/next action). Cleanup requires verified
+chat deletion and task-tab closure. After saving output and recording its
 accepted/rejected/partial disposition, including failures:
 
 1. Stop remaining owned generation. Never erase active work, uncollected output or its only copy.
@@ -69,16 +70,19 @@ accepted/rejected/partial disposition, including failures:
    Follow actual tool policy: use pre-approval for explicitly disposable data in a user-designated
    test workflow where permitted; never relabel ordinary chats as tests. Honor action-time
    confirmation only where genuinely required. Exclude personal/unrelated chats.
-3. Verify redirect/unavailability and exact Recent entry disappearance where exposed. Keep the
-   ChatGPT home tab open, using documented keep-open/deliverable controls if agent tabs auto-close.
-   Tab closure, model claims or unrelated navigation are not deletion proof. Missing evidence means
-   unverified. Preserve saved results/evidence.
+3. Verify redirect/unavailability and exact Recent entry disappearance where exposed. Tab closure,
+   model claims or unrelated navigation are not deletion proof; preserve saved results/evidence.
+   Then close the exact task-owned tabs, including recovery duplicates and tabs redirected to home.
+   Recheck IDs/current URLs against the ledger; preserve unrelated or repurposed tabs and the browser.
+   Verify those task-tab IDs are absent from the tab list. Do not mark them keep-open/deliverable or
+   open a replacement home tab. If closure fails, retain deletion evidence and report tab cleanup BLOCKED.
 4. Reconcile all owned task chats, including failed setup/recovery. If access/UI/confirmation blocks
    cleanup, preserve URL/tab IDs, report BLOCKED and next action, and retry when access returns.
    Preserve shared services, other sessions and browsers; clean only owned temporary resources.
 
-Batch grounded menu → Delete → matching-dialog acceptance → verification where supported. Use
+Batch grounded menu → Delete → matching-dialog acceptance → deletion verification → task-tab closure
+and tab-list verification where supported. Use
 targeted reads only for new controls and target/outcome checks; no fixed sleeps, redundant full
 snapshots, commentary or round trips between known actions. Never skip tool gates or target checks.
 Self-deletion is optional only through an exposed, documented, authorized capability after saved
-output acknowledgment; Codex still verifies. Otherwise Codex deletes the chat, not the website/tab.
+output acknowledgment; Codex still verifies deletion and closes the task tabs, not the browser.
