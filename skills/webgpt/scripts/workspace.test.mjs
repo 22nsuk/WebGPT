@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, symlinkSync, linkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, parse } from 'node:path';
 import { grantWorkspace, listWorkspace, readWorkspace, changeWorkspace } from './workspace.mjs';
 import { start } from './worker.mjs';
 
@@ -26,7 +26,7 @@ test('direct create/edit/delete preserves content, revisions and recoverable ori
   changeWorkspace(grant,dir,'task',{path:'new/fresh.txt',text:'nested',expectedSha256:null});
   assert.equal(readFileSync(join(root,'new/fresh.txt'),'utf8'),'nested');
 }));
-test('scope, read-only, traversal, protected files, symlinks and hardlinks fail closed',()=>fixture(({dir,root,grant})=>{
+test('scope, read-only, traversal, protected files, directory links and hardlinks fail closed',()=>fixture(({dir,root,grant})=>{
   writeFileSync(join(root,'source.txt'),'safe');
   const readonly=grantWorkspace({root,mode:'read'});
   assert.equal(readWorkspace(readonly,'source.txt').text,'safe');
@@ -37,14 +37,26 @@ test('scope, read-only, traversal, protected files, symlinks and hardlinks fail 
   assert.throws(()=>changeWorkspace(readonly,dir,'task',{path:'source.txt',text:'bad',expectedSha256:null}),/read-only/);
   assert.throws(()=>grantWorkspace({root,mode:'read',read:[],write:['source.txt']}),/root and mode only/);
   assert.throws(()=>grantWorkspace({root:'/',mode:'edit'}),/project root/);
-  writeFileSync(join(dir,'outside.txt'),'private');symlinkSync(join(dir,'outside.txt'),join(root,'alias.txt'));
-  assert.throws(()=>readWorkspace(grant,'alias.txt'),/symlink/);
-  symlinkSync(dir,join(root,'new'));
+  assert.throws(()=>grantWorkspace({root:parse(root).root,mode:'edit'}),/project root/);
+  symlinkSync(dir,join(root,'new'),process.platform === 'win32' ? 'junction' : 'dir');
   assert.throws(()=>changeWorkspace(grant,dir,'task',{path:'new/fresh.txt',text:'escape',expectedSha256:null}),/symlink/);
   assert.equal(existsSync(join(dir,'fresh.txt')),false);
   linkSync(join(root,'source.txt'),join(dir,'hard.txt'));
   assert.throws(()=>readWorkspace(grant,'source.txt'),/hardlink/);
   assert.throws(()=>changeWorkspace(grant,dir,'task',{path:'source.txt',text:'bad'}),/expectedSha256/);
+}));
+
+test('file symlinks cannot expose files outside the project',t=>fixture(({dir,root,grant})=>{
+  writeFileSync(join(dir,'outside.txt'),'private');
+  try { symlinkSync(join(dir,'outside.txt'),join(root,'alias.txt')); }
+  catch (e) {
+    if (process.platform === 'win32' && e.code === 'EPERM') {
+      t.skip('Windows file symlink creation requires Developer Mode or elevated privileges');
+      return;
+    }
+    throw e;
+  }
+  assert.throws(()=>readWorkspace(grant,'alias.txt'),/symlink/);
 }));
 test('binary and oversized files cannot be read or replaced',()=>fixture(({dir,root,grant})=>{
   writeFileSync(join(root,'source.txt'),Buffer.from([0xff,0x00]));

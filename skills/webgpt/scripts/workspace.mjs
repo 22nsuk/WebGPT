@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
-import { dirname, isAbsolute, resolve, sep } from 'node:path';
+import { dirname, isAbsolute, parse, resolve } from 'node:path';
 import { homedir } from 'node:os';
 
 const MAX_BYTES = 1024 * 1024;
@@ -16,7 +16,7 @@ export function grantWorkspace(input) {
   if (!input || typeof input.root !== 'string' || !isAbsolute(input.root)
       || !['read','edit'].includes(input.mode) || 'read' in input || 'write' in input) throw Error('use workspace root and mode only');
   const root = realpathSync(input.root), stat = lstatSync(root);
-  if (!stat.isDirectory() || root === sep || root === realpathSync(homedir())) throw Error('project root required');
+  if (!stat.isDirectory() || root === parse(root).root || root === realpathSync(homedir())) throw Error('project root required');
   return {root, device:stat.dev, inode:stat.ino, mode:input.mode};
 }
 function target(grant,path,writing=false,createParents=false,directory=false) {
