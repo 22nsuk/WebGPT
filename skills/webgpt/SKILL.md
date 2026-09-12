@@ -32,6 +32,13 @@ grant Git, PR, push, process-control or extra filesystem authority.
 Ask the task naturally in the user's language, without a separate title or redundant preamble.
 Let ChatGPT generate its own conversation title from the request.
 
+Prepare the complete prompt, mode, required attachments and any callback registration before typing.
+Once ready, fill the composer and immediately submit in the same browser-tool invocation when
+supported, using documented controls already identified in the UI. Do not insert a screenshot,
+snapshot, model round trip, commentary or fixed sleep between filling and submitting. Wait only
+for the send control to become actionable if necessary. Verify submission afterward; if its status
+is uncertain, inspect before retrying to avoid duplicate prompts.
+
 ## Collect
 
 Prefer a supported completion event over repeated chat inspection. Read
