@@ -32,5 +32,3 @@ webgpt p Research this topic and summarize the findings.
 Requires Codex browser control and a signed-in ChatGPT session.
 
 [MIT license](LICENSE)
-
-Community project. Not affiliated with OpenAI.
