@@ -13,9 +13,11 @@ copy cookies, use private browser APIs or take over unrelated tabs.
 ## Dispatch
 
 - Verify UI mode: `xh|xhigh` = Extra High (default), `p|pro` = Pro. Never silently substitute.
-- Give short, independent, verifiable tasks separate parallel chats within service/tool limits.
-  Stage dependencies and assign disjoint writes. Keep narrow corrections in the same chat;
-  substantial follow-ons get new chats. Reduce concurrency on throttling, not repeated retries.
+- Proactively split work as far as practical into short, independent, verifiable tasks, each in
+  a separate WebGPT chat. Run all ready independent tasks concurrently within service/tool limits
+  to maximize useful parallelism. Keep tightly coupled work together, stage dependencies and assign
+  disjoint writes; avoid duplicate work. Keep narrow corrections in the same chat; substantial
+  follow-ons get new chats. Reduce concurrency on throttling, not repeated retries.
 - Prompt naturally in the user's language without a title/preamble or chat-cleanup instructions;
   let ChatGPT auto-title. Include objective, necessary inputs, ownership, permissions, deliverable,
   focused checks and stop condition, not full transcripts, credentials or unrelated files.

@@ -1,8 +1,6 @@
 # WebGPT
 
-A Codex skill that delegates work to your signed-in ChatGPT.
-
-Split work into short, parallel chats. Codex saves and verifies results, deletes the task chats, then closes their task tabs. Other tabs stay untouched.
+A Codex skill that delegates work to ChatGPT on the web.
 
 ## Install
 
@@ -32,5 +30,3 @@ webgpt p Research this topic and summarize the findings.
 ```
 
 `xh` = Extra High · `p` = Pro. Add your request after either prefix.
-
-[MIT license](LICENSE)
