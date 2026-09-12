@@ -12,7 +12,8 @@ Paste this into Codex:
 Install the webgpt skill from https://github.com/Nhahan/WebGPT,
 using the skill at skills/webgpt. Preserve any existing installation
 and ask before replacing it. Check that you can control a signed-in
-ChatGPT browser session; tell me if setup is needed.
+ChatGPT browser session. For direct coding, set up the bundled local
+workspace worker and its private connection; verify actual file edits.
 ```
 
 ## Use
@@ -29,6 +30,6 @@ webgpt p Research this topic and summarize the findings.
 
 `xh` = Extra High · `p` = Pro. Add your request after either prefix.
 
-Requires Codex browser control and a signed-in ChatGPT session. Direct coding also requires a working local-project connector in ChatGPT.
+Requires Codex browser control and a signed-in ChatGPT session. Direct coding uses the included workspace worker or an existing local-project connector.
 
 [MIT license](LICENSE)

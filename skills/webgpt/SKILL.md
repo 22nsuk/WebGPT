@@ -34,6 +34,9 @@ unrelated tabs.
   Use patch-only delivery only when requested. Codex owns review, verification and Git/integration;
   direct file access grants no extra Git/PR/push, process-control or out-of-scope authority.
 
+For the bundled direct-edit worker, read [workspace.md](references/workspace.md) during connection
+setup; reuse the service and register only a small file grant per task.
+
 Prepare prompt, UI mode, attachments and callback registration before typing. Fill and immediately
 submit in one browser-tool call where supported, using already-observed documented controls.
 Between them, no screenshot/snapshot, model round trip, commentary or fixed sleep; wait only for
