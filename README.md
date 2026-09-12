@@ -21,11 +21,11 @@ sign-in or permission approvals, then continue when I finish.
 Tell Codex:
 
 ```text
-webgpt xh Review this project and find bugs.
+Use webgpt xh as subagents to develop this project's planned features in parallel.
 ```
 
 ```text
 webgpt p Research this topic and summarize the findings.
 ```
 
-`xh` = Extra High · `p` = Pro. Add your request after either prefix.
+`xh` = Extra High · `p` = Pro.
