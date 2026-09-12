@@ -2,7 +2,7 @@
 
 <img width="871" height="40" alt="image" src="https://github.com/user-attachments/assets/97d758f5-4666-4d21-9cc0-68a3f0fbcc88" />
 
-A Codex skill that delegates work to ChatGPT on the web.
+**Save your Codex quota.** A Codex skill that offloads work to ChatGPT on the web.
 
 ## Install
 
