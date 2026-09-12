@@ -29,6 +29,6 @@ webgpt p Research this topic and summarize the findings.
 
 `xh` = Extra High · `p` = Pro. Add your request after either prefix.
 
-Requires Codex browser control and a signed-in ChatGPT session.
+Requires Codex browser control and a signed-in ChatGPT session. Direct coding also requires a working local-project connector in ChatGPT.
 
 [MIT license](LICENSE)
