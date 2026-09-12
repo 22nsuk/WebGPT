@@ -1,9 +1,10 @@
-# Direct local editing
+# Local files and completion
 
 Use a working, authorized project connector already available in WebGPT. Otherwise this skill
 includes a small MCP worker: `scripts/worker.mjs` + `workspace.mjs` (Node.js 22+). It exposes only
 task lookup, supplied inputs, direct text-file read/write/delete, and completion submission—no Git,
-shell, process control or account credentials. Text-only tasks do not need it.
+shell, process control or account credentials. Text-only tasks can use it for completion events
+without any workspace grant, or run without a connector using SKILL.md's backup checks.
 
 For first use or missing connectivity, read [setup.md](setup.md). Use one worker for direct editing
 and completion delivery; no separate callback receiver, arbitrary HTTP tool or shell in WebGPT.
@@ -22,35 +23,35 @@ Registration payload:
 ```json
 {
   "id": "unique-task-id",
-  "instructions": "Implement the assigned change, report checks, then submit_result.",
-  "inputs": {},
-  "workspace": {
-    "root": "/absolute/project",
-    "mode": "edit"
-  }
+  "instructions": "Complete the assigned task, report checks and limitations, then submit_result.",
+  "inputs": {}
 }
 ```
 
-The project root is the permission boundary; no per-file lists or permission expansion are needed.
+For local files, add `"workspace":{"root":"/absolute/project","mode":"edit"}` to the payload.
+The root is the permission boundary; no per-file lists or permission expansion are needed.
 Use `mode:"read"` for review/analysis; omit workspace for text-only work. Concurrent workers may
 share the project, with disjoint responsibilities coordinated in prompts. Revision checks reject
 stale edits. Only the parent can choose the project root and mode.
 
 Send the returned **task token** privately to its WebGPT worker. It calls:
 
-1. `get_task(token)` to learn instructions and project root; `list_files(token,path)` lists a directory
-   (`.` for root, up to 500 entries with a truncation flag).
-2. `read_file(token,path)` to get text and SHA-256 (missing files return `exists:false`).
-3. `write_file(token,path,text,expectedSha256)` to create (`null` revision) or replace (read revision),
-   or `delete_file(token,path,expectedSha256)` to remove a read file. These directly change local files;
-   Codex does not apply a returned patch. No recursive deletion. Content is UTF-8, at most 1 MiB/file.
+1. `get_task(token)` to learn instructions, input names and any workspace grant.
+   `read_input(token,name)` reads a named string supplied in `inputs`.
+2. When local files are needed and granted, `list_files(token,path)` lists a directory
+   (`.` for root, up to 500 entries with a truncation flag), and `read_file(token,path)` gets text
+   and SHA-256 (missing files return `exists:false`).
+3. For requested edits only, use `write_file(token,path,text,expectedSha256)` to create (`null` revision)
+   or replace (read revision), or `delete_file(token,path,expectedSha256)` to remove a read file.
+   These directly change local files; Codex does not apply a returned patch. No recursive deletion.
+   Content is UTF-8, at most 1 MiB/file.
    MCP project-relative paths always use `/`, including on Windows.
-4. `submit_result(token,status,summary,result)` after edits, then stop. Status is `completed`,
-   `failed` or `cancelled`. Include changed paths/receipts, checks and limitations; unexecuted checks
-   are NOT_RUN. This saves the result, closes file access and removes backup checks.
+4. `submit_result(token,status,summary,result)` when the task ends, with or without file changes, then stop.
+   Status is `completed`, `failed` or `cancelled`. Include the deliverable, any changed paths/receipts,
+   checks and limitations; unexecuted checks are NOT_RUN. This saves the result, closes file access
+   and removes backup checks.
 
-The seventh tool, `read_input(token,name)`, reads a named string supplied in `inputs`. With no
-workspace grant, only `get_task`, `read_input` and `submit_result` are available to the task.
+With no workspace grant, only `get_task`, `read_input` and `submit_result` are available to the task.
 
 The service rejects stale revisions, symlinks/hardlinks, traversal and Git metadata access; Git
 remains the parent's responsibility. Other project text files need no individual grant. Never
@@ -67,7 +68,8 @@ const notice = await request('wait');
 ```
 
 Or run `node <skill>/scripts/client.mjs wait`. It returns on a terminal event, a 15-minute backup
-deadline, or at most 55 seconds; with no active or uncollected tasks it returns immediately.
+check, or at most 55 seconds; neither interval expires the task. With no active or uncollected tasks
+it returns immediately.
 Resume empty waits without scanning chats. Run useful independent work while awaiting results.
 
 - `events`: verify the saved artifact's SHA-256 and relevant output/diffs, record disposition, then

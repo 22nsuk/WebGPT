@@ -27,8 +27,8 @@ or account approvals, then recheck and continue. Report a blocker only when no s
 is available. Never copy cookies or use private browser APIs.
 
 Text-only delegation can run without a workspace connection, with 15-minute completion checks.
-For direct coding **and event-driven completion**, continue below. An existing authorized connector
-is sufficient only if it provides equivalent project file access and saved completion events.
+For **local file access or event-driven completion**, continue below. An existing authorized connector
+must provide the required file access (if any) and saved completion events.
 
 ## 2. Start the bundled worker
 
@@ -111,10 +111,11 @@ mode; do not claim direct editing works or apply WebGPT's patches as a substitut
 
 Run `node --test <skill>/scripts/*.test.mjs` (expand the file list on shells without glob expansion).
 Then follow [workspace.md](workspace.md) to register one edit task for an **owned temporary project**.
-In a real Extra High chat, have WebGPT create a probe file, read and modify it using its SHA,
-read and delete it using the new SHA, then `submit_result` with receipts and limitations. The parent
-verifies the on-disk result, recovery copies, saved result SHA, callback receipt and empty backup
-deadline for the finished task, then acknowledges and deletes that task chat under SKILL.md.
+In a real chat using the requested mode (Extra High or Pro), have WebGPT create a probe file,
+read and modify it using its SHA, read and delete it using the new SHA, then `submit_result`
+with receipts and limitations. The parent verifies the on-disk result, recovery copies, saved result
+SHA, callback receipt and empty backup deadline for the finished task, then acknowledges and deletes
+that task chat under SKILL.md.
 Close its task-owned tabs and verify their absence per SKILL.md; preserve unrelated tabs.
 Clean only the owned probe after recording evidence.
 

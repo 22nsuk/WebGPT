@@ -114,6 +114,48 @@ test('15-minute backup checks reset only running tasks and never revive terminal
   advance(900000); assert.deepEqual(await admin('wait'), { events: [], backupDue: [] });
 }));
 
+test('a single text-only task survives backup intervals and restart, then completes without file access', () => fixture(async f => {
+  const transcript = 'Speaker: Please analyze this complete transcript.\nReviewer: Include the context.';
+  const task = await f.admin('register', {
+    id: 'transcript-analysis', instructions: 'Analyze the supplied transcript.', inputs: { transcript },
+  });
+  assert.equal((await invoke(f.service, 'get_task', { token: task.token })).structuredContent.workspace, null);
+  assert.equal((await invoke(f.service, 'read_input', { token: task.token, name: 'transcript' })).structuredContent.text, transcript);
+  for (const name of ['list_files', 'read_file', 'write_file', 'delete_file']) {
+    assert.equal((await invoke(f.service, name, {
+      token: task.token, path: name === 'list_files' ? '.' : 'ungranted.txt',
+      text: 'not authorized', expectedSha256: null,
+    })).isError, true);
+  }
+  // Advance only the fixture clock: backup checks are not execution deadlines.
+  for (const elapsed of [900000, 24 * 60 * 60 * 1000]) {
+    f.advance(elapsed);
+    assert.deepEqual(await f.admin('status'), { events: [], backupDue: [task.id] });
+    assert.equal((await invoke(f.service, 'get_task', { token: task.token })).structuredContent.status, 'running');
+    await f.admin('checked', { id: task.id });
+    assert.deepEqual(await f.admin('status'), { events: [], backupDue: [] });
+  }
+  await f.restart();
+  assert.equal((await invoke(f.service, 'read_input', { token: task.token, name: 'transcript' })).structuredContent.text, transcript);
+  const result = 'Analysis of the supplied transcript; no project changes were requested.';
+  assert.equal((await invoke(f.service, 'submit_result', {
+    token: task.token, status: 'completed', summary: 'Analysis complete', result,
+  })).isError, false);
+  f.advance(900000);
+  const notice = await f.admin('wait');
+  assert.deepEqual(notice.backupDue, []);
+  assert.equal(notice.events.length, 1);
+  assert.equal(notice.events[0].id, task.id);
+  assert.equal(readFileSync(notice.events[0].artifact, 'utf8'), result);
+  assert.equal(notice.events[0].sha256, createHash('sha256').update(result).digest('hex'));
+  const saved = JSON.parse(readFileSync(join(f.dir, 'state.json'), 'utf8'))[0];
+  assert.equal(saved.nextCheck, null);
+  assert.deepEqual(saved.changes, []);
+  await f.admin('ack', { id: task.id });
+  f.advance(900000);
+  assert.deepEqual(await f.admin('wait'), { events: [], backupDue: [] });
+}));
+
 test('malformed, invalid and oversized results do not complete a task', () => fixture(async ({ service, admin }) => {
   const a = await admin('register', { id: 'a', instructions: 'Review', inputs: {} });
   const payload = { token: a.token, status: 'completed', summary: 'done', result: 'done' };
