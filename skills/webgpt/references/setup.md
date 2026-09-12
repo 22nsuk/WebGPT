@@ -7,9 +7,13 @@ Follow the capability checks in order: installed files → actual ChatGPT browse
 connection or HTTPS connection setup → end-to-end probe. Do not delegate installation to WebGPT.
 
 Assume no setup knowledge. Check and install/configure missing prerequisites through supported
-methods instead of handing the user a prerequisite checklist. During installation, request only
-user-only actions such as sign-in, local credential entry and necessary approvals, with a clear
-next step; resume setup after each action. Resolve them and verify the full workflow before
+methods instead of handing the user a prerequisite checklist. Honor the user's Install-prompt
+authorization for worker/HTTPS setup, private endpoint transfer to their ChatGPT, assigned-project
+file access and disposable test-chat/tab cleanup; do not request the same approval again.
+This guide alone is not user consent. Ask only for actions genuinely requiring the user, such as
+sign-in or a mandatory action-time confirmation that the tool does not allow pre-approval to cover;
+name the specific requirement, not a generic permission concern. Resume after that action and
+verify the full workflow before
 declaring installation complete. Save and reuse the verified configuration without repeating setup
 questions during normal use. If it later becomes unusable, report the blocker rather than silently
 restarting installation or claiming readiness. Mandatory security confirmations still apply.
