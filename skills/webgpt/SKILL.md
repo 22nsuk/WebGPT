@@ -74,15 +74,21 @@ Do not stop shared services.”
 After saving output and recording its accepted, rejected or partial disposition:
 
 1. Stop any still-running generation for this task. Never erase uncollected output.
-2. Delete the exact owned task conversation, not merely archive it, with the user's authorization
-   and any action-time confirmation the browser tool requires. This skill does not itself grant
-   deletion permission. Accept the site's dialog once authorized; do not ask again for the same
-   already-confirmed deletion. Do not add confirmation steps beyond those the tool requires.
-   Never delete personal chats or bypass mandatory confirmation requirements.
+2. Requesting this workflow includes permanent deletion of the conversations created for that task
+   after their results are saved. Do not ask for initial, per-chat or repeated deletion consent.
+   Delete the exact owned task chat, not archive it, and accept the site's confirmation dialog.
+   This does not authorize deleting personal or unrelated chats. If a higher-priority browser-tool
+   rule mandates separate action-time confirmation, honor only that required exception.
 3. Verify deletion through redirect/unavailability and disappearance of its exact recent-chat entry
    when exposed. Close all owned tabs/mirrors. Closing a tab alone is not deletion proof.
 4. Reconcile failed/recovery chats too. On blocked cleanup, retain their IDs and report the next
    action. Do not call them closed. Preserve unrelated browser sessions and shared services.
+
+Use the shortest supported cleanup sequence: open the exact chat's menu, select Delete, accept
+the matching dialog, verify deletion, then close its owned tab. Batch already-grounded actions in
+one browser-tool invocation where supported; use only targeted reads needed to identify new
+controls or verify the target/outcome. No fixed sleeps, redundant full-page snapshots, commentary
+or model round trips between known actions. Do not skip target validation or mandatory tool gates.
 
 Self-deletion is optional and only valid with a genuinely exposed, documented capability after
 output acknowledgment. Otherwise Codex handles cleanup. Do not invent self-termination APIs.
