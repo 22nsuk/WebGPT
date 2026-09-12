@@ -3,6 +3,8 @@
 For Codex installing this skill: complete the steps below, then report what is ready and what is
 blocked. Installing files alone does not enable browser control or direct coding. Never claim
 success from a local health check alone. Reuse a verified connection; do not create one per task.
+Follow the capability checks in order: installed files → actual ChatGPT browser access → existing
+connection or private connection setup → end-to-end probe. Do not delegate installation to WebGPT.
 
 Assume no setup knowledge. Check and install/configure missing prerequisites through supported
 methods instead of handing the user a prerequisite checklist. During installation, request only
@@ -14,17 +16,28 @@ restarting installation or claiming readiness. Mandatory security confirmations 
 
 ## 1. Install and check access
 
-Install `skills/webgpt` from `Nhahan/WebGPT` using Codex's skill installer. Resolve all paths from
-the installed skill directory, not the source checkout or another user's machine. Preserve an
+Read this guide before installing or replacing files. Install `skills/webgpt` from `Nhahan/WebGPT`
+using Codex's skill installer. Resolve all paths from the installed skill directory, not the source
+checkout or another user's machine. Preserve an
 existing customized installation and its runtime data; do not silently replace it. A new Codex
 turn/session may be needed for skill discovery. Resolve `main` to a commit and record that revision
 for verification and recovery; install that commit so a concurrent upstream update cannot change
 the candidate. The README intentionally follows the latest version, not a permanently pinned release.
 
-Check documented browser-control tools, a signed-in ChatGPT session, and access to the requested
-Extra High or Pro mode. Set up missing supported tools; guide the user through any required sign-in
-or account approvals, then recheck and continue. Report a blocker only when no supported setup path
-is available. Never copy cookies or use private browser APIs.
+Use the browser tools available in this Codex session to open an owned tab at `https://chatgpt.com`
+and read its actual UI. Verify sign-in and the requested Extra High or Pro mode (Extra High when
+unspecified). A browser executable/version, an HTTP response or opening a URL with the OS is not
+proof that Codex can control the page. Preserve working browser/tool configuration when installing
+this skill. If browser control is missing, discover and set up a supported
+browser connector using the host's plugin/tool manager, then recheck. Never copy cookies or use
+private browser APIs. If sign-in or an extension approval is required, open only that actionable
+screen and ask for that user-only action; resume when it is done.
+
+Once browser access works, inspect ChatGPT's existing connections and any saved WebGPT setup note
+or local tunnel profiles. Reuse a compatible connection and its settings after verifying its tools
+and endpoint; a connection name alone is not proof. Do not request new tunnels, keys or account
+permissions merely because the skill was freshly installed. Do not ask the user to carry out
+navigation, configuration or commands that your available tools can perform.
 
 Text-only delegation can run without a workspace connection, with 15-minute completion checks.
 For **local file access or event-driven completion**, continue below. An existing authorized connector
@@ -75,14 +88,20 @@ to an owned recovery location and restarting. Never delete an unverified lock or
 
 ## 3. Connect privately to ChatGPT
 
-Use OpenAI's [Secure MCP Tunnel](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels).
+Only after browser access is verified and no working equivalent connection is available, set up
+OpenAI's [Secure MCP Tunnel](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels).
 This requires ChatGPT developer-mode access and an eligible Platform organization/workspace with
 tunnel permissions. These capabilities are account-dependent; the skill cannot grant them.
 
 1. Install the platform's `tunnel-client` for this OS and read `tunnel-client help quickstart`.
-2. Create/reuse a tunnel through the official Tunnels settings linked in that guide. Its runtime
-   key needs Tunnels Read + Use; creating a tunnel needs Manage. Let the user provide secrets through
-   a local secret store/environment, never a chat, committed file or printed command output.
+   Help output lists destinations, not a checklist of pages to open. Navigate only to the page
+   needed for the current step, through the browser you can control. Open organization roles or
+   administrator settings only to resolve an observed permission denial, not as routine setup.
+2. Inspect the official Tunnels settings and create/reuse a tunnel with the existing authorized
+   browser or CLI. Its runtime key needs Tunnels Read + Use; creating a tunnel needs Manage.
+   Reuse a valid local secret reference where available. If a new secret or approval requires the
+   user, prepare the exact screen or private local input and ask only for that action, then perform
+   the remaining setup yourself. Never request secrets in chat or print them in command output.
 3. With the real tunnel ID and chosen MCP port, create a private profile:
 
    ```text
@@ -124,6 +143,8 @@ path, worker/tunnel startup method, connection name, browser/mode and PASS/FAIL/
 Do not store credentials in this note. On later turns, reuse it and check readiness; no repeated
 account setup. Report text delegation, direct editing, callbacks and chat cleanup separately;
 do not turn partial success into an installation PASS.
+If a user-only action interrupts setup, save the completed steps and exact next action in this note
+before pausing. After the user responds, continue the same installation rather than starting over.
 
 Repository acceptance was exercised on macOS with Node.js 22 and 26, including isolated local
 worker/client startup, CRUD, callbacks and restart tests. The existing authenticated WebGPT path
