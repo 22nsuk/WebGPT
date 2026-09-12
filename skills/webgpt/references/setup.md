@@ -41,6 +41,9 @@ or local tunnel profiles. Reuse a compatible connection and its settings after v
 and endpoint; a connection name alone is not proof. Do not request new tunnels, keys or account
 permissions merely because the skill was freshly installed. Do not ask the user to carry out
 navigation, configuration or commands that your available tools can perform.
+Inspect the connection's settings, not just its name/tools in the composer. When replacing a
+legacy Tunnel connection with HTTPS, verify its configured type and full URL against the live
+endpoint before the probe; a listed tool can still point to a terminated old tunnel.
 
 Text-only delegation can run without a workspace connection, with 15-minute completion checks.
 For **local file access or event-driven completion**, continue below. An existing authorized connector
