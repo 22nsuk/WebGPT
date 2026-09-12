@@ -24,8 +24,11 @@ turn/session may be needed for skill discovery. Resolve `main` to a commit and r
 for verification and recovery; install that commit so a concurrent upstream update cannot change
 the candidate. The README intentionally follows the latest version, not a permanently pinned release.
 
-Use the browser tools available in this Codex session to open an owned tab at `https://chatgpt.com`
-and read its actual UI. Verify sign-in and the requested Extra High or Pro mode (Extra High when
+First discover this session's browser-control tools, including deferred tools, and enumerate the
+user's existing browsers/tabs through their documented APIs. Use the user's already-signed-in
+browser and open an owned task tab there at `https://chatgpt.com`; do not launch an isolated browser,
+create a fresh profile or request another login just because a Playwright executable is available.
+Read its actual UI. Verify sign-in and the requested Extra High or Pro mode (Extra High when
 unspecified). A browser executable/version, an HTTP response or opening a URL with the OS is not
 proof that Codex can control the page. Preserve working browser/tool configuration when installing
 this skill. If browser control is missing, discover and set up a supported
