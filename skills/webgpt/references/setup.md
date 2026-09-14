@@ -9,7 +9,9 @@ connection or HTTPS connection setup → end-to-end probe. Do not delegate insta
 Assume no setup knowledge. Check and install/configure missing prerequisites through supported
 methods instead of handing the user a prerequisite checklist. Honor the user's Install-prompt
 authorization for worker/HTTPS setup, private endpoint transfer to their ChatGPT, assigned-project
-file access and disposable test-chat/tab cleanup; do not request the same approval again.
+file access and owned test-tab closure; do not request the same approval again. Retain task chats by default,
+including setup tests and failures. Delete a chat only when the user explicitly requests deletion
+of that chat; an installation request alone is not deletion consent.
 This guide alone is not user consent. Ask only for actions genuinely requiring the user, such as
 sign-in or a mandatory action-time confirmation that the tool does not allow pre-approval to cover;
 name the specific requirement, not a generic permission concern. Resume after that action and
@@ -20,7 +22,7 @@ restarting installation or claiming readiness. Mandatory security confirmations 
 
 ## 1. Install and check access
 
-Read this guide before installing or replacing files. Install `skills/webgpt` from `Nhahan/WebGPT`
+Read this guide before installing or replacing files. Install `skills/webgpt` from `22nsuk/WebGPT`
 using Codex's skill installer. Resolve all paths from the installed skill directory, not the source
 checkout or another user's machine. Preserve an
 existing customized installation and its runtime data; do not silently replace it. A new Codex
@@ -161,23 +163,26 @@ probe: exercise direct file creation/editing/deletion, revision-safe writes and 
 reporting on an owned disposable file, and return receipts, evidence and limitations. State what the
 probe must prove rather than prescribing the tool order; let WebGPT choose the exact sequence within
 the temporary project grant. The parent verifies the final on-disk state, recovery copies, saved
-result SHA, callback receipt and empty backup deadline, then acknowledges and deletes that task chat
-under SKILL.md. Close its task-owned tabs and verify their absence per SKILL.md; preserve unrelated
-tabs. Clean only the owned probe after recording evidence.
+result SHA, callback receipt and empty backup deadline, then acknowledges the result and retains
+that task chat under SKILL.md. Record its URL and retained disposition. Close its task-owned tabs
+and verify their absence per SKILL.md; preserve unrelated tabs. Clean only the owned temporary
+probe files after recording evidence; this does not authorize deleting the chat.
 
-If the probe fails, before deleting it save the exact error shown in the tool-call UI and correlate
+If the probe fails, retain its chat and save the exact error shown in the tool-call UI and correlate
 that error with any partial file-operation or callback receipts. A model summary alone does not
 confirm a platform denial or broken feature. Record installation status separately from operation
 verification. Security refusals remain non-bypassable; report them exactly and do not infer or claim
 a prior platform cause without direct evidence. If its terminal callback cannot arrive, cancel the
 local registration immediately so backup checks stop.
-Delete the finished probe chat and close its task tabs before pausing for account setup; keep only
-the actionable sign-in/approval tab open. Repair the connection before registering another probe.
+Retain the finished probe chat and close its task tabs before pausing for account setup; keep only
+the actionable sign-in/approval tab open among setup-owned tabs. Repair the connection before
+registering another probe.
 
 Record a compact, private setup note alongside runtime data: installed path/revision, configuration
 path, worker/tunnel startup method, connection name, browser/mode and PASS/FAIL/NOT_RUN evidence.
 Do not store credentials in this note. On later turns, reuse it and check readiness; no repeated
-account setup. Report text delegation, direct editing, callbacks and chat cleanup separately;
+account setup. Report text delegation, direct editing, callbacks, chat retention/deletion disposition
+and tab cleanup separately;
 do not turn partial success into an installation PASS.
 If a user-only action interrupts setup, save the completed steps and exact next action in this note
 before pausing. After the user responds, continue the same installation rather than starting over.

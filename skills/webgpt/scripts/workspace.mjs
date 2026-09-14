@@ -6,9 +6,12 @@ import { homedir } from 'node:os';
 const MAX_BYTES = 1024 * 1024;
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const metadata = path => { try { return lstatSync(path); } catch (e) { if (e.code === 'ENOENT') return null; throw e; } };
+// Apply one portable Git-metadata policy before filesystem access and when listing.
+// Windows aliases include case variants, trailing dots/spaces, GIT~1 and NTFS streams.
+const isGitMetadataName = name => /^(?:\.git|git~1)[ .]*(?::|$)/i.test(name);
 function relativeFile(path) {
-  if (typeof path !== 'string' || !path || isAbsolute(path) || /[\\\x00-\x1f]/.test(path)
-      || path.split('/').some(p => !p || p === '.' || p === '..' || p === '.git')) throw Error('invalid path or Git metadata');
+  if (typeof path !== 'string' || !path || isAbsolute(path) || /[\\:\x00-\x1f]/.test(path)
+      || path.split('/').some(p => !p.replace(/[ .]+$/, '') || isGitMetadataName(p))) throw Error('invalid path or Git metadata');
   return path;
 }
 export function grantWorkspace(input) {
@@ -50,7 +53,7 @@ function snapshot(path) {
 }
 export function readWorkspace(grant,path) {return {path,...snapshot(target(grant,path))};}
 export function listWorkspace(grant,path) {
-  const entries=readdirSync(target(grant,path,false,false,true),{withFileTypes:true}).filter(e=>e.name!=='.git').sort((a,b)=>a.name.localeCompare(b.name));
+  const entries=readdirSync(target(grant,path,false,false,true),{withFileTypes:true}).filter(e=>!isGitMetadataName(e.name)).sort((a,b)=>a.name.localeCompare(b.name));
   return {path,entries:entries.slice(0,500).map(e=>({name:e.name,type:e.isSymbolicLink()?'symlink':e.isDirectory()?'directory':'file'})),truncated:entries.length>500};
 }
 export function changeWorkspace(grant,dir,taskId,{path,text,expectedSha256},deleting=false) {

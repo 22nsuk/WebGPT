@@ -54,7 +54,8 @@ This is the protocol available to the worker, not a sequence to copy into ordina
   replaces a file using its read revision; `delete_file(token,path,expectedSha256)` removes a read
   file. These directly change local files; Codex does not apply a returned patch. No recursive
   deletion. Content is UTF-8, at most 1 MiB/file. MCP project-relative paths always use `/`,
-  including on Windows.
+  including on Windows. Drive-relative paths, NTFS stream syntax (`:`), and path components
+  consisting only of dots/spaces are rejected before filesystem access on every platform.
 - `submit_result(token,status,summary,result)` ends the task with status `completed`, `failed` or
   `cancelled`. Include the deliverable, any changed paths/receipts, checks and limitations;
   unexecuted checks are NOT_RUN. Submission saves the result, closes file access and removes backup
@@ -63,7 +64,10 @@ This is the protocol available to the worker, not a sequence to copy into ordina
 With no workspace grant, only `get_task`, `read_input` and `submit_result` are available to the task.
 
 The service rejects stale revisions, symlinks/hardlinks, traversal and Git metadata access; Git
-remains the parent's responsibility. Other project text files need no individual grant. Never
+remains the parent's responsibility. The same metadata-name check applies to every path component
+and directory listing: case variants of `.git`, trailing dots/spaces, `GIT~1` and NTFS stream
+aliases are protected on every platform. `.gitignore`, `.gitattributes`, `.gitmodules` and `.github`
+are ordinary project paths, not Git metadata. Other project text files need no individual grant. Never
 transmit secrets unnecessarily. Originals and operation receipts are retained under the private data
 directory's `recovery/<task-id>/`; deletions are recoverable by the parent, never silently restored.
 This is for cooperative developer workspaces, not isolation from hostile local filesystem races.
@@ -98,7 +102,10 @@ Terminal tasks lose deadlines immediately, independent of collection/chat deleti
 batch is terminal, stop waiting; never reschedule its checks. State and results survive restarts.
 The active parent handles due browser checks; this is not a cron job or after-final wake-up service,
 and timed-out wait resumptions can still cost tokens. Keep the shared worker running and preserve
-the task/chat ledger for recovery; delete task chats per SKILL.md.
+the task/chat ledger for recovery. Retain task chats by default, including setup tests and failures;
+close only their owned tabs after collection per SKILL.md. Chat retention never delays acknowledgment,
+token revocation, cancellation or removal of backup deadlines. Delete a chat only when the user
+explicitly requests deletion of that chat.
 
 On restart, applied recovery journals restore missing change receipts. An incomplete/unreadable
 journal produces `recoveryRequired` in `status`/`wait` and `get_task`, blocking further edits and

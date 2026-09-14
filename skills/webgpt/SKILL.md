@@ -1,6 +1,6 @@
 ---
 name: webgpt
-description: Use when the user requests WebGPT, including xh/xhigh or p/pro. Delegate tasks to the user's signed-in ChatGPT on the web, collect and verify results, and clean up task chats.
+description: Use when the user requests WebGPT, including xh/xhigh or p/pro. Delegate tasks to the user's signed-in ChatGPT on the web, collect and verify results, and retain task chats by default.
 ---
 
 # WebGPT
@@ -26,7 +26,7 @@ Do not invent access, copy cookies, use private browser APIs or take over unrela
   protocol or prescribe routine tool-by-tool sequences. Supply source material in full when needed
   for the task; omit credentials and unrelated data.
 - Keep a private ledger: task ID, objective, ownership, allowed inputs/actions, URL/tab IDs (including recovery tabs), output
-  paths, work/cleanup states and last backup check. Preserve it for handoffs.
+  paths, work/cleanup states, chat retention/deletion disposition and last backup check. Preserve it for handoffs.
 - Development means WebGPT directly reads/creates/edits/deletes project files through a verified
   connector. Use [workspace.md](references/workspace.md) for task registration and completion.
   Grant the project root and `edit` mode, not per-file lists; use `read` for reviews/analysis.
@@ -66,30 +66,42 @@ cancel abandoned registrations/deadlines and end waits when the batch is termina
 
 ## Close
 
-Track work (`RUNNING → COLLECTED → VERIFIED` or `FAILED/CANCELLED`) separately from cleanup
-(`PENDING → CHAT_DELETED → DONE` or `BLOCKED` with reason/next action). Cleanup requires verified
-chat deletion and task-tab closure. After saving output and recording its
+Retain task chats by default, including setup tests, failed tasks and recovery chats.
+Do not delete or archive them automatically. A setup or delegation request is not deletion
+consent; do not ask about deletion during routine completion. Keep their URLs in the private ledger
+so the user can revisit the context and evidence.
+
+Track work (`RUNNING → COLLECTED → VERIFIED` or `FAILED/CANCELLED`) separately from cleanup.
+The default cleanup path is `PENDING → CHAT_RETAINED → DONE`; only explicitly requested deletion
+uses `PENDING → CHAT_DELETED → DONE`. Either path can be `BLOCKED` with a reason/next action.
+Retaining a chat is successful cleanup, not a blocker. After saving output and recording its
 accepted/rejected/partial disposition, including failures:
 
 1. Stop remaining owned generation. Never erase active work, uncollected output or its only copy.
-2. Workflow requests include permanent deletion of chats created for that task. Ask no initial or
-   repeated consent; delete the exact owned chat (not archive) and accept its matching dialog.
-   Follow actual tool policy: use pre-approval for explicitly disposable data in a user-designated
-   test workflow where permitted; never relabel ordinary chats as tests. Honor action-time
-   confirmation only where genuinely required. Exclude personal/unrelated chats.
-3. Verify redirect/unavailability and exact Recent entry disappearance where exposed. Tab closure,
-   model claims or unrelated navigation are not deletion proof; preserve saved results/evidence.
-   Then close the exact task-owned tabs, including recovery duplicates and tabs redirected to home.
-   Recheck IDs/current URLs against the ledger; preserve unrelated or repurposed tabs and the browser.
-   Verify those task-tab IDs are absent from the tab list. Do not mark them keep-open/deliverable or
-   open a replacement home tab. If closure fails, retain deletion evidence and report tab cleanup BLOCKED.
+   Acknowledge collected results or cancel abandoned registrations per workspace.md regardless
+   of chat retention; retained chats must not keep task tokens or backup checks active.
+2. By default, record `CHAT_RETAINED` and preserve the chat without opening Delete or Archive.
+   Delete a chat only when the user explicitly requests deletion of that chat or a clearly
+   identified set of task chats. A chat being a test or disposable does not itself grant consent.
+   Follow actual tool policy and any mandatory action-time confirmation; exclude unrelated chats.
+   For requested deletion, verify the exact owned chat, accept only its matching dialog, then verify
+   redirect/unavailability and exact Recent entry disappearance where exposed. Tab closure, model
+   claims or unrelated navigation are not deletion proof. Preserve saved results/evidence.
+3. Close the exact terminal task-owned tabs after collection, whether the chats are retained or
+   explicitly deleted, including recovery duplicates and tabs redirected to home. Recheck IDs/current
+   URLs against the ledger; preserve unrelated or repurposed tabs and the browser. Keep the saved
+   URLs for retained chats. Verify those task-tab IDs are absent from the tab list; do not open a
+   replacement home tab. If closure fails, preserve the retention/deletion disposition and report
+   tab cleanup `BLOCKED`.
 4. Reconcile all owned task chats, including failed setup/recovery. If access/UI/confirmation blocks
-   cleanup, preserve URL/tab IDs, report BLOCKED and next action, and retry when access returns.
+   an explicitly requested deletion or tab closure, preserve URL/tab IDs, report `BLOCKED` and the
+   next action, and retry when access returns. Do not schedule deletion for retained chats.
    Preserve shared services, other sessions and browsers; clean only owned temporary resources.
 
-Batch grounded menu → Delete → matching-dialog acceptance → deletion verification → task-tab closure
-and tab-list verification where supported. Use
-targeted reads only for new controls and target/outcome checks; no fixed sleeps, redundant full
+Batch known actions and target/outcome checks where supported; use targeted reads for new controls.
+Never open deletion controls on the default retention path. For explicitly requested deletion,
+verify deletion before task-tab closure and tab-list verification. No fixed sleeps, redundant full
 snapshots, commentary or round trips between known actions. Never skip tool gates or target checks.
-Self-deletion is optional only through an exposed, documented, authorized capability after saved
-output acknowledgment; Codex still verifies deletion and closes the task tabs, not the browser.
+Self-deletion is optional only when the user explicitly requested that deletion, through an exposed,
+documented, authorized capability after saved-output acknowledgment; Codex still verifies the
+requested deletion and closes only task-owned tabs, not the browser.
