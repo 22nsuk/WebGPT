@@ -30,6 +30,13 @@ turn/session may be needed for skill discovery. Resolve `main` to a commit and r
 for verification and recovery; install that commit so a concurrent upstream update cannot change
 the candidate. The README intentionally follows the latest version, not a permanently pinned release.
 
+Update the fork worker and client together only when the identified service is idle; preserve its
+configuration, task state, results and recovery records. Existing file grants remain compatible.
+Task-scoped waits require the updated worker; a protocol error is not permission to restart active
+work. This fork rejects terminal/open grants and live upstream terminal state. Retire those sessions
+with their matching worker before choosing a separate file-worker setup; never reinterpret or
+overwrite active grants. See [fork-policy.md](fork-policy.md) for the integration boundary.
+
 First discover this session's browser-control tools, including deferred tools, and enumerate the
 user's existing browsers/tabs through their documented APIs. Use the user's already-signed-in
 browser and open an owned task tab there at `https://chatgpt.com`; do not launch an isolated browser,
@@ -155,7 +162,7 @@ do not claim direct editing works or apply WebGPT's patches as a substitute.
 
 ## 4. Verify the installed path
 
-Run `node --test <skill>/scripts/*.test.mjs` (expand the file list on shells without glob expansion).
+Run `node --test --test-reporter=tap` from the installed skill directory (no shell glob needed).
 Then follow [workspace.md](workspace.md) to register one edit task for an **owned temporary project**.
 Record its task ID and owned chat/tab IDs in the private setup note as they are created.
 In a real chat using the requested mode (Extra High or Pro), give WebGPT a natural, outcome-oriented
@@ -163,8 +170,8 @@ probe: exercise direct file creation/editing/deletion, revision-safe writes and 
 reporting on an owned disposable file, and return receipts, evidence and limitations. State what the
 probe must prove rather than prescribing the tool order; let WebGPT choose the exact sequence within
 the temporary project grant. The parent verifies the final on-disk state, recovery copies, saved
-result SHA, callback receipt and empty backup deadline, then acknowledges the result and retains
-that task chat under SKILL.md. Record its URL and retained disposition. Close its task-owned tabs
+result SHA, callback receipt and empty backup deadline, then uses `client.mjs collect <task-id>`
+to verify the saved bytes and acknowledge the result. Retain that task chat under SKILL.md. Record its URL and retained disposition. Close its task-owned tabs
 and verify their absence per SKILL.md; preserve unrelated tabs. Clean only the owned temporary
 probe files after recording evidence; this does not authorize deleting the chat.
 
@@ -187,7 +194,7 @@ do not turn partial success into an installation PASS.
 If a user-only action interrupts setup, save the completed steps and exact next action in this note
 before pausing. After the user responds, continue the same installation rather than starting over.
 
-Repository acceptance was exercised on macOS with Node.js 22 and 26, including isolated local
-worker/client startup, CRUD, callbacks and restart tests. The existing authenticated WebGPT path
-was exercised separately. The HTTPS replacement's fresh-install browser probe and Linux/Windows end-to-end behavior
-remain NOT_RUN; perform the probe above on the user's actual installation before reporting it ready.
+Historical upstream acceptance was reported on macOS with Node.js 22 and 26; that is not
+validation of this fork's current integration. Run the local suite and the browser probe above on
+the actual installation. Report OS-specific, connector and browser checks as NOT_RUN until they
+have actually run; passing local HTTP tests alone does not establish end-to-end readiness.
