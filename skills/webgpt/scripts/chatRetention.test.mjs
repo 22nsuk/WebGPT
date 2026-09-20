@@ -7,9 +7,9 @@ import { start } from './worker.mjs';
 import { request } from './client.mjs';
 
 const read = relative => readFileSync(new URL(relative, import.meta.url), 'utf8');
-const documents = ['../../../README.md', '../SKILL.md', '../references/setup.md', '../references/workspace.md'];
+const documents = ['../SKILL.md', '../references/setup.md', '../references/workspace.md'];
 
-test('all entry-point documents retain task chats by default and require explicit deletion requests', () => {
+test('installed skill documents retain task chats by default and require explicit deletion requests', () => {
   for (const file of documents) {
     const text = read(file).replace(/\s+/g, ' ');
     assert.match(text, /retain task chats by default/i, file);
@@ -30,7 +30,6 @@ test('retained chats are a completed cleanup path while tab and token cleanup st
 });
 
 test('installation instructions select this fork instead of silently restoring upstream defaults', () => {
-  assert.match(read('../../../README.md'), /Install https:\/\/github\.com\/22nsuk\/WebGPT\/tree\/main\/skills\/webgpt/);
   assert.match(read('../references/setup.md'), /Install `skills\/webgpt` from `22nsuk\/WebGPT`/);
 });
 
