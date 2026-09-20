@@ -32,6 +32,11 @@ the candidate. The README intentionally follows the latest version, not a perman
 
 Update the fork worker and client together only when the identified service is idle; preserve its
 configuration, task state, results and recovery records. Existing file grants remain compatible.
+Check `client.mjs tasks`: `status` alone omits running work before its backup deadline. For an
+older worker without `tasks`, inspect its existing ledger and local state privately to establish
+that no registrations are running; never print task tokens or infer idle from an empty event queue.
+Collect finished results and confirm no running tasks before an authorized update. Refresh connection
+tool schemas afterward; `list_files` must expose optional `cursor` and `limit` with the same seven tools.
 Task-scoped waits require the updated worker; a protocol error is not permission to restart active
 work. This fork rejects terminal/open grants and live upstream terminal state. Retire those sessions
 with their matching worker before choosing a separate file-worker setup; never reinterpret or
@@ -89,6 +94,10 @@ when overriding defaults; set `publicMcp:true` before forwarding MCP over public
 `WEBGPT_CONFIG` selects another configuration file; `WEBGPT_DATA_DIR`
 overrides only the data directory. Give the worker and client the same configuration/environment.
 Keep data/configuration outside projects and installed skill files, private to the current user.
+The worker rejects a project root containing or located inside its private data directory,
+including recovery subdirectories, even for read-only tasks.
+Existing overlapping grants remain cancellable but cannot use file tools; choose a separate, safe
+project root rather than moving active runtime data or weakening the check.
 Do not publish `controller.key`, task tokens, results, recovery copies or tunnel credentials.
 On POSIX, set the owned WebGPT data directory to mode `0700` and verify it before starting the worker;
 recursive directory creation does not restrict an already-existing directory's permissions.

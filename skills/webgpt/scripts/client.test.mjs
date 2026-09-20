@@ -18,7 +18,8 @@ const invoke = async (s, name, args) => {
   return (await response.json()).result;
 };
 async function fixture(run) {
-  const dir = mkdtempSync(join(tmpdir(), 'webgpt-portable-test-'));
+  const base = mkdtempSync(join(tmpdir(), 'webgpt-portable-test-'));
+  const dir = join(base, 'runtime');
   let clock = 1000;
   let service = await start({ dir, port: 0, controlPort: 0, now: () => clock });
   const config = { dataDir: dir, mcpPort: service.mcpPort, controlPort: service.controlPort };
@@ -28,8 +29,8 @@ async function fixture(run) {
     service = await start({ dir, port: 0, controlPort: 0, now: () => clock });
     config.mcpPort = service.mcpPort; config.controlPort = service.controlPort;
   };
-  try { await run({ dir, get service() { return service; }, config, admin, restart, advance: ms => { clock += ms; } }); }
-  finally { await service.close(); rmSync(dir, { recursive: true }); }
+  try { await run({ base, dir, get service() { return service; }, config, admin, restart, advance: ms => { clock += ms; } }); }
+  finally { await service.close(); rmSync(base, { recursive: true }); }
 }
 
 test('portable config uses absolute paths and independent ports, with explicit overrides', async () => {
@@ -79,7 +80,8 @@ test('controller authenticates, rejects invalid calls, and returns errors withou
   await assert.rejects(admin('register'), /payload/);
   await assert.rejects(admin('ack', { id: 'missing' }), /unknown task/);
   await admin('register', { id: 'a', instructions: 'Review', inputs: {} });
-  await assert.rejects(admin('register', { id: 'a', instructions: 'Review', inputs: {} }), /invalid task/);
+  assert.equal((await admin('register', { id: 'a', instructions: 'Review', inputs: {} })).duplicate, true);
+  await assert.rejects(admin('register', { id: 'a', instructions: 'Different review', inputs: {} }), /task ID already exists/);
   await assert.rejects(admin('ack', { id: 'a' }), /not complete/);
   await admin('cancel', { id: 'a' });
 }));
@@ -206,7 +208,7 @@ test('one data directory cannot be opened by two workers even on different ports
 }));
 
 test('restart restores missing applied receipts and surfaces ambiguous crash journals without replaying writes', () => fixture(async f => {
-  const root = join(f.dir, 'project'); mkdirSync(root);
+  const root = join(f.base, 'project'); mkdirSync(root);
   const a = await f.admin('register', { id: 'a', instructions: 'edit', inputs: {}, workspace: { root, mode: 'edit' } });
   const changed = await invoke(f.service, 'write_file', { token: a.token, path: 'a.txt', text: 'applied', expectedSha256: null });
   assert.equal(changed.isError, false);

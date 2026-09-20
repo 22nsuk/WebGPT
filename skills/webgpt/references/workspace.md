@@ -41,15 +41,32 @@ stale edits. Only the parent can choose the project root and mode.
 
 Send the returned **task token** privately to its WebGPT worker.
 
+If a registration response is lost, resubmit the exact payload with the same ID. An identical
+running registration returns the original token with `duplicate:true` without renewing its deadline.
+Different inputs, instructions, grants or a terminal task reject ID reuse. This is controller retry
+handling, not permission to send the chat prompt twice. IDs are strings and cannot differ only by
+case from an existing ID or be Windows device names (`CON`, `NUL`, `COM1`, etc.), because IDs become
+result and recovery filenames. Other existing IDs and JSON payload shapes remain supported.
+
+The project root cannot contain or be located inside the private worker data directory, including
+its recovery subdirectories. Registration checks this, and file calls recheck it for older saved
+grants. Keep projects and runtime data in separate trees. This
+protects worker credentials and records, not arbitrary secrets such as a project's `.env` file.
+
+
 ### Worker tool reference
 
 This is the protocol available to the worker, not a sequence to copy into ordinary delegation prompts:
 
 - `get_task(token)` returns instructions, input names and any workspace grant;
   `read_input(token,name)` reads a named string supplied in `inputs`.
-- When local files are needed and granted, `list_files(token,path)` lists a directory
-  (`.` for root, up to 500 entries with a truncation flag), and `read_file(token,path)` gets text
-  and SHA-256 (missing files return `exists:false`).
+- When local files are needed and granted, `list_files(token,path,limit?,cursor?)` lists a directory
+  (`.` for root, default/max 500 entries per page). When `truncated:true`, pass the returned
+  `nextCursor` as `cursor` with the same path; continue until `truncated:false`. The cursor is opaque,
+  scoped to the directory listing and not a permission grant. Changed names/types invalidate it;
+  restart without a cursor rather than silently accepting an incomplete listing. `limit` is 1–500.
+  Old calls without optional arguments keep their result shape for a non-truncated directory.
+  `read_file(token,path)` gets text and SHA-256 (missing files return `exists:false`).
 - For requested edits, `write_file(token,path,text,expectedSha256)` creates (`null` revision) or
   replaces a file using its read revision; `delete_file(token,path,expectedSha256)` removes a read
   file. These directly change local files; Codex does not apply a returned patch. No recursive
@@ -123,8 +140,15 @@ rather than repeatedly retrying or restarting active tasks.
   remains for compatibility; do not use it to bypass failed integrity checks.
 - Abandoned tasks: stop their actual generation separately, preserve partial output and
   `await request('cancel', {id})`. Cancellation disables the registration, not the browser chat.
-- `await request('status')` is read-only. CLI `ack`, `checked` and `cancel` accept either a returned
-  task ID or the existing JSON file containing `{ "id": "..." }`. Registration JSON is unchanged.
+- `await request('status')` is read-only and reports events/deadlines, not all running tasks.
+  `await request('tasks')` or CLI `tasks` returns outstanding IDs, statuses, deadlines, project roots
+  and modes, plus running/uncollected counts. It does not return tokens, instructions or input text.
+  Use it for recovery and idle checks, not continuous progress polling. It is authenticated on the
+  loopback controller only and is not an eighth MCP tool.
+- CLI `ack`, `checked` and `cancel` accept a task ID or a JSON path containing `{ "id": "..." }`.
+  `wait` accepts IDs or a JSON path with `id`/`ids`. A valid task ID wins over a same-named local file;
+  use `cancel --file payload` or `wait --file payload` to read an explicitly named JSON file.
+  Existing `.json` paths still work without the flag. Registration JSON is unchanged.
 
 `waitForTasks(ids, config, {signal})` accepts an AbortSignal; aborting a wait only stops that caller's
 HTTP requests, not task execution or deadlines. Keep the owned IDs for resumption or explicit
@@ -138,6 +162,21 @@ Retain task chats by default, including setup tests and failures; close only the
 collection per SKILL.md. Chat retention never delays acknowledgment, token revocation, cancellation
 or removal of backup deadlines. Delete a chat only when the user explicitly requests deletion of
 that chat.
+
+State transitions are published only after the state-file write and replacement succeed. A failed
+registration creates no phantom task; failed completion, acknowledgment, cancellation or deadline
+updates do not publish that transition or retire access. Preserve the error and fix the underlying
+storage issue before retrying. A result file may exist after a failed completion-state save; its
+existence alone is not an accepted completion. Identical result retries are acknowledged only after
+state was actually saved. Results are written through a temporary file before replacement.
+
+A file edit can already have happened when saving its receipt fails. The worker immediately reports
+`recoveryRequired` and blocks later edits and successful completion for that task, preserving its
+journals and files. Read-only inspection and independent tasks remain available. Do not blindly
+repeat the write or restart an active shared worker. Inspect the current file, journal and backup;
+then follow the recovery procedure below. Failed/cancelled partial results remain permitted once
+storage works. These are process-level error/recovery guarantees, not power-loss, fsync, hardware
+failure or hostile concurrent-filesystem isolation guarantees.
 
 On restart, applied recovery journals restore missing change receipts. An incomplete/unreadable
 journal produces `recoveryRequired` in `status`/`wait` and `get_task`, blocking further edits and

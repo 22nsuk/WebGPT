@@ -15,7 +15,8 @@ const cli = fileURLToPath(new URL('./client.mjs', import.meta.url));
 const snapshot = { events: [], backupDue: [] };
 
 async function fixture(run) {
-  const dir = mkdtempSync(join(tmpdir(), 'webgpt-lifecycle-'));
+  const base = mkdtempSync(join(tmpdir(), 'webgpt-lifecycle-'));
+  const dir = join(base, 'runtime');
   let clock = 1000;
   let service = await start({ dir, port: 0, controlPort: 0, now: () => clock, waitMs: 20 });
   const config = { dataDir: dir, mcpPort: service.mcpPort, controlPort: service.controlPort };
@@ -33,8 +34,8 @@ async function fixture(run) {
     service = await start({ dir, port: 0, controlPort: 0, now: () => clock, waitMs: 20 });
     config.mcpPort = service.mcpPort; config.controlPort = service.controlPort;
   };
-  try { await run({ dir, config, admin, call, register, complete, restart, advance: ms => { clock += ms; } }); }
-  finally { await service.close(); rmSync(dir, { recursive: true, force: true }); }
+  try { await run({ base, dir, config, admin, call, register, complete, restart, advance: ms => { clock += ms; } }); }
+  finally { await service.close(); rmSync(base, { recursive: true, force: true }); }
 }
 
 // A deterministic transport fixture verifies renewal and compatibility errors without 55s sleeps.
@@ -226,7 +227,7 @@ test('upstream terminal and open registration cannot silently change the fork au
     await assert.rejects(f.admin('register', { id: 'bad', instructions: '', inputs: {}, ...extra }), /not supported/);
   }
   assert.deepEqual(await f.admin('status'), snapshot);
-  const root = join(f.dir, 'project'); mkdirSync(root);
+  const root = join(f.base, 'project'); mkdirSync(root);
   for (const mode of ['read', 'edit', 'text']) {
     const task = await f.admin('register', { id: mode, instructions: 'Check authority', inputs: {},
       ...(mode === 'text' ? {} : { workspace: { root, mode } }) });

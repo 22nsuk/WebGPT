@@ -21,6 +21,8 @@ and update rules are in [fork-policy.md](references/fork-policy.md).
   subtasks benefit from parallelism. Keep dependent steps ordered and concurrent writes disjoint.
   Reuse the chat for related follow-ups; separate unrelated work. Avoid duplicate work and reduce
   concurrency on throttling rather than repeatedly retrying.
+  If registration delivery is uncertain, retry its identical payload with the same ID, not a new
+  registration or browser message. A duplicate registration does not confirm prompt submission.
 - Prompt naturally in the user's language and requested format. Otherwise omit a title/preamble
   and let ChatGPT auto-title. Do not add chat-cleanup instructions. Delegate like a capable colleague:
   explain the objective, relevant context and deliverable/success criteria, plus ownership,
@@ -33,6 +35,8 @@ and update rules are in [fork-policy.md](references/fork-policy.md).
 - Development means WebGPT directly reads/creates/edits/deletes project files through a verified
   connector. Use [workspace.md](references/workspace.md) for task registration and completion.
   Grant the project root and `edit` mode, not per-file lists; use `read` for reviews/analysis.
+  Keep worker runtime data outside the project. Follow `list_files.nextCursor` for large directory
+  listings; restart listing on a stale cursor. Do not interpret a truncated page as the full project.
   Coordinate disjoint ownership in prompts. Preserve others' edits and unrelated files; read before
   changing, reject stale revisions and preserve recoverable originals for material deletion.
 - For local-file tasks, verify that the selected chat can call the required tools on the exact project.
@@ -60,7 +64,8 @@ a task timeout. Do not scan chats/logs/screenshots on empty waits or narrate unc
 Collect finished output even without its callback; otherwise record blockers and wait, never resend
 merely because work continues. Stopping a wait does not cancel its tasks. The parent must stay
 active: no after-final/runtime-shutdown wake-up or installed background schedule is supplied.
-Reconcile pending tasks on resume.
+Reconcile pending tasks on resume. Use `client.mjs tasks` for a credential-free inventory when recovery
+or an idle-worker check is needed; an empty event queue is not proof that no tasks are running.
 
 Collect each finished task promptly, not after the batch. Preserve full results/evidence locally,
 inspect relevant output/diffs, record disposition and focused PASS/FAIL/NOT_RUN checks, then use

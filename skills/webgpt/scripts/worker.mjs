@@ -2,7 +2,8 @@ import { createServer } from 'node:http';
 import { randomUUID, randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, renameSync, readdirSync, unlinkSync, rmdirSync, realpathSync } from 'node:fs';
 import { hostname } from 'node:os';
-import { resolve } from 'node:path';
+import { resolve, relative, isAbsolute, sep } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { pathToFileURL } from 'node:url';
 import { grantWorkspace, listWorkspace, readWorkspace, changeWorkspace } from './workspace.mjs';
 import { configuration } from './client.mjs';
@@ -10,7 +11,7 @@ import { configuration } from './client.mjs';
 const schema = properties => ({type:'object',properties,required:Object.keys(properties),additionalProperties:false});
 const str = {type:'string'};
 export const tools = [
-  {name:'list_files',description:'List one directory in the local project. Use path . for the project root. No per-file permission setup.',inputSchema:schema({token:str,path:str}),annotations:{readOnlyHint:true,openWorldHint:false}},
+  {name:'list_files',description:'List a local project directory, up to 500 entries per page. Use path . for the root. Pass nextCursor as cursor for the next page; restart without a cursor if the directory changes.',inputSchema:{...schema({token:str,path:str}),properties:{token:str,path:str,cursor:str,limit:{type:'integer',minimum:1,maximum:500}}},annotations:{readOnlyHint:true,openWorldHint:false}},
   {name:'read_file',description:'Read any text file in the registered local project and its SHA256 revision. Missing file returns exists:false. Use the task token and project-relative path.',inputSchema:schema({token:str,path:str}),annotations:{readOnlyHint:true,openWorldHint:false}},
   {name:'write_file',description:'Directly create or replace a local project text file. No per-file grants. Read first; expectedSha256 must match its revision, or null for a new file. Original is backed up. No Git or shell.',inputSchema:schema({token:str,path:str,text:str,expectedSha256:{type:['string','null']}}),annotations:{readOnlyHint:false,destructiveHint:true,openWorldHint:false}},
   {name:'delete_file',description:'Directly delete an existing local project file after reading it. Requires matching expectedSha256; original and path are saved for recovery. No directory or recursive deletion.',inputSchema:schema({token:str,path:str,expectedSha256:str}),annotations:{readOnlyHint:false,destructiveHint:true,openWorldHint:false}},
@@ -39,12 +40,27 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
     if(!/^[a-f0-9]{64}$/.test(secret))throw Error('invalid mcp-path.key');
     mcpPath+='/'+secret;
   }
-  const tasks=existsSync(statePath)?JSON.parse(readFileSync(statePath,'utf8')):[];
+  let tasks=existsSync(statePath)?JSON.parse(readFileSync(statePath,'utf8')):[];
   // Do not silently reinterpret live upstream terminal/open grants as file tasks.
   if(tasks.some(t=>!t.collected&&['terminal','mode','openKey'].some(key=>Object.hasOwn(t,key))))
     throw Error('incompatible terminal/open state; use its matching worker to retire active sessions first');
   const waiters=new Set();
-  const persist=()=>{writeFileSync(statePath+'.tmp',JSON.stringify(tasks),{mode:0o600});renameSync(statePath+'.tmp',statePath);};
+  // Publish in-memory transitions only after the matching state file was replaced.
+  // A failed write must not turn a later retry into a false success or revoke a token.
+  const persist=(next=tasks)=>{
+    writeFileSync(statePath+'.tmp',JSON.stringify(next),{mode:0o600});
+    renameSync(statePath+'.tmp',statePath);
+    tasks=next;
+  };
+  const updateTask=(task,changes)=>persist(tasks.map(t=>t===task?{...t,...changes}:t));
+  const checkDataBoundary=workspace=>{
+    if(!workspace)return;
+    const dataRoot=realpathSync(dir);
+    // Neither tree may contain the other: runtime descendants include private recovery copies.
+    for(const rel of [relative(workspace.root,dataRoot),relative(dataRoot,workspace.root)])
+      if(rel===''||(!isAbsolute(rel)&&rel!=='..'&&!rel.startsWith('..'+sep)))
+        throw Error('workspace overlaps private worker data; use a separate project root');
+  };
   const revoke=t=>{delete t.token;t.inputs={};t.instructions='';};
   // Recover recorded mutations; never guess whether an interrupted mutation was applied.
   for(const t of tasks){
@@ -65,6 +81,23 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
     return {events:selected.filter(t=>t.status!=='running'&&!t.collected).map(t=>({id:t.id,status:t.status,summary:t.summary,artifact:t.artifact,sha256:t.sha256})),backupDue:selected.filter(t=>t.status==='running'&&now()>=t.nextCheck).map(t=>t.id),...(recoveryRequired.length?{recoveryRequired}:{})};
   };
   const wake=()=>{for(const fn of [...waiters])fn();};
+  const flagUnrecordedChanges=task=>{
+    const recovery=resolve(dir,'recovery',task.id);
+    if(!existsSync(recovery))return;
+    const pending=new Set(task.recoveryRequired??[]);
+    let journals;
+    try {journals=readdirSync(recovery).filter(n=>n.endsWith('.json'));}
+    catch {task.recoveryRequired=[...pending,recovery];wake();return;}
+    for(const name of journals) {
+      const journal=resolve(recovery,name);
+      try {
+        const entry=JSON.parse(readFileSync(journal,'utf8'));
+        if(entry.state!=='applied'||!task.changes?.some(c=>c.operation===entry.operation))pending.add(journal);
+      } catch {pending.add(journal);}
+    }
+    // This safety block intentionally stays live even if state storage is unavailable.
+    if(pending.size){task.recoveryRequired=[...pending];wake();}
+  };
   const json=(res,status,value)=>{res.writeHead(status,{'content-type':'application/json','cache-control':'no-store'});res.end(JSON.stringify(value));};
   const body=async req=>{const chunks=[];let bytes=0;for await(const c of req){bytes+=c.length;if(bytes>2*1024*1024)throw Error('request too large');chunks.push(c);}return JSON.parse(Buffer.concat(chunks).toString());};
   const call=(name,args)=>{
@@ -73,11 +106,19 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
     if(name==='read_input'){if(!Object.hasOwn(t.inputs,args.name))throw Error('unknown input');return {name:args.name,text:t.inputs[args.name]};}
     if(['list_files','read_file','write_file','delete_file'].includes(name)) {
       if(t.status!=='running')throw Error('task is terminal; file access closed');
-      if(name==='list_files')return listWorkspace(t.workspace,args.path);
+      checkDataBoundary(t.workspace);
+      if(name==='list_files')return listWorkspace(t.workspace,args.path,{cursor:args.cursor,limit:args.limit});
       if(name==='read_file')return readWorkspace(t.workspace,args.path);
       if(t.recoveryRequired?.length)throw Error('interrupted mutation: supervisor recovery required before further edits');
-      const receipt=changeWorkspace(t.workspace,dir,t.id,args,name==='delete_file');
-      (t.changes??=[]).push(receipt);persist();return receipt;
+      try {
+        const receipt=changeWorkspace(t.workspace,dir,t.id,args,name==='delete_file');
+        updateTask(t,{changes:[...(t.changes??[]),receipt]});
+        return receipt;
+      } catch(e) {
+        flagUnrecordedChanges(t);
+        if(t.recoveryRequired?.length)throw Error('file operation not fully recorded; supervisor recovery required: '+e.message);
+        throw e;
+      }
     }
     if(name!=='submit_result')throw Error('unknown tool');
     if(!['completed','failed','cancelled'].includes(args.status)||typeof args.result!=='string'||typeof args.summary!=='string'||args.summary.length>2048||Buffer.byteLength(args.result)>1024*1024)throw Error('invalid result');
@@ -85,9 +126,10 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
     const sha=createHash('sha256').update(args.result).digest('hex');
     if(t.status!=='running'){if(sha!==t.sha256||args.status!==t.status||args.summary!==t.summary)throw Error('terminal result differs');return {accepted:true,duplicate:true,sha256:sha};}
     const artifact=resolve(dir,t.id+'.result.txt');
-    writeFileSync(artifact,args.result,{mode:0o600});
-    Object.assign(t,{status:args.status,summary:args.summary,artifact,sha256:sha,nextCheck:null});
-    persist();wake();return {accepted:true,sha256:sha};
+    writeFileSync(artifact+'.tmp',args.result,{mode:0o600});
+    renameSync(artifact+'.tmp',artifact);
+    updateTask(t,{status:args.status,summary:args.summary,artifact,sha256:sha,nextCheck:null});
+    wake();return {accepted:true,sha256:sha};
   };
   const mcp=createServer(async(req,res)=>{
     if(req.headers.origin)return json(res,403,{});
@@ -99,7 +141,7 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
     if(!m||typeof m!=='object'||Array.isArray(m))return json(res,400,{error:'invalid request'});
     if(m.method==='notifications/initialized'){res.writeHead(202);return res.end();}
     let result;
-    if(m.method==='initialize')result={protocolVersion:m.params?.protocolVersion??'2025-03-26',capabilities:{tools:{}},serverInfo:{name:'webgpt-worker',version:'1.3.0-fork.1'},instructions:'Read get_task with your private task token and perform the assigned task. Use read_input for supplied inputs. No workspace or file changes are required for text-only work. Use local file tools only when needed and granted; requested edits are applied directly, with revision hashes from read_file and no per-file grants. Review-only tasks cannot write. Coordinate disjoint edits if other workers share the project. Submit result once with the deliverable, any change receipts, evidence and limitations. No Git, PR, shell, or process control. Supervisor verifies results and retains task chats by default. Delete a task chat only when the user explicitly requests deletion of that chat.'};
+    if(m.method==='initialize')result={protocolVersion:m.params?.protocolVersion??'2025-03-26',capabilities:{tools:{}},serverInfo:{name:'webgpt-worker',version:'1.4.0-fork.1'},instructions:'Read get_task with your private task token and perform the assigned task. Use read_input for supplied inputs. No workspace or file changes are required for text-only work. Use local file tools only when needed and granted; requested edits are applied directly, with revision hashes from read_file and no per-file grants. Review-only tasks cannot write. Coordinate disjoint edits if other workers share the project. Submit result once with the deliverable, any change receipts, evidence and limitations. No Git, PR, shell, or process control. Supervisor verifies results and retains task chats by default. Delete a task chat only when the user explicitly requests deletion of that chat.'};
     else if(m.method==='tools/list')result={tools};
     else if(m.method==='tools/call'){try{const out=call(m.params.name,m.params.arguments??{});result={content:[{type:'text',text:JSON.stringify(out)}],structuredContent:out,isError:false};}catch(e){result={content:[{type:'text',text:e.message}],isError:true};}}
     else return json(res,200,{jsonrpc:'2.0',id:m.id??null,error:{code:-32601,message:'method not found'}});
@@ -113,9 +155,9 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
         const ids=url.searchParams.getAll('id');
         if([...url.searchParams.keys()].some(key=>key!=='id'))throw Error('invalid wait query');
         if(ids.some(id=>!tasks.some(t=>t.id===id)))throw Error('unknown task');
-        const selected=ids.length?tasks.filter(t=>ids.includes(t.id)):tasks;
-        const snapshot=()=>({...view(selected),...(ids.length?{settled:!selected.some(t=>t.status==='running')}:{})});
-        const ready=v=>v.events.length||v.backupDue.length||v.recoveryRequired?.length||!selected.some(t=>t.status==='running');
+        const selected=()=>ids.length?tasks.filter(t=>ids.includes(t.id)):tasks;
+        const snapshot=()=>({...view(selected()),...(ids.length?{settled:!selected().some(t=>t.status==='running')}:{})});
+        const ready=v=>v.events.length||v.backupDue.length||v.recoveryRequired?.length||!selected().some(t=>t.status==='running');
         const v=snapshot();if(ready(v))return json(res,200,v);
         let timer;
         const done=(timeout=false)=>{
@@ -125,25 +167,48 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
           if(!res.destroyed)json(res,200,v);
         };
         waiters.add(done);
-        const due=Math.min(...selected.filter(t=>t.status==='running').map(t=>t.nextCheck-now()));
+        const due=Math.min(...selected().filter(t=>t.status==='running').map(t=>t.nextCheck-now()));
         timer=setTimeout(()=>done(true),Math.max(1,Math.min(waitMs,due)));
         res.on('close',()=>{clearTimeout(timer);waiters.delete(done);});return;
       }
       if(req.method==='GET'&&req.url==='/status')return json(res,200,view());
+      if(req.method==='GET'&&req.url==='/tasks') {
+        const active=tasks.filter(t=>t.status==='running'||!t.collected);
+        return json(res,200,{running:active.filter(t=>t.status==='running').length,
+          uncollected:active.filter(t=>t.status!=='running'&&!t.collected).length,
+          tasks:active.map(t=>({id:t.id,status:t.status,collected:t.collected,nextCheck:t.nextCheck,
+            workspace:t.workspace?{root:t.workspace.root,mode:t.workspace.mode}:null,
+            recoveryRequired:Boolean(t.recoveryRequired?.length)}))});
+      }
+
       if(req.method!=='POST')return json(res,404,{});
       const a=await body(req);
       if(req.url==='/register'){
         if(a&&['terminal','mode'].some(key=>Object.hasOwn(a,key)))throw Error('terminal/open modes are not supported by this file-scoped fork');
-        if(!/^[a-zA-Z0-9_-]{1,80}$/.test(a.id)||tasks.some(t=>t.id===a.id)||typeof a.instructions!=='string'||!a.inputs||typeof a.inputs!=='object'||Array.isArray(a.inputs)||Object.values(a.inputs).some(v=>typeof v!=='string'))throw Error('invalid task');
+        if(!a||typeof a.id!=='string'||!/^[a-zA-Z0-9_-]{1,80}$/.test(a.id)||typeof a.instructions!=='string'||!a.inputs||typeof a.inputs!=='object'||Array.isArray(a.inputs)||Object.values(a.inputs).some(v=>typeof v!=='string'))throw Error('invalid task');
+        // IDs become result/recovery filenames, so keep them portable across Windows and POSIX.
+        if(/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(a.id))throw Error('invalid task ID: reserved Windows filename');
         const workspace=grantWorkspace(a.workspace);
-        const t={id:a.id,token:randomUUID(),instructions:a.instructions,inputs:a.inputs,workspace,changes:[],status:'running',nextCheck:now()+backupMs,collected:false};tasks.push(t);persist();wake();return json(res,200,{id:t.id,token:t.token});
+        checkDataBoundary(workspace);
+        const existing=tasks.find(t=>t.id===a.id);
+        if(!existing&&tasks.some(t=>typeof t.id==='string'&&t.id.toLowerCase()===a.id.toLowerCase()))
+          throw Error('task ID conflicts with an existing ID on case-insensitive filesystems');
+        if(existing) {
+          if(existing.status==='running'&&!existing.collected&&existing.token&&existing.instructions===a.instructions
+              &&isDeepStrictEqual(existing.inputs,a.inputs)&&isDeepStrictEqual(existing.workspace??null,workspace))
+            return json(res,200,{id:existing.id,token:existing.token,duplicate:true});
+          throw Error('task ID already exists with different inputs, grant or terminal state');
+        }
+        const t={id:a.id,token:randomUUID(),instructions:a.instructions,inputs:a.inputs,workspace,changes:[],status:'running',nextCheck:now()+backupMs,collected:false};
+        persist([...tasks,t]);wake();return json(res,200,{id:t.id,token:t.token});
       }
       const t=tasks.find(t=>t.id===a.id);if(!t)throw Error('unknown task');
-      if(req.url==='/ack'){if(t.status==='running')throw Error('not complete');t.collected=true;revoke(t);}
-      else if(req.url==='/checked'){if(t.status==='running')t.nextCheck=now()+backupMs;}
-      else if(req.url==='/cancel'){if(t.status==='running'){t.status='cancelled';t.summary='Cancelled by supervisor';t.nextCheck=null;t.collected=true;revoke(t);}}
+      const next={...t};
+      if(req.url==='/ack'){if(t.status==='running')throw Error('not complete');next.collected=true;revoke(next);}
+      else if(req.url==='/checked'){if(t.status==='running')next.nextCheck=now()+backupMs;}
+      else if(req.url==='/cancel'){if(t.status==='running'){next.status='cancelled';next.summary='Cancelled by supervisor';next.nextCheck=null;next.collected=true;revoke(next);}}
       else return json(res,404,{});
-      persist();wake();json(res,200,{ok:true});
+      persist(tasks.map(task=>task===t?next:task));wake();json(res,200,{ok:true});
     }catch(e){json(res,400,{error:e.message});}
   });
   for(const server of [mcp,control])server.requestTimeout=15000;

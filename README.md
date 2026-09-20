@@ -58,3 +58,24 @@ keeps its bounded, global behavior; existing registration JSON is unchanged.
 Collection verifies saved bytes, not code correctness or test claims. Codex reviews evidence
 and performs relevant integration checks. See [workspace.md](skills/webgpt/references/workspace.md)
 for commands and [fork policy](skills/webgpt/references/fork-policy.md) for the integration boundary.
+
+## Practical operation
+
+Use `node <skill>/scripts/client.mjs tasks` to inspect running tasks and uncollected results
+before an update or recovery. An empty `status` event queue alone does not mean the worker is idle.
+The inventory is controller-only and omits task tokens, instructions and input contents.
+
+`list_files` supports optional `limit` (1–500) and `cursor` arguments. Follow `nextCursor` until
+`truncated:false`; a changed directory invalidates the cursor instead of silently skipping entries.
+Refresh the ChatGPT connection's tool schemas after updating the idle worker and client together.
+
+After an uncertain registration response, repeat the exact registration with the same ID.
+Only an identical, still-running task returns the original token; changed or finished tasks are
+rejected. This never authorizes resending a browser message. IDs cannot differ only by case or use
+Windows device names. Task IDs take precedence over same-named local files in CLI commands;
+use `--file <json-file>` when explicitly reading a payload file.
+
+A project grant cannot overlap the worker's private data directory in either direction, including
+its recovery subdirectories. Keep projects and runtime data separate. State-save failures do not
+report successful completion or retire task access; an unrecorded file change blocks further edits
+until inspected. See workspace.md for recovery limits.

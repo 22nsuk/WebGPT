@@ -33,7 +33,7 @@ function taskIds(ids) {
 }
 
 export async function request(action, payload, config = configuration(), { signal } = {}) {
-  const read = ['wait', 'status'].includes(action);
+  const read = ['wait', 'status', 'tasks'].includes(action);
   if (!read && !['register', 'ack', 'checked', 'cancel'].includes(action)) throw Error('unknown controller action');
   let ids;
   if (read && payload !== undefined) {
@@ -99,15 +99,22 @@ if (process.argv[1] && process.argv[1] !== '-' && import.meta.url === pathToFile
   try {
     const [action, ...args] = process.argv.slice(2);
     let result;
+    const isTaskId = value => typeof value === 'string' && /^[a-zA-Z0-9_-]{1,80}$/.test(value);
+    const readPayload = file => JSON.parse(readFileSync(file, 'utf8'));
     if (action === 'wait' && args.length) {
-      const saved = args.length === 1 && existsSync(args[0]) ? JSON.parse(readFileSync(args[0], 'utf8')) : null;
+      if (args[0] === '--file' && args.length !== 2) throw Error('usage: client.mjs wait --file <json-file>');
+      const saved = args[0] === '--file' ? readPayload(args[1])
+        : args.length === 1 && !isTaskId(args[0]) ? readPayload(args[0]) : null;
       result = await waitForTasks(saved ? saved.ids ?? [saved.id] : args);
     } else if (action === 'collect') {
       if (args.length !== 1) throw Error('usage: client.mjs collect <task-id>');
       result = await collectTask(args[0]);
     } else if (['ack', 'checked', 'cancel'].includes(action)) {
-      if (args.length !== 1) throw Error(`usage: client.mjs ${action} <task-id|json-file>`);
-      const payload = existsSync(args[0]) ? JSON.parse(readFileSync(args[0], 'utf8')) : { id: args[0] };
+      if (args[0] === '--file' ? args.length !== 2 : args.length !== 1)
+        throw Error(`usage: client.mjs ${action} <task-id|json-file> or --file <json-file>`);
+      // Never let an unrelated same-named file redirect a task action to another task.
+      const payload = args[0] === '--file' ? readPayload(args[1])
+        : isTaskId(args[0]) ? { id: args[0] } : readPayload(args[0]);
       result = await request(action, payload);
     } else {
       if (args.length > 1) throw Error('unexpected controller arguments');

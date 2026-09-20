@@ -52,9 +52,31 @@ function snapshot(path) {
   } finally {closeSync(fd);}
 }
 export function readWorkspace(grant,path) {return {path,...snapshot(target(grant,path))};}
-export function listWorkspace(grant,path) {
-  const entries=readdirSync(target(grant,path,false,false,true),{withFileTypes:true}).filter(e=>!isGitMetadataName(e.name)).sort((a,b)=>a.name.localeCompare(b.name));
-  return {path,entries:entries.slice(0,500).map(e=>({name:e.name,type:e.isSymbolicLink()?'symlink':e.isDirectory()?'directory':'file'})),truncated:entries.length>500};
+export function listWorkspace(grant,path,{cursor,limit=500}={}) {
+  if(!Number.isSafeInteger(limit)||limit<1||limit>500)throw Error('limit must be an integer between 1 and 500');
+  const directory=target(grant,path,false,false,true);
+  const entries=readdirSync(directory,{withFileTypes:true})
+    .filter(e=>!isGitMetadataName(e.name))
+    // Binary name ordering is deterministic even when locale collation considers two names equal.
+    .sort((a,b)=>a.name<b.name?-1:a.name>b.name?1:0)
+    .map(e=>({name:e.name,type:e.isSymbolicLink()?'symlink':e.isDirectory()?'directory':'file'}));
+  const revision=hash(JSON.stringify([grant.root,grant.device,grant.inode,path,entries]));
+  let offset=0;
+  if(cursor!==undefined) {
+    let page;
+    try {
+      if(typeof cursor!=='string'||cursor.length>256||!cursor||!/^[A-Za-z0-9_-]+$/.test(cursor))throw Error();
+      page=JSON.parse(Buffer.from(cursor,'base64url').toString('utf8'));
+      if(!page||page.v!==1||!Number.isSafeInteger(page.offset)||page.offset<1||typeof page.revision!=='string')throw Error();
+    } catch {throw Error('invalid directory cursor');}
+    if(page.revision!==revision)throw Error('directory changed; restart listing without a cursor');
+    if(page.offset>=entries.length)throw Error('invalid directory cursor offset');
+    offset=page.offset;
+  }
+  const end=Math.min(offset+limit,entries.length),truncated=end<entries.length;
+  return {path,entries:entries.slice(offset,end),truncated,...(truncated?{
+    nextCursor:Buffer.from(JSON.stringify({v:1,offset:end,revision})).toString('base64url')
+  }: {})};
 }
 export function changeWorkspace(grant,dir,taskId,{path,text,expectedSha256},deleting=false) {
   if(expectedSha256!==null && (typeof expectedSha256!=='string' || !/^[0-9a-f]{64}$/.test(expectedSha256))) throw Error('expectedSha256 required (null only for create)');
