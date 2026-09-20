@@ -1,4 +1,4 @@
-import { createServer } from 'node:http';
+import { createServer, validateHeaderValue } from 'node:http';
 import { randomUUID, randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, renameSync, unlinkSync, rmdirSync, realpathSync } from 'node:fs';
 import { hostname } from 'node:os';
@@ -30,6 +30,11 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
   writeFileSync(resolve(lock,'owner.json'),JSON.stringify({pid:process.pid,host:hostname()}),{mode:0o600});
   const statePath=resolve(dir,'state.json'), keyPath=resolve(dir,'controller.key');
   const key=existsSync(keyPath)?readFileSync(keyPath,'utf8'):randomUUID();
+  // Validate before opening either listener; HTTP removes trailing header whitespace.
+  try{
+    if(!key||/[ \t]$/.test(key))throw Error();
+    validateHeaderValue('authorization','Bearer '+key);
+  }catch{throw Error('invalid controller.key');}
   if(!existsSync(keyPath))writeFileSync(keyPath,key,{mode:0o600,flag:'wx'});
   // URL capability authenticates the remote MCP connection; task tokens separately grant work.
   // Keep the URL out of stdout, task prompts and HTTP error responses.
@@ -153,7 +158,7 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
       try{protocolVersion=negotiateProtocol(m.params?.protocolVersion);}catch{return error(200,m.id,-32602,'invalid protocolVersion');}
     }
     if(m.method==='ping')result={};
-    else if(m.method==='initialize')result={protocolVersion,capabilities:{tools:{}},serverInfo:{name:'webgpt-worker',version:'1.4.1-fork.2'},instructions:'Read get_task with your private task token and perform the assigned task. Use read_input for supplied inputs. No workspace or file changes are required for text-only work. Use local file tools only when needed and granted; requested edits are applied directly, with revision hashes from read_file and no per-file grants. Review-only tasks cannot write. Coordinate disjoint edits if other workers share the project. Submit result once with the deliverable, any change receipts, evidence and limitations. No Git, PR, shell, or process control. Supervisor verifies results and retains task chats by default. Delete a task chat only when the user explicitly requests deletion of that chat.'};
+    else if(m.method==='initialize')result={protocolVersion,capabilities:{tools:{}},serverInfo:{name:'webgpt-worker',version:'1.4.1-fork.3'},instructions:'Read get_task with your private task token and perform the assigned task. Use read_input for supplied inputs. No workspace or file changes are required for text-only work. Use local file tools only when needed and granted; requested edits are applied directly, with revision hashes from read_file and no per-file grants. Review-only tasks cannot write. Coordinate disjoint edits if other workers share the project. Submit result once with the deliverable, any change receipts, evidence and limitations. No Git, PR, shell, or process control. Supervisor verifies results and retains task chats by default. Delete a task chat only when the user explicitly requests deletion of that chat.'};
     else if(m.method==='tools/list')result={tools};
     else if(m.method==='tools/call'){try{const out=call(m.params?.name,m.params?.arguments);result={content:[{type:'text',text:JSON.stringify(out)}],structuredContent:out,isError:false};}catch(e){result={content:[{type:'text',text:e.message}],isError:true};}}
     else return json(res,200,{jsonrpc:'2.0',id:m.id??null,error:{code:-32601,message:'method not found'}});

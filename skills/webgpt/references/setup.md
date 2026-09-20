@@ -121,6 +121,16 @@ the worker's ready output, GET its MCP `/health`, and run:
 node <skill>/scripts/client.mjs status
 ```
 
+An empty or HTTP-incompatible `controller.key` stops startup with `invalid controller.key` before
+either listener opens. This can follow an interrupted initial key write or a manual edit that adds
+a trailing newline/space. The worker preserves the file and existing task state; it does not trim
+or rotate credentials automatically. Preserve the failed file privately, verify the owned worker
+is stopped and restore the original valid key from a trusted private copy before retrying. If no
+valid key exists, explicitly reinitialize the controller credential for that owned runtime after
+preserving its state, then verify authenticated `status` again; do not delete task/result/recovery
+data or publish the key to resolve the error. Startup validation checks HTTP compatibility, not
+the strength or trustworthiness of a manually supplied key.
+
 Keep the worker running using an owned persistent terminal or the OS's existing service manager;
 record how to start/check it again. Use the OS service manager for operation after Codex exits;
 a child terminal process is not evidence that the worker survives CLI shutdown.
@@ -131,7 +141,7 @@ recorded host/PID and that no worker still uses this directory before moving tha
 to an owned recovery location and restarting. Never delete an unverified lock or stop another owner.
 
 The updated installation includes `scripts/protocol.mjs`; do not copy only worker.mjs.
-In a local MCP probe, confirm server version `1.4.1-fork.2`, protocol negotiation and an empty
+In a local MCP probe, confirm server version `1.4.1-fork.3`, protocol negotiation and an empty
 `ping` result. Missing or unsupported protocol fields are not evidence of browser readiness.
 Refresh the connection after updating the identified idle service, and still run the real
 browser/connector probe below; no public connection or browser test is implied by local tests.
