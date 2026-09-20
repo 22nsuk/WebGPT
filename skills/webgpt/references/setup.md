@@ -30,7 +30,7 @@ turn/session may be needed for skill discovery. Resolve `main` to a commit and r
 for verification and recovery; install that commit so a concurrent upstream update cannot change
 the candidate. The README intentionally follows the latest version, not a permanently pinned release.
 
-Update the fork worker and client together only when the identified service is idle; preserve its
+Update the fork worker, client and their runtime/service helpers together only when the identified service is idle; preserve its
 configuration, task state, results and recovery records. Existing file grants remain compatible.
 Check `client.mjs tasks`: `status` alone omits running work before its backup deadline. For an
 older worker without `tasks`, inspect its existing ledger and local state privately to establish
@@ -115,13 +115,17 @@ On Windows, verify directory ACLs explicitly; POSIX file modes alone do not esta
 
 Check that both ports are free, or belong to the exact existing WebGPT service, before starting.
 Never kill another port owner. Choose unused ports in the shared configuration if needed. Confirm
-the worker's ready output, GET its MCP `/health`, and run:
+the worker's `listening` output, GET its MCP `/health`, and run:
 
 ```text
 node <skill>/scripts/client.mjs status
+node <skill>/scripts/client.mjs ready
 ```
 
-An empty or HTTP-incompatible `controller.key` stops startup with `invalid controller.key` before
+`listening` and `/health` establish liveness only. Require authenticated readiness and inspect
+any reported storage, state, journal or workspace issues before the end-to-end probe.
+
+An empty or HTTP-incompatible `controller.key` stops CLI startup with `CONFIG_INVALID` before
 either listener opens. This can follow an interrupted initial key write or a manual edit that adds
 a trailing newline/space. The worker preserves the file and existing task state; it does not trim
 or rotate credentials automatically. Preserve the failed file privately, verify the owned worker
@@ -136,11 +140,13 @@ record how to start/check it again. Use the OS service manager for operation aft
 a child terminal process is not evidence that the worker survives CLI shutdown.
 Reuse the same data directory so tasks survive restarts. Do not
 start two workers against one data directory or replace scripts while tasks are active.
-The worker enforces this with `worker.lock/owner.json`. A crash can leave a lock: verify the
-recorded host/PID and that no worker still uses this directory before moving that exact stale lock
-to an owned recovery location and restarting. Never delete an unverified lock or stop another owner.
+The worker enforces this with `worker.lock/owner.json`. A confirmed dead owner on the same host
+is automatically archived before lock recovery. Live/reused PIDs, uncertain owners and interrupted
+recovery guards stop startup for inspection. Never delete an unverified lock or stop another owner.
+See [operations-windows.md](operations-windows.md) for the optional bounded service launcher,
+Windows deployment prerequisites, graceful stop and parent reconciliation.
 
-The updated installation includes `scripts/protocol.mjs`; do not copy only worker.mjs.
+The updated installation includes `scripts/protocol.mjs` and `scripts/runtime.mjs`; do not copy only worker.mjs.
 In a local MCP probe, confirm server version `1.4.1-fork.3`, protocol negotiation and an empty
 `ping` result. Missing or unsupported protocol fields are not evidence of browser readiness.
 Refresh the connection after updating the identified idle service, and still run the real

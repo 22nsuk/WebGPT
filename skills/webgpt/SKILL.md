@@ -77,6 +77,25 @@ preserve partial work and the specific limitation; do not repeat the approach or
 Remove terminal tasks from periodic checks immediately, independent of acknowledgment/deletion;
 cancel abandoned registrations/deadlines and end waits when the batch is terminal.
 
+## Resume and service recovery
+
+Before redispatching work after a parent/worker interruption, run `client.mjs ready` and
+`client.mjs reconcile` using the explicit private configuration. Readiness is not liveness;
+`/health` alone does not establish safe storage or usable workspaces. Reconciliation is
+read-only: it includes collected/cancelled tasks, verifies retained result hashes and reports
+`browserChecked: false`. Match only owned task IDs against the private ledger, retained chat
+URLs, saved results and collection disposition. Inspect recovery/integrity issues before
+further edits. Never reset state, replay a journal or send a duplicate prompt to make a
+reconciliation warning disappear. A verified uncollected result may be collected normally;
+an already collected result needs no new acknowledgment or replacement registration.
+
+Scoped waits retry only transient transport failures within a finite budget. On `interrupted`
+or exhausted retries, inspect readiness and preserve the task instead of rebuilding a retry
+loop. Service startup/restart does not reopen a browser, resume Codex or regenerate a prompt.
+Service installation, account/ACL changes and network publication require separate explicit
+permission. See [operations-windows.md](references/operations-windows.md) for the trusted local
+launcher, stop protocol, failure classes, manual transition and rollback checks.
+
 ## Close
 
 Retain task chats by default, including setup tests, failed tasks and recovery chats.

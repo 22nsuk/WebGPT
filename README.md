@@ -97,3 +97,20 @@ The MCP wire-body limit is 8 MiB to accommodate JSON escaping; decoded files/res
 an independent 1 MiB limit, and controller request bodies remain limited to 2 MiB.
 Malformed or conflicting recovery journals block the affected task without replaying its changes
 or preventing unrelated tasks from starting. Preserve the journal and inspect it before recovery.
+
+## Recovery and readiness
+
+The authenticated local controller provides `ready`, `reconcile` and `shutdown` commands.
+Readiness checks storage, state consistency, active recovery journals and workspace access;
+the public `/health` endpoint reports only liveness. Reconciliation includes retired tasks
+and verifies retained result hashes without acknowledging results or resending browser work.
+
+Confirmed dead local lock owners can be recovered with the old lock preserved. An optional
+local `service.mjs` launcher restarts only its own worker within a finite retry budget and
+supports graceful shutdown. These commands do not add MCP tools or shell access. Keep the
+running installation separate from editable source checkouts; workspace grants cannot overlap
+the running scripts directory or private runtime.
+
+See [Windows operation and recovery](skills/webgpt/references/operations-windows.md) for failure
+classes, migration, rollback and the review-only WinSW template. Service registration, accounts,
+ACLs, fixed tunnel addresses and browser/Codex resumption are separate deployment work.
