@@ -105,6 +105,12 @@ Readiness checks storage, state consistency, active recovery journals and worksp
 the public `/health` endpoint reports only liveness. Reconciliation includes retired tasks
 and verifies retained result hashes without acknowledging results or resending browser work.
 
+Interrupted result files remain visible as uncommitted candidates. Conflicting resubmissions
+cannot overwrite them, and terminal retries verify the saved artifact before reporting success.
+Missing recorded journals block only the affected task. See
+[result and recovery integrity](skills/webgpt/references/recovery-integrity.md) before resuming
+interrupted work or rolling back to an older worker.
+
 Confirmed dead local lock owners can be recovered with the old lock preserved. An optional
 local `service.mjs` launcher restarts only its own worker within a finite retry budget and
 supports graceful shutdown. These commands do not add MCP tools or shell access. Keep the

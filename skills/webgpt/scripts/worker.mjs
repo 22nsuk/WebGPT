@@ -6,6 +6,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { grantWorkspace, listWorkspace, readWorkspace, changeWorkspace, inspectRecovery } from './workspace.mjs';
 import { configuration } from './client.mjs';
+import { inspectPendingResults, storeResult, verifySavedResult } from './results.mjs';
 import { acquireRuntimeLock, readStateBytes, readStateMarker, createStateMarker, parseState, fault, startupExitCode } from './runtime.mjs';
 import { protocolVersions, validateMessage, negotiateProtocol, validateArguments } from './protocol.mjs';
 
@@ -46,7 +47,7 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
   }
   const markerPath=resolve(dir,'state.initialized');
   let savedState=readStateBytes(statePath), stateInitialized=readStateMarker(markerPath);
-  if(savedState===null&&(stateInitialized||existsSync(statePath+'.tmp')||readdirSync(dir).some(name=>name.endsWith('.result.txt'))
+  if(savedState===null&&(stateInitialized||existsSync(statePath+'.tmp')||readdirSync(dir).some(name=>(name.endsWith('.result.txt')||name.endsWith('.result.txt.tmp')))
       ||existsSync(resolve(dir,'recovery'))))
     throw fault('STATE_INVALID','state.json is missing beside recovery evidence; do not start an empty runtime');
   let tasks=parseState(savedState,dir), stopping=false, closePromise;
@@ -97,11 +98,26 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
           throw Error('workspace overlaps '+label+'; use a separate project root');
   };
   const revoke=t=>{delete t.token;t.inputs={};t.instructions='';};
+  const recoveryFor=task=>{
+    const recovery=inspectRecovery(dir,task.id);
+    const directory=resolve(dir,'recovery',task.id);
+    // Inspect both directions: a recorded receipt with a lost journal is not
+    // healthy simply because the remaining directory contains no invalid JSON.
+    // An unreadable directory already explains all its inaccessible children.
+    for(const expected of task.changes??[])if(!recovery.unresolved.includes(directory)
+        &&!recovery.receipts.some(actual=>isDeepStrictEqual(actual,expected))){
+      const operation=expected.operation;
+      recovery.unresolved.push(typeof operation==='string'&&/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(operation)
+        ?resolve(dir,'recovery',task.id,operation+'.json'):resolve(dir,'recovery',task.id));
+    }
+    recovery.unresolved=[...new Set(recovery.unresolved)];
+    return recovery;
+  };
   // Recover recorded mutations; never guess whether an interrupted mutation was applied.
   for(const t of tasks){
     if(t.collected)revoke(t);
     if(t.status!=='running')continue;
-    const {receipts,unresolved}=inspectRecovery(dir,t.id);
+    const {receipts,unresolved}=recoveryFor(t);
     t.recoveryRequired=unresolved;
     for(const receipt of receipts) {
       const existing=(t.changes??=[]).find(c=>c.operation===receipt.operation);
@@ -111,12 +127,14 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
     }
   }
   if(tasks.length)persist();
+  const pendingResultTasks=(selected=tasks)=>selected.filter(t=>t.status==='running'&&inspectPendingResults(t,dir).length).map(t=>t.id);
   const view=(selected=tasks)=>{
+    const resultRecoveryRequired=pendingResultTasks(selected).map(id=>({id}));
     const recoveryRequired=selected.filter(t=>t.status==='running'&&t.recoveryRequired?.length).map(t=>({id:t.id,journals:t.recoveryRequired}));
-    return {events:selected.filter(t=>t.status!=='running'&&!t.collected).map(t=>({id:t.id,status:t.status,summary:t.summary,artifact:t.artifact,sha256:t.sha256})),backupDue:selected.filter(t=>t.status==='running'&&now()>=t.nextCheck).map(t=>t.id),...(recoveryRequired.length?{recoveryRequired}:{})};
+    return {events:selected.filter(t=>t.status!=='running'&&!t.collected).map(t=>({id:t.id,status:t.status,summary:t.summary,artifact:t.artifact,sha256:t.sha256})),backupDue:selected.filter(t=>t.status==='running'&&now()>=t.nextCheck).map(t=>t.id),...(recoveryRequired.length?{recoveryRequired}:{}),...(resultRecoveryRequired.length?{resultRecoveryRequired}:{})};
   };
   const flagUnrecordedChanges=task=>{
-    const {receipts,unresolved}=inspectRecovery(dir,task.id);
+    const {receipts,unresolved}=recoveryFor(task);
     const pending=new Set([...(task.recoveryRequired??[]),...unresolved]);
     for(const receipt of receipts)
       if(!task.changes?.some(c=>isDeepStrictEqual(c,receipt)))
@@ -139,10 +157,11 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
     const unavailableWorkspaces=tasks.filter(t=>t.status==='running'&&t.workspace).filter(t=>{
       try{checkDataBoundary(t.workspace);listWorkspace(t.workspace,'.',{limit:1});return false;}catch{return true;}
     }).map(t=>t.id);
+    const pendingResults=pendingResultTasks();
     const issues=[...(stopping?['SHUTTING_DOWN']:[]),...(stateFailure?['STATE_INVALID']:[]),
       ...(storageFailure?['STORAGE_UNAVAILABLE']:[]),...(recoveryRequired.length?['RECOVERY_REQUIRED']:[]),
-      ...(unavailableWorkspaces.length?['WORKSPACE_UNAVAILABLE']:[])];
-    return {ok:!issues.length,instanceId:ownership.instanceId,issues,recoveryRequired,unavailableWorkspaces,
+      ...(unavailableWorkspaces.length?['WORKSPACE_UNAVAILABLE']:[]),...(pendingResults.length?['RESULT_RECOVERY_REQUIRED']:[])];
+    return {ok:!issues.length,instanceId:ownership.instanceId,issues,recoveryRequired,unavailableWorkspaces,pendingResultTasks:pendingResults,
       storage:storageFailure?{ok:false,...storageFailure}:{ok:!stateFailure},automaticRestartRecommended:false};
   };
   const json=(res,status,value)=>{if(res.destroyed||res.writableEnded)return;res.writeHead(status,{'content-type':'application/json','cache-control':'no-store'});res.end(JSON.stringify(value));};
@@ -166,6 +185,7 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
       if(t.status!=='running')throw Error('task is terminal; file access closed');
       if(name==='list_files')return listWorkspace(t.workspace,args.path,{cursor:args.cursor,limit:args.limit});
       if(name==='read_file')return readWorkspace(t.workspace,args.path);
+      if(inspectPendingResults(t,dir).length)throw fault('RESULT_CONFLICT','uncommitted result: reconcile before further edits');
       flagUnrecordedChanges(t);
       if(t.recoveryRequired?.length)throw Error('interrupted mutation: supervisor recovery required before further edits');
       try {
@@ -184,12 +204,14 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
     flagUnrecordedChanges(t);
     if(args.status==='completed'&&t.recoveryRequired?.length)throw Error('supervisor recovery required; preserve partial output with failed status');
     const sha=createHash('sha256').update(args.result).digest('hex');
-    if(t.status!=='running'){if(sha!==t.sha256||args.status!==t.status||args.summary!==t.summary)throw Error('terminal result differs');return {accepted:true,duplicate:true,sha256:sha};}
-    const artifact=resolve(dir,t.id+'.result.txt');
-    try{
-      writeFileSync(artifact+'.tmp',args.result,{mode:0o600,flush:true});
-      renameSync(artifact+'.tmp',artifact);
-    }catch(error){throw storageError(error);}
+    if(t.status!=='running'){
+      if(sha!==t.sha256||args.status!==t.status||args.summary!==t.summary)throw Error('terminal result differs');
+      verifySavedResult(t,dir);
+      return {accepted:true,duplicate:true,sha256:sha};
+    }
+    let artifact;
+    try{({artifact}=storeResult(dir,t.id,args.result));}
+    catch(error){if(['RESULT_CONFLICT','RESULT_INVALID'].includes(error.code))throw error;throw storageError(error);}
     updateTask(t,{status:args.status,summary:args.summary,artifact,sha256:sha,nextCheck:null});
     wake();return {accepted:true,sha256:sha};
   };
@@ -233,21 +255,29 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
       if(req.method==='GET'&&req.url==='/reconcile')return json(res,200,{health:readiness(),tasks:tasks.map(t=>({
         id:t.id,status:t.status,collected:t.collected,discarded:t.discarded??false,nextCheck:t.nextCheck,
         artifact:t.artifact??null,sha256:t.sha256??null,changes:t.changes??[],
-        recoveryRequired:t.recoveryRequired??[],journalIssues:inspectRecovery(dir,t.id).unresolved
+        recoveryRequired:t.recoveryRequired??[],journalIssues:recoveryFor(t).unresolved,pendingResults:inspectPendingResults(t,dir)
       }))});
       if(stopping)return json(res,503,{error:'worker is stopping',code:'SHUTTING_DOWN',retryable:true});
+      if(req.method==='GET'&&['/wait','/status','/tasks'].includes(url.pathname))verifyState();
       if(req.method==='GET'&&url.pathname==='/wait'){
         const ids=url.searchParams.getAll('id');
         if([...url.searchParams.keys()].some(key=>key!=='id'))throw Error('invalid wait query');
         if(ids.some(id=>!tasks.some(t=>t.id===id)))throw Error('unknown task');
         const selected=()=>ids.length?tasks.filter(t=>ids.includes(t.id)):tasks;
         const snapshot=()=>({...view(selected()),...((stopping||storageFailure||stateFailure)?{interrupted:true}:{}),...(ids.length?{settled:!selected().some(t=>t.status==='running')}:{})});
-        const ready=v=>v.interrupted||v.events.length||v.backupDue.length||v.recoveryRequired?.length||!selected().some(t=>t.status==='running');
+        const ready=v=>v.interrupted||v.events.length||v.backupDue.length||v.recoveryRequired?.length||v.resultRecoveryRequired?.length||!selected().some(t=>t.status==='running');
         const v=snapshot();if(ready(v))return json(res,200,v);
         let timer;
         const done=(timeout=false)=>{
+          // The file may change while this long poll is parked. Remove this
+          // waiter before checking: storageError wakes the remaining waiters.
+          waiters.delete(done);
+          try{verifyState();}catch(e){
+            clearTimeout(timer);
+            json(res,e.statusCode??503,{error:e.message,...(e.code?{code:e.code}:{}),retryable:false});return;
+          }
           const v=snapshot();
-          if(!timeout&&!ready(v))return; // An unrelated task must not wake this wait.
+          if(!timeout&&!ready(v)){waiters.add(done);return;} // An unrelated task must not wake this wait.
           clearTimeout(timer);waiters.delete(done);
           if(!res.destroyed)json(res,200,v);
         };
@@ -326,14 +356,25 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
   }catch(e){release();throw e;}
 }
 if(process.argv[1]&&process.argv[1]!=='-'&&import.meta.url===pathToFileURL(realpathSync(process.argv[1])).href){
-  let config;
+  let config, service, stopRequested=false;
+  const stop=()=>{
+    stopRequested=true;
+    return service?.close().catch(()=>{process.exitCode=74;});
+  };
+  // Register before the first await. An IPC owner can disappear or request stop
+  // while listeners are still starting, not just after the listening message.
+  if(typeof process.send==='function'){
+    process.on('message',message=>{if(message?.type==='shutdown')stop();});
+    process.once('disconnect',stop);
+    process.channel?.unref();
+    if(!process.connected)stopRequested=true;
+  }
+  for(const signal of ['SIGINT','SIGTERM',...(process.platform==='win32'?['SIGBREAK']:[])])process.on(signal,stop);
   try{config=configuration();}catch(error){console.error(JSON.stringify({event:'startup_failed',code:'CONFIG_INVALID'}));process.exitCode=78;}
-  if(config)try{
-    const service=await start({dir:config.dataDir,port:config.mcpPort,controlPort:config.controlPort,publicMcp:config.publicMcp});
-    console.log(JSON.stringify({event:'listening',mcpPort:service.mcpPort,controlPort:service.controlPort}));
-    const stop=()=>service.close().catch(()=>{process.exitCode=74;});
-    if(process.connected){process.on('message',message=>{if(message?.type==='shutdown')stop();});process.channel?.unref();}
-    for(const signal of ['SIGINT','SIGTERM',...(process.platform==='win32'?['SIGBREAK']:[])])process.on(signal,stop);
+  if(config&&!stopRequested)try{
+    service=await start({dir:config.dataDir,port:config.mcpPort,controlPort:config.controlPort,publicMcp:config.publicMcp});
+    if(stopRequested)await stop();
+    else console.log(JSON.stringify({event:'listening',mcpPort:service.mcpPort,controlPort:service.controlPort}));
   }catch(error){
     console.error(JSON.stringify({event:'startup_failed',code:error.code??'UNEXPECTED',exitCode:startupExitCode(error)}));
     process.exitCode=startupExitCode(error);
