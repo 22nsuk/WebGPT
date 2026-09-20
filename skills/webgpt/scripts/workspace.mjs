@@ -96,11 +96,18 @@ export function inspectRecovery(dir, taskId) {
       if(!stat)return {receipts,unresolved};
       if(!stat.isDirectory()||stat.isSymbolicLink())throw Error('invalid recovery directory');
     }
-    entries=readdirSync(recovery).filter(name=>name.endsWith('.json')).sort();
+    entries=readdirSync(recovery).filter(name=>name.endsWith('.json')||name.endsWith('.json.tmp')).sort();
   } catch {return {receipts,unresolved:[recovery]};}
   const digest=value=>typeof value==='string'&&/^[0-9a-f]{64}$/.test(value);
   for(const name of entries) {
     const journal=resolve(recovery,name);
+    if(name.endsWith('.json.tmp')) {
+      // A staged applied record is evidence, never authority to replay or
+      // promote a mutation. A prepared/invalid final journal already diagnoses
+      // this operation; otherwise expose even an orphaned or conflicting stage.
+      if(!unresolved.includes(journal.slice(0,-4)))unresolved.push(journal);
+      continue;
+    }
     try {
       const stat=metadata(journal);
       if(!stat?.isFile()||stat.isSymbolicLink()||stat.nlink!==1||stat.size>MAX_BYTES)throw Error('invalid journal file');
@@ -113,6 +120,13 @@ export function inspectRecovery(dir, taskId) {
       if(!['create','edit','delete'].includes(action)
           ||(action==='create'?beforeSha256!==null||backup!==null:!digest(beforeSha256)||backup!==resolve(recovery,operation+'.before.txt'))
           ||(action==='delete'?afterSha256!==null:!digest(afterSha256)))throw Error('invalid receipt');
+      // The path recorded in a receipt is not proof that its original bytes
+      // still exist. Reject link-backed originals and verify the actual bytes.
+      if(backup!==null) {
+        const original=metadata(backup);
+        if(!original?.isFile()||original.isSymbolicLink()||original.nlink!==1
+            ||snapshot(backup).sha256!==beforeSha256)throw Error('missing or invalid original backup');
+      }
       receipts.push({operation,path,action,beforeSha256,afterSha256,backup});
     } catch {unresolved.push(journal);}
   }
@@ -129,27 +143,30 @@ export function changeWorkspace(grant,dir,taskId,{path,text,expectedSha256},dele
   if(before.sha256!==expectedSha256 || deleting && !before.exists) throw Error('file revision conflict; read before changing');
   const recovery=resolve(dir,'recovery',taskId);mkdirSync(recovery,{recursive:true,mode:0o700});
   const operation=randomUUID(), backup=before.exists?resolve(recovery,operation+'.before.txt'):null;
-  if(backup) writeFileSync(backup,before.text,{flag:'wx',mode:0o600});
+  if(backup) writeFileSync(backup,before.text,{flag:'wx',mode:0o600,flush:true});
   const receipt={operation,path,action:deleting?'delete':before.exists?'edit':'create',beforeSha256:before.sha256,
     afterSha256:deleting?null:hash(text),backup};
   // Persist recovery metadata before changing the project, including on crash.
   const journal=resolve(recovery,operation+'.json');
-  writeFileSync(journal,JSON.stringify({...receipt,state:'prepared'}),{flag:'wx',mode:0o600});
+  writeFileSync(journal,JSON.stringify({...receipt,state:'prepared'}),{flag:'wx',mode:0o600,flush:true});
   if(deleting) {
     target(grant,path,true);
     if(snapshot(file).sha256!==expectedSha256) throw Error('file revision conflict');
     unlinkSync(file);
   } else if(!before.exists) {
-    writeFileSync(file,text,{flag:'wx',mode:0o644});
+    writeFileSync(file,text,{flag:'wx',mode:0o644,flush:true});
   } else {
     const temporary=resolve(dirname(file),'.webgpt-'+operation+'.tmp');
     try {
-      writeFileSync(temporary,text,{flag:'wx',mode:before.mode});
+      writeFileSync(temporary,text,{flag:'wx',mode:before.mode,flush:true});
       target(grant,path,true);
       if(snapshot(file).sha256!==expectedSha256) throw Error('file revision conflict');
       renameSync(temporary,file);
     } finally { if(metadata(temporary)) unlinkSync(temporary); }
   }
-  writeFileSync(journal,JSON.stringify({...receipt,state:'applied'}),{mode:0o600});
+  // Keep the prepared record intact if writing/flushing the applied state
+  // fails. Preserve its temporary file as evidence; never replay this mutation.
+  writeFileSync(journal+'.tmp',JSON.stringify({...receipt,state:'applied'}),{flag:'wx',mode:0o600,flush:true});
+  renameSync(journal+'.tmp',journal);
   return receipt;
 }

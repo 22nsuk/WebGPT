@@ -1,11 +1,11 @@
 import { createServer, validateHeaderValue } from 'node:http';
 import { randomUUID, randomBytes, createHash, timingSafeEqual } from 'node:crypto';
-import { mkdirSync, writeFileSync, readFileSync, existsSync, renameSync, unlinkSync, readdirSync, realpathSync } from 'node:fs';
-import { resolve, relative, isAbsolute, sep } from 'node:path';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, renameSync, unlinkSync, readdirSync, realpathSync, lstatSync } from 'node:fs';
+import { resolve, relative, isAbsolute, sep, dirname, basename } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { grantWorkspace, listWorkspace, readWorkspace, changeWorkspace, inspectRecovery } from './workspace.mjs';
-import { configuration } from './client.mjs';
+import { configuration, configurationFile } from './client.mjs';
 import { inspectPendingResults, storeResult, verifySavedResult } from './results.mjs';
 import { acquireRuntimeLock, readStateBytes, readStateMarker, createStateMarker, parseState, fault, startupExitCode } from './runtime.mjs';
 import { protocolVersions, validateMessage, negotiateProtocol, validateArguments } from './protocol.mjs';
@@ -21,8 +21,9 @@ export const tools = [
   {name:'read_input',description:'Read one explicitly supplied input by name; no arbitrary filesystem access.',inputSchema:schema({token:str,name:str}),annotations:{readOnlyHint:true,openWorldHint:false}},
   {name:'submit_result',description:'Save the task deliverable, evidence and limitations, and notify the supervisor. No file changes required. Terminal: stops backup checks. Retry identical submission safely. Do not delete the chat.',inputSchema:schema({token:str,status:{type:'string',enum:['completed','failed','cancelled']},summary:str,result:str}),annotations:{readOnlyHint:false,destructiveHint:false,idempotentHint:true,openWorldHint:false}}
 ];
-export async function start({dir,port=43137,controlPort=43139,publicMcp=false,backupMs=900000,waitMs=55000,closeGraceMs=5000,now=Date.now}={}) {
+export async function start({dir,port=43137,controlPort=43139,publicMcp=false,backupMs=900000,waitMs=55000,closeGraceMs=5000,now=Date.now,configFile=configurationFile()}={}) {
   if(!Number.isSafeInteger(waitMs)||waitMs<1||waitMs>55000)throw Error('waitMs must be between 1 and 55000');
+  if(typeof configFile!=='string'||!isAbsolute(configFile))throw fault('CONFIG_INVALID','configFile must be absolute');
   dir=resolve(dir); mkdirSync(dir,{recursive:true,mode:0o700});
   if(!Number.isSafeInteger(closeGraceMs)||closeGraceMs<1||closeGraceMs>30000)throw Error('invalid closeGraceMs');
   const ownership=acquireRuntimeLock(dir), release=()=>ownership.release();
@@ -87,6 +88,18 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
   };
   const updateTask=(task,changes)=>persist(tasks.map(t=>t===task?{...t,...changes}:t));
   const codeRoot=realpathSync.native(fileURLToPath(new URL('.',import.meta.url)));
+  const canonicalConfigFile=()=>{
+    // Protect a future config too. Resolve existing ancestors so a directory
+    // alias cannot hide an in-project target, even before config.json exists.
+    let cursor=resolve(configFile);const suffix=[];
+    for(;;){
+      try{lstatSync(cursor);}catch(error){
+        if(error.code!=='ENOENT'||dirname(cursor)===cursor)throw error;
+        suffix.unshift(basename(cursor));cursor=dirname(cursor);continue;
+      }
+      return resolve(realpathSync.native(cursor),...suffix);
+    }
+  };
   const checkDataBoundary=workspace=>{
     if(!workspace)return;
     const workspaceRoot=realpathSync.native(workspace.root);
@@ -96,6 +109,13 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
       for(const rel of [relative(workspaceRoot,protectedRoot),relative(protectedRoot,workspaceRoot)])
         if(rel===''||(!isAbsolute(rel)&&rel!=='..'&&!rel.startsWith('..'+sep)))
           throw Error('workspace overlaps '+label+'; use a separate project root');
+    // Configuration is operational authority, including publicMcp and dataDir.
+    // It may live outside runtime; protect both its named path and actual target.
+    for(const protectedFile of [resolve(configFile),canonicalConfigFile()]){
+      const rel=relative(workspaceRoot,protectedFile);
+      if(rel===''||(!isAbsolute(rel)&&rel!=='..'&&!rel.startsWith('..'+sep)))
+        throw Error('workspace overlaps worker configuration; use a separate project root');
+    }
   };
   const revoke=t=>{delete t.token;t.inputs={};t.instructions='';};
   const recoveryFor=task=>{

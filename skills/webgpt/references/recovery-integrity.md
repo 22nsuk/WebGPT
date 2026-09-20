@@ -54,8 +54,9 @@ Each applied journal must agree with its recorded state receipt, and each record
 receipt must still have a matching applied journal. Missing, malformed, conflicting
 or incomplete records block further edits and successful completion of the affected
 task. Startup and live checks preserve the uncertainty; they do not infer or replay
-file mutations. Unrelated tasks remain available. This check does not verify every
-backup file's contents, nor does it reconstruct a deleted backup or history.
+file mutations. Unrelated tasks remain available. Edit/delete receipts also require
+an intact original backup matching their recorded hash, as described in
+[backup-safety.md](backup-safety.md). No deleted backup or history is reconstructed.
 
 ## State and owner interruptions
 

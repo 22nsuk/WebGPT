@@ -117,6 +117,11 @@ supports graceful shutdown. These commands do not add MCP tools or shell access.
 running installation separate from editable source checkouts; workspace grants cannot overlap
 the running scripts directory or private runtime.
 
+Operational configuration is also excluded from read/edit workspace grants, including
+canonical aliases and future configuration paths. Recovery checks verify original backup
+bytes against edit/delete receipts, and applied journal publication preserves the prepared
+record if interrupted. See [backup safety](skills/webgpt/references/backup-safety.md).
+
 See [Windows operation and recovery](skills/webgpt/references/operations-windows.md) for failure
 classes, migration, rollback and the review-only WinSW template. Service registration, accounts,
 ACLs, fixed tunnel addresses and browser/Codex resumption are separate deployment work.

@@ -6,9 +6,14 @@ import { verifySavedResult } from './results.mjs';
 import { setTimeout as delay } from 'node:timers/promises';
 
 // Shared by the worker and controller client; never store configuration in the skill.
-export function configuration(env = process.env) {
+export function configurationFile(env = process.env) {
   const file = env.WEBGPT_CONFIG ?? join(homedir(), '.config', 'webgpt', 'config.json');
-  if (env.WEBGPT_CONFIG && !isAbsolute(file)) throw Error('WEBGPT_CONFIG must be absolute');
+  if (typeof file !== 'string' || !isAbsolute(file)) throw Error('WEBGPT_CONFIG must be absolute');
+  return file;
+}
+
+export function configuration(env = process.env) {
+  const file = configurationFile(env);
   if (env.WEBGPT_CONFIG && !existsSync(file)) throw Error('WEBGPT_CONFIG file does not exist');
   const saved = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : {};
   if (!saved || typeof saved !== 'object' || Array.isArray(saved)) throw Error('invalid WebGPT configuration');

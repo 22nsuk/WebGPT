@@ -80,7 +80,7 @@ ownership contract and interrupted-result handling.
 
 Readiness verifies that state bytes still match the worker's last owned commit,
 performs an isolated write/flush/rename/delete canary in the private runtime, and
-checks active recovery journals and workspace identity/access. Issues distinguish
+checks active recovery journals, their original backups, and workspace identity/access. Issues distinguish
 `STATE_INVALID`, `STORAGE_UNAVAILABLE`, `RECOVERY_REQUIRED`, `RESULT_RECOVERY_REQUIRED`, `WORKSPACE_UNAVAILABLE`
 and `SHUTTING_DOWN`. Credentials, prompts and inputs are not included. Actual
 storage-write failures are sticky until a successful real persist or a controlled
@@ -90,7 +90,10 @@ This is an advisory, point-in-time check, not a proof that every future write wi
 succeed. It does not measure tunnel reachability, browser login, model progress,
 every individual file's write ACL, all retained artifacts, or physical power-loss
 durability. `flush` on state/result files does not make all journal/project writes
-transactional or guarantee directory metadata durability. Inspect the journals
+transactional or guarantee directory metadata durability. Backup, prepared-journal
+and project writes are flushed, and applied journals replace prepared records only
+after a separate temporary record is flushed. See [backup-safety.md](backup-safety.md)
+for interrupted-publication evidence and operational-config isolation. Inspect the journals
 before resuming interrupted mutations. The existing per-task quarantine remains:
 a bad task blocks its further edits/completed submission, not unrelated tasks.
 Readiness has `automaticRestartRecommended: false`; do not turn every 503 into a
