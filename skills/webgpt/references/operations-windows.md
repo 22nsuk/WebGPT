@@ -219,22 +219,75 @@ Collect verified uncollected artifacts; do not acknowledge already collected one
 Integrity/recovery failures need investigation. Never resend a prompt merely because
 the worker/server restarted, and never interpret a verified hash as verified code.
 
-Transition in separate gates:
-1. Freeze new dispatch, inventory running/uncollected tasks and ownership, retain
-   chats/results and take a consistent private backup. Identify the existing worker
-   and tunnel before stopping either; do not terminate by broad process name.
-2. Review/apply the code change to a clean revision; run repository tests and the new
-   operations/service tests in isolation. Keep client, worker and helpers together.
-   Verify configuration paths against the existing runtime; use disposable ports and
-   data for failure injection, never live project evidence.
-3. On Windows with the target Node build, verify force kill, concurrent starts,
+Before changing an existing installation, record a private baseline: installed and
+candidate commits, actual process executable/script paths, PID and creation time,
+launch/restart owner, effective account token, listening addresses/ports, config/data
+paths, and current ACLs. Inspect the existing ChatGPT connection's endpoint, seven
+tool schemas and action-permission setting; a previous setup note may be stale.
+Compare the full endpoint privately without printing its secret path. Treat a UI
+permission such as allowing all actions as a separate setting from worker task
+authorization: it does not expand the seven tools, but must not be assumed to prompt
+before a write/delete. Use read grants for reviews and edit grants only for assigned
+changes. Record observations, not credential values, in the maintenance report.
+
+Identify each revision's supported lifecycle commands before stopping anything.
+For example, `c87b752` supports `tasks` and `status`, but not `ready`, `reconcile`
+or `shutdown`. Use its matching client, private ledger and local artifact verification
+for the inventory. Do not start a candidate worker on live data merely to validate it:
+startup can create locks, credentials or `state.initialized`. Likewise, `ready` and
+`reconcile` run a storage canary; they are not filesystem-passive audit commands.
+Use isolated fixtures for startup, migration and failure tests.
+
+For an authorized code update, complete these steps in order:
+
+1. Prepare a clean, pinned candidate outside the live installation and run repository
+   tests and relevant platform probes with disposable ports/data. Preserve any local
+   installation customizations for review. Keep worker, client and helpers together.
+2. Freeze new dispatch, inventory owned running/uncollected work, retain chats/results
+   and collect verified results. Confirm idle using `tasks`, not just `status`.
+   Preserve and explicitly resolve any exceptions under [setup.md](setup.md).
+3. Stop the identified supervisor/restart owner and worker through the lifecycle
+   supported by the installed revision. A supervisor waiting in backoff is not stopped.
+   Verify process exit and release of the worker's listeners before any code replacement.
+   A shutdown acknowledgment alone is not proof of exit. Do not terminate by broad
+   process name or a saved PID without rechecking its executable, creation time and owner.
+   For a legacy Windows launch requiring forced termination, first establish idle,
+   then preserve the stale lock and inspect state/journals; the new worker may reclaim
+   only a proven-dead owner under its normal lock rules. Never delete a lock to proceed.
+4. With the worker stopped, take a consistent private backup of its state, initialization
+   marker if present, temporary files, results, recovery records, retained locks and
+   recovery-claim directories, keys, configuration and parent ledger, plus the matching
+   prior code/revision. A source-code backup or
+   individual `.before.txt` files alone cannot restore the deployment. Keep backup
+   destinations outside the tree being copied and outside workspace grants. Verify
+   file inventory/hashes and ACLs on the actual backup files, including inherited and
+   explicit rules; a private parent directory alone does not establish private children.
+   Windows moves or copies that preserve security descriptors can retain old access.
+   Check restorability in a separate private location without starting another worker
+   against production paths. Live tunnel logs may continue changing; do not describe
+   those logs as a stopped snapshot. Preserve all evidence if backup verification fails.
+5. Replace only the stopped installation with the complete reviewed revision; verify
+   files before restarting with the same intended identity, config, data and ports.
+   For a code-only update, keep the healthy existing tunnel and ChatGPT connection.
+   Do not bundle account/ACL, credential, service, DNS or authentication changes into
+   the replacement. In particular, restarting a Quick Tunnel changes its origin.
+6. Confirm the new process identity and listeners, then run supported `ready`, `reconcile`
+   and `tasks` checks. Compare task/result/recovery evidence to the baseline before new
+   dispatch. Verify the existing HTTPS endpoint and connection settings; refresh stale
+   or changed tool schemas without recreating the connection or altering permissions.
+   Complete the owned disposable ChatGPT probe in [setup.md](setup.md#4-verify-the-installed-path)
+   before reporting the updated installation as verified. HTTP discovery alone is not E2E.
+
+Account/service and endpoint changes have their own validation gates:
+
+1. On Windows with the target Node build, verify force kill, concurrent starts,
    permission-denied/PID-reuse refusals, malformed state/partial journals, storage
    failure, in-flight shutdown and lock release. Linux tests are not these results.
-4. Only after separate approval, choose the identity/ACL/start mode, verify the pinned
+2. Only after separate approval, choose the identity/ACL/start mode, verify the pinned
    WinSW binary and rendered XML, then test actual wrapper stop/start, hung-supervisor
    and failed-stop-command handling, bounded failure recovery, log rotation and
    boot-before-login. The supplied XML is not installed.
-5. Independently approve fixed hostname/tunnel/authentication changes and test real
+3. Independently approve fixed hostname/tunnel/authentication changes and test real
    ChatGPT tool discovery, task read/write, stale-SHA rejection, completion and parent
    collection. Record which tests remain NOT_RUN. Do not infer E2E success from HTTP.
 
@@ -243,19 +296,27 @@ stop the identified launcher/worker, preserve current evidence including
 `state.initialized` and the latest state, then restore the
 matching prior worker/client/helper set and configuration. This change keeps the
 JSON task shape, but the old worker has weaker readiness/lock behavior; validate
-state with the current validator first. Never overwrite a newer task state with a
+state and inspect journals, original backups and result candidates with the current
+validators first. If evidence cannot be reconciled safely, leave the worker stopped;
+starting old code is not a repair. Never overwrite a newer task state with a
 backup simply to make the old code start. No automatic destructive rollback is
 provided. Preserve old credentials only for non-compromise rollback when explicitly
-approved. Record the revision and re-run reconciliation after the rollback.
+approved. Record the revision and use its supported checks after rollback. If it has
+`reconcile`, use it; otherwise compare that revision's `tasks`/`status`, private ledger
+and verified local result/recovery artifacts manually. Record unavailable readiness
+or reconciliation checks as unsupported, not passed. Keep dispatch frozen until
+the evidence agrees and the restored connection has been verified.
 
 ## Official references
 
-Reviewed 2026-09-20; docs are evidence, not successful Windows execution.
+Reviewed 2026-09-21; docs are evidence, not successful Windows execution.
 - [Node 24 signal behavior and zero-signal process probes](https://nodejs.org/docs/latest-v24.x/api/process.html#signal-events)
 - [Node 24 HTTP close/drain behavior](https://nodejs.org/docs/latest-v24.x/api/http.html#serverclosecallback)
 - [WinSW v2.12.0 XML configuration](https://github.com/winsw/winsw/blob/v2.12.0/doc/xmlConfigFile.md)
 - [WinSW v2.12.0 log rotation](https://github.com/winsw/winsw/blob/v2.12.0/doc/loggingAndErrorReporting.md)
 - [Microsoft LocalService identity](https://learn.microsoft.com/en-us/windows/win32/services/localservice-account)
+- [Microsoft file permissions when copying or moving](https://learn.microsoft.com/en-us/troubleshoot/windows-client/windows-security/permissions-on-copying-moving-files)
+- [Cloudflare Quick Tunnel limits and intended use](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/trycloudflare/)
 - [cloudflared run parameters, token-file and logging](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/configure-tunnels/run-parameters/)
 - [Cloudflare Windows service considerations](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/local-management/as-a-service/windows/)
 - [ChatGPT developer-mode authentication](https://developers.openai.com/api/docs/guides/developer-mode)

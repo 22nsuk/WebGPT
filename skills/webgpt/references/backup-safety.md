@@ -89,9 +89,12 @@ authorized operator workflow, preserving the same intended runtime and settings.
 
 Review the patch against its exact base and deploy the matched worker, client and
 workspace module together only after tests. Do not change a running installation
-through its own workspace grant. Pause new dispatch, reconcile owned tasks, retain
-full results and receipts, and stop the identified worker through its normal local
-control path before replacement. Preserve the entire runtime; do not start with an
+through its own workspace grant. Pause new dispatch, inventory owned tasks using the
+installed revision's supported commands, retain full results and receipts, and stop
+the identified worker and restart owner before replacement. Follow the
+[transition and rollback procedure](operations-windows.md#parent-resume-transition-and-rollback)
+for verified exit, private backup validation and legacy command limitations.
+Preserve the entire runtime; do not start with an
 empty directory to hide a recovery problem.
 
 State, task tokens, result and journal schemas are unchanged. Healthy existing

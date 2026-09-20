@@ -82,8 +82,11 @@ Both paths must preserve the registered tasks and tokens.
 ## Transition and validation
 
 Update the idle, identified worker and client together, including `results.mjs`.
-Stop new dispatch, reconcile and preserve owned unfinished work, then stop the old
-process before swapping code. Run the repository's full `node --test` workflow and
+Stop new dispatch, inventory and preserve owned unfinished work with the installed
+revision's supported commands, then stop the worker and its restart owner before
+swapping code. Follow the [transition and rollback procedure](operations-windows.md#parent-resume-transition-and-rollback)
+for verified process exit, a consistent private backup and legacy command limitations.
+Run the repository's full `node --test` workflow and
 platform-specific service probes before production deployment. The focused regression
 file is `scripts/recoveryIntegrity.test.mjs`; it tests only disposable temporary data
 and owned local child processes, without ChatGPT, DNS or service installation.
