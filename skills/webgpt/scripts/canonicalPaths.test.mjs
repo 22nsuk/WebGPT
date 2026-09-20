@@ -53,6 +53,27 @@ test('Windows project/runtime overlap is rejected regardless of which path uses 
   }
 }));
 
+test('Windows active and future config paths cannot hide behind native short aliases', t => fixture(t, async ({ base, root, alias }) => {
+  const dir = join(base, 'runtime');
+  writeFileSync(join(root, 'config.json'), '{}');
+  for (const configFile of [join(alias, 'config.json'), join(alias, 'future', 'config.json')]) {
+    const service = await start({ dir, port: 0, controlPort: 0, configFile });
+    const config = { dataDir: dir, controlPort: service.controlPort };
+    try {
+      for (const workspaceRoot of [root, alias]) {
+        for (const mode of ['read', 'edit']) {
+          await assert.rejects(request('register', {
+            id: 'config-overlap', instructions: '', inputs: {}, workspace: { root: workspaceRoot, mode },
+          }, config), /workspace overlaps worker configuration/);
+        }
+      }
+      assert.equal((await request('tasks', undefined, config)).running, 0);
+      assert.equal(readFileSync(join(root, 'config.json'), 'utf8'), '{}');
+      assert.equal(existsSync(join(root, 'future')), false);
+    } finally { await service.close(); }
+  }
+}));
+
 test('Windows legacy grants with short names cannot access an overlapping runtime after restart', t => fixture(t, async ({ root, alias }) => {
   const dir = join(root, 'runtime'); mkdirSync(dir);
   writeFileSync(join(dir, 'marker.txt'), 'fixture only');

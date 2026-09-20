@@ -93,6 +93,8 @@ and compare the retained chat/ledger before resubmitting; a result file alone is
 completion. Do not overwrite it with a replacement answer or retry project edits.
 See [recovery-integrity.md](references/recovery-integrity.md) for candidate handling,
 missing journals, IPC-owner loss and the limits of these recovery checks.
+See [backup-safety.md](references/backup-safety.md) for original-backup verification,
+interrupted journal publication and isolation of the active worker configuration.
 
 Scoped waits retry only transient transport failures within a finite budget. On `interrupted`
 or exhausted retries, inspect readiness and preserve the task instead of rebuilding a retry
