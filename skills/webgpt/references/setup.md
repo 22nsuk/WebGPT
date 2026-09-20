@@ -120,6 +120,12 @@ The worker enforces this with `worker.lock/owner.json`. A crash can leave a lock
 recorded host/PID and that no worker still uses this directory before moving that exact stale lock
 to an owned recovery location and restarting. Never delete an unverified lock or stop another owner.
 
+The updated installation includes `scripts/protocol.mjs`; do not copy only worker.mjs.
+In a local MCP probe, confirm server version `1.4.1-fork.1`, protocol negotiation and an empty
+`ping` result. Missing or unsupported protocol fields are not evidence of browser readiness.
+Refresh the connection after updating the identified idle service, and still run the real
+browser/connector probe below; no public connection or browser test is implied by local tests.
+
 ## 3. Connect to ChatGPT without Platform credentials
 
 Reuse the signed-in ChatGPT account and compatible connection. New setup uses an HTTPS endpoint,

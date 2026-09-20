@@ -91,6 +91,26 @@ This is for cooperative developer workspaces, not isolation from hostile local f
 Read-only blocks changes, not disclosure: project text files can contain secrets. Use a sanitized
 project snapshot or explicitly supplied inputs when unrelated credentials must remain inaccessible.
 
+### MCP request contract
+
+Send tool invocations as JSON-RPC 2.0 requests with a string or safe-integer request ID and
+object parameters. The task token is still required; the request ID is not authorization or an
+idempotency key. Do not retry a write merely because its HTTP response was lost: read the current
+file/revision and task receipts first. Unknown argument fields and invalid types are rejected using
+the seven tools' existing input schemas. Tool strings must be well-formed Unicode. The local
+controller is a separate API and retains its existing payload shapes.
+
+The implemented protocol versions are `2025-03-26` and `2025-06-18`. Initialization negotiates a
+supported version, and an unsupported `MCP-Protocol-Version` header is rejected. A `ping` request
+returns an empty result without changing task state. Protocol notifications receive empty HTTP 202
+responses; a transport cancellation notification does not revoke a logical task or undo an already
+synchronous file operation. Use the controller's explicit task cancellation for that purpose.
+
+Files/results remain limited to 1 MiB of decoded UTF-8. JSON escaping may use up to six wire bytes
+per text byte, so MCP bodies are capped at 8 MiB including the envelope. Controller bodies remain
+capped at 2 MiB. Invalid wire UTF-8 and tool strings containing unpaired UTF-16 surrogates fail
+rather than being silently replaced. This is bounded request parsing, not a denial-of-service sandbox.
+
 ### Builds, tests and Git
 
 WebGPT edits text through the file tools; it cannot execute tests, builds, package
@@ -178,12 +198,20 @@ then follow the recovery procedure below. Failed/cancelled partial results remai
 storage works. These are process-level error/recovery guarantees, not power-loss, fsync, hardware
 failure or hostile concurrent-filesystem isolation guarantees.
 
-On restart, applied recovery journals restore missing change receipts. An incomplete/unreadable
-journal produces `recoveryRequired` in `status`/`wait` and `get_task`, blocking further edits and
-successful completion for that task. Inspect its journal, original and current file without guessing
+On restart, structurally valid applied recovery journals restore missing change receipts. The
+worker checks operation/filename identity, relative path, action, hashes and expected backup path;
+a conflict with an existing saved receipt is not silently resolved. Null, incomplete, malformed or
+unreadable journal data (including an invalid recovery directory) produces `recoveryRequired` in `status`/`wait` and `get_task`, blocking further edits and
+successful completion for that task while independent tasks remain usable. This validates recovery
+metadata, not every backup/file byte or all of state.json. Inspect its journal, original and current file without guessing
 or silently restoring. Preserve partial output, cancel the affected registration after inspection,
 and register any narrow correction in the same chat with a new task token. Stop waiting on that
 blocked task; other independent tasks can continue. No crash-durability guarantee is made for
 filesystem/hardware failure beyond these local recovery records.
+
+Both the shared `recovery` directory and each task's directory must be real directories, not
+symlinks or Windows junctions. A link or invalid type at the shared parent prevents trusting the
+recovery tree for every running task, so several tasks may require inspection; task lookup and
+explicit cancellation remain available. Do not delete or follow linked records as a repair.
 
 Test locally: `node --test --test-reporter=tap` from the installed skill directory; Node discovers the test files without shell glob expansion.

@@ -79,3 +79,15 @@ A project grant cannot overlap the worker's private data directory in either dir
 its recovery subdirectories. Keep projects and runtime data separate. State-save failures do not
 report successful completion or retire task access; an unrecorded file change blocks further edits
 until inspected. See workspace.md for recovery limits.
+
+## Request and recovery checks
+
+The worker validates MCP request IDs, protocol headers and tool arguments before execution.
+It handles `ping` and negotiates the implemented `2025-03-26` / `2025-06-18` versions instead
+of echoing an unknown version. This does not establish browser/ChatGPT end-to-end readiness.
+
+Invalid UTF-8 and lone-surrogate tool strings are rejected instead of changing file contents.
+The MCP wire-body limit is 8 MiB to accommodate JSON escaping; decoded files/results still have
+an independent 1 MiB limit, and controller request bodies remain limited to 2 MiB.
+Malformed or conflicting recovery journals block the affected task without replaying its changes
+or preventing unrelated tasks from starting. Preserve the journal and inspect it before recovery.

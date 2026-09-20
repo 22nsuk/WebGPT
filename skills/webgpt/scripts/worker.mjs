@@ -1,12 +1,13 @@
 import { createServer } from 'node:http';
 import { randomUUID, randomBytes, createHash, timingSafeEqual } from 'node:crypto';
-import { mkdirSync, writeFileSync, readFileSync, existsSync, renameSync, readdirSync, unlinkSync, rmdirSync, realpathSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, renameSync, unlinkSync, rmdirSync, realpathSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { resolve, relative, isAbsolute, sep } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { pathToFileURL } from 'node:url';
-import { grantWorkspace, listWorkspace, readWorkspace, changeWorkspace } from './workspace.mjs';
+import { grantWorkspace, listWorkspace, readWorkspace, changeWorkspace, inspectRecovery } from './workspace.mjs';
 import { configuration } from './client.mjs';
+import { protocolVersions, validateMessage, negotiateProtocol, validateArguments } from './protocol.mjs';
 
 const schema = properties => ({type:'object',properties,required:Object.keys(properties),additionalProperties:false});
 const str = {type:'string'};
@@ -66,13 +67,13 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
   for(const t of tasks){
     if(t.collected)revoke(t);
     if(t.status!=='running')continue;
-    const recovery=resolve(dir,'recovery',t.id);t.recoveryRequired=[];
-    if(!existsSync(recovery))continue;
-    for(const name of readdirSync(recovery).filter(n=>n.endsWith('.json'))){
-      const journal=resolve(recovery,name);let entry;
-      try{entry=JSON.parse(readFileSync(journal,'utf8'));}catch{t.recoveryRequired.push(journal);continue;}
-      if(entry.state!=='applied'){t.recoveryRequired.push(journal);continue;}
-      if(!(t.changes??=[]).some(c=>c.operation===entry.operation)){const {state,...receipt}=entry;t.changes.push(receipt);}
+    const {receipts,unresolved}=inspectRecovery(dir,t.id);
+    t.recoveryRequired=unresolved;
+    for(const receipt of receipts) {
+      const existing=(t.changes??=[]).find(c=>c.operation===receipt.operation);
+      if(!existing)t.changes.push(receipt);
+      else if(!isDeepStrictEqual(existing,receipt))
+        t.recoveryRequired.push(resolve(dir,'recovery',t.id,receipt.operation+'.json'));
     }
   }
   if(tasks.length)persist();
@@ -82,31 +83,31 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
   };
   const wake=()=>{for(const fn of [...waiters])fn();};
   const flagUnrecordedChanges=task=>{
-    const recovery=resolve(dir,'recovery',task.id);
-    if(!existsSync(recovery))return;
-    const pending=new Set(task.recoveryRequired??[]);
-    let journals;
-    try {journals=readdirSync(recovery).filter(n=>n.endsWith('.json'));}
-    catch {task.recoveryRequired=[...pending,recovery];wake();return;}
-    for(const name of journals) {
-      const journal=resolve(recovery,name);
-      try {
-        const entry=JSON.parse(readFileSync(journal,'utf8'));
-        if(entry.state!=='applied'||!task.changes?.some(c=>c.operation===entry.operation))pending.add(journal);
-      } catch {pending.add(journal);}
-    }
+    const {receipts,unresolved}=inspectRecovery(dir,task.id);
+    const pending=new Set([...(task.recoveryRequired??[]),...unresolved]);
+    for(const receipt of receipts)
+      if(!task.changes?.some(c=>isDeepStrictEqual(c,receipt)))
+        pending.add(resolve(dir,'recovery',task.id,receipt.operation+'.json'));
     // This safety block intentionally stays live even if state storage is unavailable.
     if(pending.size){task.recoveryRequired=[...pending];wake();}
   };
   const json=(res,status,value)=>{res.writeHead(status,{'content-type':'application/json','cache-control':'no-store'});res.end(JSON.stringify(value));};
-  const body=async req=>{const chunks=[];let bytes=0;for await(const c of req){bytes+=c.length;if(bytes>2*1024*1024)throw Error('request too large');chunks.push(c);}return JSON.parse(Buffer.concat(chunks).toString());};
+  const body=async(req,limit=2*1024*1024)=>{
+    const chunks=[];let bytes=0;
+    for await(const c of req){bytes+=c.length;if(bytes>limit)throw Object.assign(Error('request too large'),{statusCode:413});chunks.push(c);}
+    // Reject invalid wire bytes rather than silently substituting replacement characters.
+    return JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(Buffer.concat(chunks)));
+  };
   const call=(name,args)=>{
+    if(!args||typeof args!=='object'||Array.isArray(args))throw Error('tool arguments must be an object');
     const t=typeof args.token==='string'&&tasks.find(t=>t.token&&t.token===args.token);if(!t)throw Error('unknown task token');
+    const tool=tools.find(tool=>tool.name===name);if(!tool)throw Error('unknown tool');
+    if(['list_files','read_file','write_file','delete_file'].includes(name))checkDataBoundary(t.workspace);
+    validateArguments(tool,args);
     if(name==='get_task')return {id:t.id,instructions:t.instructions,inputs:Object.keys(t.inputs),status:t.status,workspace:t.workspace??null,changes:t.changes??[],recoveryRequired:t.recoveryRequired??[]};
     if(name==='read_input'){if(!Object.hasOwn(t.inputs,args.name))throw Error('unknown input');return {name:args.name,text:t.inputs[args.name]};}
     if(['list_files','read_file','write_file','delete_file'].includes(name)) {
       if(t.status!=='running')throw Error('task is terminal; file access closed');
-      checkDataBoundary(t.workspace);
       if(name==='list_files')return listWorkspace(t.workspace,args.path,{cursor:args.cursor,limit:args.limit});
       if(name==='read_file')return readWorkspace(t.workspace,args.path);
       if(t.recoveryRequired?.length)throw Error('interrupted mutation: supervisor recovery required before further edits');
@@ -137,13 +138,24 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
     const actual=Buffer.from(req.url??''),expected=Buffer.from(mcpPath);
     if(actual.length!==expected.length||!timingSafeEqual(actual,expected))return json(res,404,{});
     if(req.method!=='POST'){res.setHeader('allow','POST');return json(res,405,{});}
-    let m;try{m=await body(req);}catch{return json(res,400,{error:'invalid request'});}
-    if(!m||typeof m!=='object'||Array.isArray(m))return json(res,400,{error:'invalid request'});
-    if(m.method==='notifications/initialized'){res.writeHead(202);return res.end();}
-    let result;
-    if(m.method==='initialize')result={protocolVersion:m.params?.protocolVersion??'2025-03-26',capabilities:{tools:{}},serverInfo:{name:'webgpt-worker',version:'1.4.0-fork.1'},instructions:'Read get_task with your private task token and perform the assigned task. Use read_input for supplied inputs. No workspace or file changes are required for text-only work. Use local file tools only when needed and granted; requested edits are applied directly, with revision hashes from read_file and no per-file grants. Review-only tasks cannot write. Coordinate disjoint edits if other workers share the project. Submit result once with the deliverable, any change receipts, evidence and limitations. No Git, PR, shell, or process control. Supervisor verifies results and retains task chats by default. Delete a task chat only when the user explicitly requests deletion of that chat.'};
+    const error=(status,id,code,message)=>json(res,status,{jsonrpc:'2.0',id,error:{code,message}});
+    const version=req.headers['mcp-protocol-version'];
+    if(version!==undefined&&!protocolVersions.includes(version))return error(400,null,-32600,'unsupported MCP protocol header');
+    // JSON escaping can expand a valid 1 MiB text payload to 6 MiB plus its envelope.
+    // The decoded per-file/result limits remain 1 MiB; controller bodies remain 2 MiB.
+    let m;try{m=await body(req,8*1024*1024);}catch(e){
+      return error(e.statusCode??400,null,e.statusCode===413?-32600:-32700,e.statusCode===413?'request too large':'invalid JSON or UTF-8');
+    }
+    let kind;try{kind=validateMessage(m);}catch{return error(400,null,-32600,'invalid JSON-RPC request');}
+    if(kind==='notification'){res.writeHead(202);return res.end();}
+    let result,protocolVersion;
+    if(m.method==='initialize') {
+      try{protocolVersion=negotiateProtocol(m.params?.protocolVersion);}catch{return error(200,m.id,-32602,'invalid protocolVersion');}
+    }
+    if(m.method==='ping')result={};
+    else if(m.method==='initialize')result={protocolVersion,capabilities:{tools:{}},serverInfo:{name:'webgpt-worker',version:'1.4.1-fork.1'},instructions:'Read get_task with your private task token and perform the assigned task. Use read_input for supplied inputs. No workspace or file changes are required for text-only work. Use local file tools only when needed and granted; requested edits are applied directly, with revision hashes from read_file and no per-file grants. Review-only tasks cannot write. Coordinate disjoint edits if other workers share the project. Submit result once with the deliverable, any change receipts, evidence and limitations. No Git, PR, shell, or process control. Supervisor verifies results and retains task chats by default. Delete a task chat only when the user explicitly requests deletion of that chat.'};
     else if(m.method==='tools/list')result={tools};
-    else if(m.method==='tools/call'){try{const out=call(m.params.name,m.params.arguments??{});result={content:[{type:'text',text:JSON.stringify(out)}],structuredContent:out,isError:false};}catch(e){result={content:[{type:'text',text:e.message}],isError:true};}}
+    else if(m.method==='tools/call'){try{const out=call(m.params?.name,m.params?.arguments);result={content:[{type:'text',text:JSON.stringify(out)}],structuredContent:out,isError:false};}catch(e){result={content:[{type:'text',text:e.message}],isError:true};}}
     else return json(res,200,{jsonrpc:'2.0',id:m.id??null,error:{code:-32601,message:'method not found'}});
     json(res,200,{jsonrpc:'2.0',id:m.id??null,result});
   });

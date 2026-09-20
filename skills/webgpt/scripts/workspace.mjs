@@ -78,6 +78,41 @@ export function listWorkspace(grant,path,{cursor,limit=500}={}) {
     nextCursor:Buffer.from(JSON.stringify({v:1,offset:end,revision})).toString('base64url')
   }: {})};
 }
+// Read recovery records without replaying mutations. Malformed records belong to
+// the affected task, not a reason to disable unrelated tasks in the shared worker.
+export function inspectRecovery(dir, taskId) {
+  const recoveryRoot=resolve(dir,'recovery'), recovery=resolve(recoveryRoot,taskId), receipts=[], unresolved=[];
+  let entries;
+  try {
+    // Check the shared parent as well: a plain task directory can sit behind a junction/symlink.
+    for(const directory of [recoveryRoot,recovery]) {
+      const stat=metadata(directory);
+      if(!stat)return {receipts,unresolved};
+      if(!stat.isDirectory()||stat.isSymbolicLink())throw Error('invalid recovery directory');
+    }
+    entries=readdirSync(recovery).filter(name=>name.endsWith('.json')).sort();
+  } catch {return {receipts,unresolved:[recovery]};}
+  const digest=value=>typeof value==='string'&&/^[0-9a-f]{64}$/.test(value);
+  for(const name of entries) {
+    const journal=resolve(recovery,name);
+    try {
+      const stat=metadata(journal);
+      if(!stat?.isFile()||stat.isSymbolicLink()||stat.nlink!==1||stat.size>MAX_BYTES)throw Error('invalid journal file');
+      const entry=JSON.parse(snapshot(journal).text);
+      if(!entry||typeof entry!=='object'||Array.isArray(entry)||entry.state!=='applied'
+          ||typeof entry.operation!=='string'||!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(entry.operation)
+          ||name!==entry.operation+'.json')throw Error('unresolved journal');
+      const {operation,path,action,beforeSha256,afterSha256,backup}=entry;
+      relativeFile(path);
+      if(!['create','edit','delete'].includes(action)
+          ||(action==='create'?beforeSha256!==null||backup!==null:!digest(beforeSha256)||backup!==resolve(recovery,operation+'.before.txt'))
+          ||(action==='delete'?afterSha256!==null:!digest(afterSha256)))throw Error('invalid receipt');
+      receipts.push({operation,path,action,beforeSha256,afterSha256,backup});
+    } catch {unresolved.push(journal);}
+  }
+  return {receipts,unresolved};
+}
+
 export function changeWorkspace(grant,dir,taskId,{path,text,expectedSha256},deleting=false) {
   if(expectedSha256!==null && (typeof expectedSha256!=='string' || !/^[0-9a-f]{64}$/.test(expectedSha256))) throw Error('expectedSha256 required (null only for create)');
   if(!deleting && (typeof text!=='string' || text.includes('\0') || Buffer.byteLength(text)>MAX_BYTES)) throw Error('text must be <=1 MiB');
