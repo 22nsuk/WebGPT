@@ -172,9 +172,11 @@ test('collection refuses state that points outside the task artifact path', () =
   const statePath = join(f.dir, 'state.json');
   const state = JSON.parse(readFileSync(statePath, 'utf8'));
   state[0].artifact = join(f.dir, 'other.result.txt');
-  writeFileSync(statePath, JSON.stringify(state)); await f.restart();
-  await assert.rejects(collectTask('a', f.config), /unexpected saved result path/);
-  assert.equal((await f.admin('status')).events.length, 1);
+  const evidence = JSON.stringify(state);
+  writeFileSync(statePath, evidence);
+  await assert.rejects(f.restart(), { code: 'STATE_INVALID' });
+  assert.equal(readFileSync(statePath, 'utf8'), evidence);
+  assert.equal(existsSync(join(f.dir, 'worker.lock')), false);
 }));
 
 test('failed and cancelled results keep their status after integrity-checked collection', () => fixture(async f => {

@@ -1,0 +1,29 @@
+<!-- WinSW v2.12.0 schema. REVIEW-ONLY TEMPLATE: not an installer.
+     Replace paths and select the approved identity/ACL before use.
+     Manual startup is deliberate. Do not add an outer SCM restart loop.
+     v2.12.0 stoparguments waits without a deadline; stoptimeout does not
+     bound this custom stop path. Verify hung-supervisor/failed-stop handling. -->
+<service>
+  <id>WebGPTFileWorker</id>
+  <name>WebGPT File Worker</name>
+  <description>Project-text MCP worker; no browser or parent-task auto-resume.</description>
+  <executable>C:\WebGPT\node\node.exe</executable>
+  <startarguments>"C:\WebGPT\release\skills\webgpt\scripts\service.mjs" run</startarguments>
+  <stopexecutable>C:\WebGPT\node\node.exe</stopexecutable>
+  <stoparguments>"C:\WebGPT\release\skills\webgpt\scripts\service.mjs" stop</stoparguments>
+  <workingdirectory>C:\WebGPTPrivate\runtime</workingdirectory>
+  <env name="WEBGPT_CONFIG" value="C:\WebGPTPrivate\config.json"/>
+  <env name="WEBGPT_DATA_DIR" value="C:\WebGPTPrivate\runtime"/>
+  <serviceaccount>
+    <domain>NT AUTHORITY</domain>
+    <user>LocalService</user>
+  </serviceaccount>
+  <startmode>Manual</startmode>
+  <stopparentprocessfirst>true</stopparentprocessfirst>
+  <onfailure action="none"/>
+  <logpath>C:\WebGPTPrivate\logs</logpath>
+  <log mode="roll-by-size">
+    <sizeThreshold>10240</sizeThreshold>
+    <keepFiles>8</keepFiles>
+  </log>
+</service>

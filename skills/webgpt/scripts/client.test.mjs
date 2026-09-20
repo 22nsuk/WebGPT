@@ -70,7 +70,11 @@ test('client and worker CLIs execute through a symlinked installation path', () 
   const { stdout } = await execute(process.execPath, [join(scripts, 'client.mjs'), 'status'], { env });
   assert.deepEqual(JSON.parse(stdout), { events: [], backupDue: [] });
   // Startup must actually execute and reject the live owner's lock, not exit silently with code 0.
-  await assert.rejects(execute(process.execPath, [join(scripts, 'worker.mjs')], { env }), /data directory locked/);
+  await assert.rejects(execute(process.execPath, [join(scripts, 'worker.mjs')], { env }), error => {
+    assert.equal(error.code, 73);
+    assert.deepEqual(JSON.parse(error.stderr), { event: 'startup_failed', code: 'LOCK_HELD', exitCode: 73 });
+    return true;
+  });
 }));
 
 test('controller authenticates, rejects invalid calls, and returns errors without keys', () => fixture(async ({ service, admin }) => {

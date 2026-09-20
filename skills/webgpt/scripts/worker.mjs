@@ -1,12 +1,12 @@
 import { createServer, validateHeaderValue } from 'node:http';
 import { randomUUID, randomBytes, createHash, timingSafeEqual } from 'node:crypto';
-import { mkdirSync, writeFileSync, readFileSync, existsSync, renameSync, unlinkSync, rmdirSync, realpathSync } from 'node:fs';
-import { hostname } from 'node:os';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, renameSync, unlinkSync, readdirSync, realpathSync } from 'node:fs';
 import { resolve, relative, isAbsolute, sep } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { grantWorkspace, listWorkspace, readWorkspace, changeWorkspace, inspectRecovery } from './workspace.mjs';
 import { configuration } from './client.mjs';
+import { acquireRuntimeLock, readStateBytes, readStateMarker, createStateMarker, parseState, fault, startupExitCode } from './runtime.mjs';
 import { protocolVersions, validateMessage, negotiateProtocol, validateArguments } from './protocol.mjs';
 
 const schema = properties => ({type:'object',properties,required:Object.keys(properties),additionalProperties:false});
@@ -20,21 +20,19 @@ export const tools = [
   {name:'read_input',description:'Read one explicitly supplied input by name; no arbitrary filesystem access.',inputSchema:schema({token:str,name:str}),annotations:{readOnlyHint:true,openWorldHint:false}},
   {name:'submit_result',description:'Save the task deliverable, evidence and limitations, and notify the supervisor. No file changes required. Terminal: stops backup checks. Retry identical submission safely. Do not delete the chat.',inputSchema:schema({token:str,status:{type:'string',enum:['completed','failed','cancelled']},summary:str,result:str}),annotations:{readOnlyHint:false,destructiveHint:false,idempotentHint:true,openWorldHint:false}}
 ];
-export async function start({dir,port=43137,controlPort=43139,publicMcp=false,backupMs=900000,waitMs=55000,now=Date.now}={}) {
+export async function start({dir,port=43137,controlPort=43139,publicMcp=false,backupMs=900000,waitMs=55000,closeGraceMs=5000,now=Date.now}={}) {
   if(!Number.isSafeInteger(waitMs)||waitMs<1||waitMs>55000)throw Error('waitMs must be between 1 and 55000');
   dir=resolve(dir); mkdirSync(dir,{recursive:true,mode:0o700});
-  const lock=resolve(dir,'worker.lock');
-  try{mkdirSync(lock,{mode:0o700});}catch(e){if(e.code==='EEXIST')throw Error('WebGPT data directory locked: '+lock+'; verify its owner before recovering a stale lock');throw e;}
-  const release=()=>{if(existsSync(resolve(lock,'owner.json')))unlinkSync(resolve(lock,'owner.json'));rmdirSync(lock);};
+  if(!Number.isSafeInteger(closeGraceMs)||closeGraceMs<1||closeGraceMs>30000)throw Error('invalid closeGraceMs');
+  const ownership=acquireRuntimeLock(dir), release=()=>ownership.release();
   try{
-  writeFileSync(resolve(lock,'owner.json'),JSON.stringify({pid:process.pid,host:hostname()}),{mode:0o600});
   const statePath=resolve(dir,'state.json'), keyPath=resolve(dir,'controller.key');
   const key=existsSync(keyPath)?readFileSync(keyPath,'utf8'):randomUUID();
   // Validate before opening either listener; HTTP removes trailing header whitespace.
   try{
     if(!key||/[ \t]$/.test(key))throw Error();
     validateHeaderValue('authorization','Bearer '+key);
-  }catch{throw Error('invalid controller.key');}
+  }catch{throw fault('CONFIG_INVALID','invalid controller.key');}
   if(!existsSync(keyPath))writeFileSync(keyPath,key,{mode:0o600,flag:'wx'});
   // URL capability authenticates the remote MCP connection; task tokens separately grant work.
   // Keep the URL out of stdout, task prompts and HTTP error responses.
@@ -43,29 +41,60 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
     const pathKey=resolve(dir,'mcp-path.key');
     if(!existsSync(pathKey))writeFileSync(pathKey,randomBytes(32).toString('hex'),{mode:0o600,flag:'wx'});
     const secret=readFileSync(pathKey,'utf8');
-    if(!/^[a-f0-9]{64}$/.test(secret))throw Error('invalid mcp-path.key');
+    if(!/^[a-f0-9]{64}$/.test(secret))throw fault('CONFIG_INVALID','invalid mcp-path.key');
     mcpPath+='/'+secret;
   }
-  let tasks=existsSync(statePath)?JSON.parse(readFileSync(statePath,'utf8')):[];
-  // Do not silently reinterpret live upstream terminal/open grants as file tasks.
-  if(tasks.some(t=>!t.collected&&['terminal','mode','openKey'].some(key=>Object.hasOwn(t,key))))
-    throw Error('incompatible terminal/open state; use its matching worker to retire active sessions first');
+  const markerPath=resolve(dir,'state.initialized');
+  let savedState=readStateBytes(statePath), stateInitialized=readStateMarker(markerPath);
+  if(savedState===null&&(stateInitialized||existsSync(statePath+'.tmp')||readdirSync(dir).some(name=>name.endsWith('.result.txt'))
+      ||existsSync(resolve(dir,'recovery'))))
+    throw fault('STATE_INVALID','state.json is missing beside recovery evidence; do not start an empty runtime');
+  let tasks=parseState(savedState,dir), stopping=false, closePromise;
+  // Existing valid state is the evidence needed to migrate legacy runtimes.
+  // Keys alone may belong to a worker that has never registered a task.
+  if(savedState!==null&&!stateInitialized){createStateMarker(markerPath);stateInitialized=true;}
+  let storageFailure=null, stateFailure=null;
   const waiters=new Set();
-  // Publish in-memory transitions only after the matching state file was replaced.
-  // A failed write must not turn a later retry into a false success or revoke a token.
+  const wake=()=>{for(const fn of [...waiters])fn();};
+  const storageError=error=>{
+    if(error.code==='STATE_INVALID')stateFailure=error;
+    else storageFailure={code:error.code??'STORAGE_UNAVAILABLE'};
+    wake();
+    return Object.assign(error,{statusCode:503,retryable:false});
+  };
+  const verifyState=()=>{
+    if(stateFailure)throw stateFailure;
+    try{
+      if(readStateMarker(markerPath)!==stateInitialized)
+        throw fault('STATE_INVALID','state initialization marker changed outside this worker; preserve evidence and inspect');
+      const actual=readStateBytes(statePath);
+      if(savedState===null?actual!==null:actual===null||!savedState.equals(actual))
+        throw fault('STATE_INVALID','state.json changed outside this worker; preserve evidence and inspect');
+    }catch(error){throw storageError(error);}
+  };
+  // Publish in-memory transitions only after the matching file was replaced.
+  // A failed write does not revoke tokens, acknowledge results or erase evidence.
   const persist=(next=tasks)=>{
-    writeFileSync(statePath+'.tmp',JSON.stringify(next),{mode:0o600});
-    renameSync(statePath+'.tmp',statePath);
-    tasks=next;
+    verifyState();
+    try{
+      if(!stateInitialized){createStateMarker(markerPath);stateInitialized=true;}
+      const bytes=Buffer.from(JSON.stringify(next));
+      writeFileSync(statePath+'.tmp',bytes,{mode:0o600,flush:true});
+      renameSync(statePath+'.tmp',statePath);
+      savedState=bytes;tasks=next;storageFailure=null;
+    }catch(error){throw storageError(error);}
   };
   const updateTask=(task,changes)=>persist(tasks.map(t=>t===task?{...t,...changes}:t));
+  const codeRoot=realpathSync.native(fileURLToPath(new URL('.',import.meta.url)));
   const checkDataBoundary=workspace=>{
     if(!workspace)return;
-    const dataRoot=realpathSync.native(dir), workspaceRoot=realpathSync.native(workspace.root);
-    // Neither tree may contain the other: runtime descendants include private recovery copies.
-    for(const rel of [relative(workspaceRoot,dataRoot),relative(dataRoot,workspaceRoot)])
-      if(rel===''||(!isAbsolute(rel)&&rel!=='..'&&!rel.startsWith('..'+sep)))
-        throw Error('workspace overlaps private worker data; use a separate project root');
+    const workspaceRoot=realpathSync.native(workspace.root);
+    // An unattended restart must never execute code modified through its own grant.
+    // Use a separate source checkout to edit WebGPT, not the running installation.
+    for(const [protectedRoot,label] of [[realpathSync.native(dir),'private worker data'],[codeRoot,'running worker code']])
+      for(const rel of [relative(workspaceRoot,protectedRoot),relative(protectedRoot,workspaceRoot)])
+        if(rel===''||(!isAbsolute(rel)&&rel!=='..'&&!rel.startsWith('..'+sep)))
+          throw Error('workspace overlaps '+label+'; use a separate project root');
   };
   const revoke=t=>{delete t.token;t.inputs={};t.instructions='';};
   // Recover recorded mutations; never guess whether an interrupted mutation was applied.
@@ -86,7 +115,6 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
     const recoveryRequired=selected.filter(t=>t.status==='running'&&t.recoveryRequired?.length).map(t=>({id:t.id,journals:t.recoveryRequired}));
     return {events:selected.filter(t=>t.status!=='running'&&!t.collected).map(t=>({id:t.id,status:t.status,summary:t.summary,artifact:t.artifact,sha256:t.sha256})),backupDue:selected.filter(t=>t.status==='running'&&now()>=t.nextCheck).map(t=>t.id),...(recoveryRequired.length?{recoveryRequired}:{})};
   };
-  const wake=()=>{for(const fn of [...waiters])fn();};
   const flagUnrecordedChanges=task=>{
     const {receipts,unresolved}=inspectRecovery(dir,task.id);
     const pending=new Set([...(task.recoveryRequired??[]),...unresolved]);
@@ -96,7 +124,28 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
     // This safety block intentionally stays live even if state storage is unavailable.
     if(pending.size){task.recoveryRequired=[...pending];wake();}
   };
-  const json=(res,status,value)=>{res.writeHead(status,{'content-type':'application/json','cache-control':'no-store'});res.end(JSON.stringify(value));};
+  const readiness=()=>{
+    let probe;
+    try{
+      verifyState();
+      // Check write/rename ability without rewriting state or recovery evidence.
+      probe=resolve(dir,'.health-'+randomUUID());
+      writeFileSync(probe+'.tmp','probe',{flag:'wx',mode:0o600,flush:true});
+      renameSync(probe+'.tmp',probe);unlinkSync(probe);
+    }catch(error){storageError(error);}
+    finally{if(probe)for(const file of [probe+'.tmp',probe])try{unlinkSync(file);}catch{}}
+    for(const task of tasks.filter(t=>t.status==='running'))flagUnrecordedChanges(task);
+    const recoveryRequired=tasks.filter(t=>t.status==='running'&&t.recoveryRequired?.length).map(t=>t.id);
+    const unavailableWorkspaces=tasks.filter(t=>t.status==='running'&&t.workspace).filter(t=>{
+      try{checkDataBoundary(t.workspace);listWorkspace(t.workspace,'.',{limit:1});return false;}catch{return true;}
+    }).map(t=>t.id);
+    const issues=[...(stopping?['SHUTTING_DOWN']:[]),...(stateFailure?['STATE_INVALID']:[]),
+      ...(storageFailure?['STORAGE_UNAVAILABLE']:[]),...(recoveryRequired.length?['RECOVERY_REQUIRED']:[]),
+      ...(unavailableWorkspaces.length?['WORKSPACE_UNAVAILABLE']:[])];
+    return {ok:!issues.length,instanceId:ownership.instanceId,issues,recoveryRequired,unavailableWorkspaces,
+      storage:storageFailure?{ok:false,...storageFailure}:{ok:!stateFailure},automaticRestartRecommended:false};
+  };
+  const json=(res,status,value)=>{if(res.destroyed||res.writableEnded)return;res.writeHead(status,{'content-type':'application/json','cache-control':'no-store'});res.end(JSON.stringify(value));};
   const body=async(req,limit=2*1024*1024)=>{
     const chunks=[];let bytes=0;
     for await(const c of req){bytes+=c.length;if(bytes>limit)throw Object.assign(Error('request too large'),{statusCode:413});chunks.push(c);}
@@ -104,6 +153,8 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
     return JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(Buffer.concat(chunks)));
   };
   const call=(name,args)=>{
+    if(stopping)throw fault('SHUTTING_DOWN','worker is stopping');
+    verifyState();
     if(!args||typeof args!=='object'||Array.isArray(args))throw Error('tool arguments must be an object');
     const t=typeof args.token==='string'&&tasks.find(t=>t.token&&t.token===args.token);if(!t)throw Error('unknown task token');
     const tool=tools.find(tool=>tool.name===name);if(!tool)throw Error('unknown tool');
@@ -115,12 +166,14 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
       if(t.status!=='running')throw Error('task is terminal; file access closed');
       if(name==='list_files')return listWorkspace(t.workspace,args.path,{cursor:args.cursor,limit:args.limit});
       if(name==='read_file')return readWorkspace(t.workspace,args.path);
+      flagUnrecordedChanges(t);
       if(t.recoveryRequired?.length)throw Error('interrupted mutation: supervisor recovery required before further edits');
       try {
         const receipt=changeWorkspace(t.workspace,dir,t.id,args,name==='delete_file');
         updateTask(t,{changes:[...(t.changes??[]),receipt]});
         return receipt;
       } catch(e) {
+        if(['EACCES','EPERM','ENOSPC','EROFS','EIO','EISDIR','ENOTDIR','EMFILE','ENFILE'].includes(e.code))storageError(e);
         flagUnrecordedChanges(t);
         if(t.recoveryRequired?.length)throw Error('file operation not fully recorded; supervisor recovery required: '+e.message);
         throw e;
@@ -128,18 +181,22 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
     }
     if(name!=='submit_result')throw Error('unknown tool');
     if(!['completed','failed','cancelled'].includes(args.status)||typeof args.result!=='string'||typeof args.summary!=='string'||args.summary.length>2048||Buffer.byteLength(args.result)>1024*1024)throw Error('invalid result');
+    flagUnrecordedChanges(t);
     if(args.status==='completed'&&t.recoveryRequired?.length)throw Error('supervisor recovery required; preserve partial output with failed status');
     const sha=createHash('sha256').update(args.result).digest('hex');
     if(t.status!=='running'){if(sha!==t.sha256||args.status!==t.status||args.summary!==t.summary)throw Error('terminal result differs');return {accepted:true,duplicate:true,sha256:sha};}
     const artifact=resolve(dir,t.id+'.result.txt');
-    writeFileSync(artifact+'.tmp',args.result,{mode:0o600});
-    renameSync(artifact+'.tmp',artifact);
+    try{
+      writeFileSync(artifact+'.tmp',args.result,{mode:0o600,flush:true});
+      renameSync(artifact+'.tmp',artifact);
+    }catch(error){throw storageError(error);}
     updateTask(t,{status:args.status,summary:args.summary,artifact,sha256:sha,nextCheck:null});
     wake();return {accepted:true,sha256:sha};
   };
   const mcp=createServer(async(req,res)=>{
     if(req.headers.origin)return json(res,403,{});
     if(req.method==='GET'&&req.url==='/health')return json(res,200,{ok:true,name:'WebGPT Worker'});
+    if(stopping)return json(res,503,{error:'worker is stopping',code:'SHUTTING_DOWN'});
     const actual=Buffer.from(req.url??''),expected=Buffer.from(mcpPath);
     if(actual.length!==expected.length||!timingSafeEqual(actual,expected))return json(res,404,{});
     if(req.method!=='POST'){res.setHeader('allow','POST');return json(res,405,{});}
@@ -151,6 +208,7 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
     let m;try{m=await body(req,8*1024*1024);}catch(e){
       return error(e.statusCode??400,null,e.statusCode===413?-32600:-32700,e.statusCode===413?'request too large':'invalid JSON or UTF-8');
     }
+    if(stopping)return json(res,503,{error:'worker is stopping',code:'SHUTTING_DOWN'});
     let kind;try{kind=validateMessage(m);}catch{return error(400,null,-32600,'invalid JSON-RPC request');}
     if(kind==='notification'){res.writeHead(202);return res.end();}
     let result,protocolVersion;
@@ -165,16 +223,26 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
     json(res,200,{jsonrpc:'2.0',id:m.id??null,result});
   });
   const control=createServer(async(req,res)=>{
+    if(req.headers.origin)return json(res,403,{});
     if(req.headers.authorization!=='Bearer '+key)return json(res,401,{});
     try{
       const url=new URL(req.url,'http://localhost');
+      if(req.method==='GET'&&req.url==='/ready'){
+        const report=readiness();return json(res,report.ok?200:503,report);
+      }
+      if(req.method==='GET'&&req.url==='/reconcile')return json(res,200,{health:readiness(),tasks:tasks.map(t=>({
+        id:t.id,status:t.status,collected:t.collected,discarded:t.discarded??false,nextCheck:t.nextCheck,
+        artifact:t.artifact??null,sha256:t.sha256??null,changes:t.changes??[],
+        recoveryRequired:t.recoveryRequired??[],journalIssues:inspectRecovery(dir,t.id).unresolved
+      }))});
+      if(stopping)return json(res,503,{error:'worker is stopping',code:'SHUTTING_DOWN',retryable:true});
       if(req.method==='GET'&&url.pathname==='/wait'){
         const ids=url.searchParams.getAll('id');
         if([...url.searchParams.keys()].some(key=>key!=='id'))throw Error('invalid wait query');
         if(ids.some(id=>!tasks.some(t=>t.id===id)))throw Error('unknown task');
         const selected=()=>ids.length?tasks.filter(t=>ids.includes(t.id)):tasks;
-        const snapshot=()=>({...view(selected()),...(ids.length?{settled:!selected().some(t=>t.status==='running')}:{})});
-        const ready=v=>v.events.length||v.backupDue.length||v.recoveryRequired?.length||!selected().some(t=>t.status==='running');
+        const snapshot=()=>({...view(selected()),...((stopping||storageFailure||stateFailure)?{interrupted:true}:{}),...(ids.length?{settled:!selected().some(t=>t.status==='running')}:{})});
+        const ready=v=>v.interrupted||v.events.length||v.backupDue.length||v.recoveryRequired?.length||!selected().some(t=>t.status==='running');
         const v=snapshot();if(ready(v))return json(res,200,v);
         let timer;
         const done=(timeout=false)=>{
@@ -200,6 +268,14 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
 
       if(req.method!=='POST')return json(res,404,{});
       const a=await body(req);
+      if(stopping)return json(res,503,{error:'worker is stopping',code:'SHUTTING_DOWN',retryable:true});
+      if(req.url==='/shutdown'){
+        if(!a||typeof a!=='object'||Array.isArray(a)||Object.keys(a).length)throw Error('shutdown requires an empty object');
+        stopping=true;
+        res.once('finish',()=>{setImmediate(()=>{close().catch(()=>{process.exitCode=74;});});});
+        json(res,202,{accepted:true});return;
+      }
+      verifyState();
       if(req.url==='/register'){
         if(a&&['terminal','mode'].some(key=>Object.hasOwn(a,key)))throw Error('terminal/open modes are not supported by this file-scoped fork');
         if(!a||typeof a.id!=='string'||!/^[a-zA-Z0-9_-]{1,80}$/.test(a.id)||typeof a.instructions!=='string'||!a.inputs||typeof a.inputs!=='object'||Array.isArray(a.inputs)||Object.values(a.inputs).some(v=>typeof v!=='string'))throw Error('invalid task');
@@ -231,18 +307,35 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
       }
       else return json(res,404,{});
       persist(tasks.map(task=>task===t?next:task));wake();json(res,200,{ok:true});
-    }catch(e){json(res,400,{error:e.message});}
+    }catch(e){json(res,e.statusCode??400,{error:e.message,...(e.code?{code:e.code}:{}),retryable:false});}
   });
   for(const server of [mcp,control])server.requestTimeout=15000;
   const listen=(s,p)=>new Promise((yes,no)=>{s.once('error',no);s.listen(p,'127.0.0.1',yes);});
   try{await listen(mcp,port);await listen(control,controlPort);}catch(e){mcp.close();control.close();throw e;}
-  let closed=false;
-  return {mcpPort:mcp.address().port,controlPort:control.address().port,key,close:async()=>{if(closed)return;closed=true;wake();await Promise.all([mcp,control].map(s=>new Promise(r=>{s.closeAllConnections();s.close(r);})));release();}};
+  const close=()=>{
+    if(closePromise)return closePromise;
+    stopping=true;wake();
+    closePromise=Promise.all([mcp,control].map(server=>new Promise(done=>{
+      const deadline=setTimeout(()=>server.closeAllConnections(),closeGraceMs);
+      server.close(()=>{clearTimeout(deadline);done();});
+      server.closeIdleConnections();
+    }))).then(()=>release());
+    return closePromise;
+  };
+  return {mcpPort:mcp.address().port,controlPort:control.address().port,key,close};
   }catch(e){release();throw e;}
 }
 if(process.argv[1]&&process.argv[1]!=='-'&&import.meta.url===pathToFileURL(realpathSync(process.argv[1])).href){
-  const config=configuration();
-  const service=await start({dir:config.dataDir,port:config.mcpPort,controlPort:config.controlPort,publicMcp:config.publicMcp});
-  console.log(JSON.stringify({ready:true,mcpPort:service.mcpPort,controlPort:service.controlPort}));
-  for(const signal of ['SIGINT','SIGTERM'])process.on(signal,()=>service.close().then(()=>process.exit(0)));
+  let config;
+  try{config=configuration();}catch(error){console.error(JSON.stringify({event:'startup_failed',code:'CONFIG_INVALID'}));process.exitCode=78;}
+  if(config)try{
+    const service=await start({dir:config.dataDir,port:config.mcpPort,controlPort:config.controlPort,publicMcp:config.publicMcp});
+    console.log(JSON.stringify({event:'listening',mcpPort:service.mcpPort,controlPort:service.controlPort}));
+    const stop=()=>service.close().catch(()=>{process.exitCode=74;});
+    if(process.connected){process.on('message',message=>{if(message?.type==='shutdown')stop();});process.channel?.unref();}
+    for(const signal of ['SIGINT','SIGTERM',...(process.platform==='win32'?['SIGBREAK']:[])])process.on(signal,stop);
+  }catch(error){
+    console.error(JSON.stringify({event:'startup_failed',code:error.code??'UNEXPECTED',exitCode:startupExitCode(error)}));
+    process.exitCode=startupExitCode(error);
+  }
 }
