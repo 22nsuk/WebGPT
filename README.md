@@ -69,7 +69,10 @@ The inventory is controller-only and omits task tokens, instructions and input c
 
 `list_files` supports optional `limit` (1–500) and `cursor` arguments. Follow `nextCursor` until
 `truncated:false`; a changed directory invalidates the cursor instead of silently skipping entries.
-Refresh the ChatGPT connection's tool schemas after updating the idle worker and client together.
+Follow the [update procedure](skills/webgpt/references/operations-windows.md#parent-resume-transition-and-rollback):
+confirm idle, stop the identified worker and restart owner, verify exit, preserve a consistent
+private backup, then replace the matching worker/client/helpers. Keep a healthy existing tunnel
+and ChatGPT connection during a code-only update; verify its settings and refresh stale schemas.
 
 After an uncertain registration response, repeat the exact registration with the same ID.
 Only an identical, still-running task returns the original token; changed or finished tasks are

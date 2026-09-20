@@ -30,8 +30,10 @@ turn/session may be needed for skill discovery. Resolve `main` to a commit and r
 for verification and recovery; install that commit so a concurrent upstream update cannot change
 the candidate. The README intentionally follows the latest version, not a permanently pinned release.
 
-Update the fork worker, client and their runtime/service helpers together only when the identified service is idle; preserve its
-configuration, task state, results and recovery records. Existing file grants remain compatible.
+Update the fork worker, client and their runtime/service helpers as one matching revision.
+An idle worker is a prerequisite, not permission to replace files in a live installation.
+Freeze new dispatch and preserve its configuration, task state, results and recovery records.
+Existing file grants remain compatible.
 Check `client.mjs tasks`: `status` alone omits running work before its backup deadline. For an
 older worker without `tasks`, inspect its existing ledger and local state privately to establish
 that no registrations are running; never print task tokens or infer idle from an empty event queue.
@@ -39,14 +41,28 @@ Collect finished results and confirm no running tasks before an authorized updat
 cannot be collected, preserve and inspect the failure before explicitly abandoning its registration
 with `cancel` as described in workspace.md; never use `ack` to bypass integrity verification.
 Normally confirm that the task inventory has no running or uncollected entries before updating.
+Then stop the identified worker and any supervisor or restart mechanism through their existing
+supported lifecycle, and verify that they have exited before replacing code. A supervisor in
+backoff is still live. Legacy revisions without `shutdown` need their existing owned launcher's
+stop procedure; a newer client cannot add that command to an old worker. Preserve any stale lock
+and inspect its owner after forced termination; do not delete it to make startup succeed.
+Take a consistent private backup after the worker has stopped, verify the backup's contents and
+actual file ACLs, and stage the complete reviewed revision outside the running installation.
+Start the replacement with the same intended identity, explicit configuration, data and ports.
+Keep a healthy tunnel running during a code-only update; preserve its origin, secret path and
+existing ChatGPT connection. Follow the detailed
+[transition and rollback procedure](operations-windows.md#parent-resume-transition-and-rollback),
+including checks supported by each revision and the separate gates for account or tunnel changes.
 An older worker may report successful terminal cancellation without retiring the registration.
 For that specific case, preserve its private state, results, recovery records and collection error;
 verify there are no running tasks, stop the identified owned worker and update the matching worker
 and client together while preserving the uncollected terminal records. After restart, use the new
 `cancel` behavior for the explicitly abandoned registrations and confirm the inventory is empty
 before dispatching new work. Do not acknowledge corrupt results or edit state by hand to force
-the old inventory to clear. Refresh connection
-tool schemas afterward; `list_files` must expose optional `cursor` and `limit` with the same seven tools.
+the old inventory to clear. Verify the existing connection's endpoint, permission setting and
+tool schemas afterward; refresh schemas if they changed or are stale. `list_files` must expose
+optional `cursor` and `limit` with the same seven tools. Do not recreate a compatible connection
+or change its permissions as an incidental update step.
 Task-scoped waits require the updated worker; a protocol error is not permission to restart active
 work. This fork rejects terminal/open grants and live upstream terminal state. Retire those sessions
 with their matching worker before choosing a separate file-worker setup; never reinterpret or
