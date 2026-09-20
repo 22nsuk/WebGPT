@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
-import { dirname, isAbsolute, parse, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, parse, resolve } from 'node:path';
 import { homedir } from 'node:os';
 
 const MAX_BYTES = 1024 * 1024;
@@ -18,8 +18,8 @@ export function grantWorkspace(input) {
   if (input == null) return null;
   if (!input || typeof input.root !== 'string' || !isAbsolute(input.root)
       || !['read','edit'].includes(input.mode) || 'read' in input || 'write' in input) throw Error('use workspace root and mode only');
-  const root = realpathSync(input.root), stat = lstatSync(root);
-  if (!stat.isDirectory() || root === parse(root).root || root === realpathSync(homedir())) throw Error('project root required');
+  const root = realpathSync.native(input.root), stat = lstatSync(root);
+  if (!stat.isDirectory() || root === parse(root).root || root === realpathSync.native(homedir())) throw Error('project root required');
   return {root, device:stat.dev, inode:stat.ino, mode:input.mode};
 }
 function target(grant,path,writing=false,createParents=false,directory=false) {
@@ -36,7 +36,13 @@ function target(grant,path,writing=false,createParents=false,directory=false) {
     let stat=metadata(cursor);
     if (!stat && i<parts.length-1 && createParents) {mkdirSync(cursor,{mode:0o755});stat=lstatSync(cursor);}
     if (!stat) return resolve(grant.root,path);
-    if(stat.isSymbolicLink() || (i<parts.length-1 || directory ? !stat.isDirectory() : !stat.isFile() || stat.nlink!==1)) throw Error('symlink, hardlink or invalid target type');
+    // Reject links before canonicalizing: resolving a link must not erase the evidence.
+    if(stat.isSymbolicLink()) throw Error('symlink, hardlink or invalid target type');
+    // Native resolution expands actual Windows short names, including aliases other than GIT~1.
+    // Check each existing ancestor before creating children or opening a file beneath it.
+    cursor=realpathSync.native(cursor);
+    if(isGitMetadataName(basename(cursor))) throw Error('invalid path or Git metadata');
+    if(i<parts.length-1 || directory ? !stat.isDirectory() : !stat.isFile() || stat.nlink!==1) throw Error('symlink, hardlink or invalid target type');
   }
   return cursor;
 }

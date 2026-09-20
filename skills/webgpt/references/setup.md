@@ -35,7 +35,17 @@ configuration, task state, results and recovery records. Existing file grants re
 Check `client.mjs tasks`: `status` alone omits running work before its backup deadline. For an
 older worker without `tasks`, inspect its existing ledger and local state privately to establish
 that no registrations are running; never print task tokens or infer idle from an empty event queue.
-Collect finished results and confirm no running tasks before an authorized update. Refresh connection
+Collect finished results and confirm no running tasks before an authorized update. If a result
+cannot be collected, preserve and inspect the failure before explicitly abandoning its registration
+with `cancel` as described in workspace.md; never use `ack` to bypass integrity verification.
+Normally confirm that the task inventory has no running or uncollected entries before updating.
+An older worker may report successful terminal cancellation without retiring the registration.
+For that specific case, preserve its private state, results, recovery records and collection error;
+verify there are no running tasks, stop the identified owned worker and update the matching worker
+and client together while preserving the uncollected terminal records. After restart, use the new
+`cancel` behavior for the explicitly abandoned registrations and confirm the inventory is empty
+before dispatching new work. Do not acknowledge corrupt results or edit state by hand to force
+the old inventory to clear. Refresh connection
 tool schemas afterward; `list_files` must expose optional `cursor` and `limit` with the same seven tools.
 Task-scoped waits require the updated worker; a protocol error is not permission to restart active
 work. This fork rejects terminal/open grants and live upstream terminal state. Retire those sessions
@@ -121,7 +131,7 @@ recorded host/PID and that no worker still uses this directory before moving tha
 to an owned recovery location and restarting. Never delete an unverified lock or stop another owner.
 
 The updated installation includes `scripts/protocol.mjs`; do not copy only worker.mjs.
-In a local MCP probe, confirm server version `1.4.1-fork.1`, protocol negotiation and an empty
+In a local MCP probe, confirm server version `1.4.1-fork.2`, protocol negotiation and an empty
 `ping` result. Missing or unsupported protocol fields are not evidence of browser readiness.
 Refresh the connection after updating the identified idle service, and still run the real
 browser/connector probe below; no public connection or browser test is implied by local tests.

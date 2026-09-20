@@ -56,9 +56,9 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
   const updateTask=(task,changes)=>persist(tasks.map(t=>t===task?{...t,...changes}:t));
   const checkDataBoundary=workspace=>{
     if(!workspace)return;
-    const dataRoot=realpathSync(dir);
+    const dataRoot=realpathSync.native(dir), workspaceRoot=realpathSync.native(workspace.root);
     // Neither tree may contain the other: runtime descendants include private recovery copies.
-    for(const rel of [relative(workspace.root,dataRoot),relative(dataRoot,workspace.root)])
+    for(const rel of [relative(workspaceRoot,dataRoot),relative(dataRoot,workspaceRoot)])
       if(rel===''||(!isAbsolute(rel)&&rel!=='..'&&!rel.startsWith('..'+sep)))
         throw Error('workspace overlaps private worker data; use a separate project root');
   };
@@ -153,7 +153,7 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
       try{protocolVersion=negotiateProtocol(m.params?.protocolVersion);}catch{return error(200,m.id,-32602,'invalid protocolVersion');}
     }
     if(m.method==='ping')result={};
-    else if(m.method==='initialize')result={protocolVersion,capabilities:{tools:{}},serverInfo:{name:'webgpt-worker',version:'1.4.1-fork.1'},instructions:'Read get_task with your private task token and perform the assigned task. Use read_input for supplied inputs. No workspace or file changes are required for text-only work. Use local file tools only when needed and granted; requested edits are applied directly, with revision hashes from read_file and no per-file grants. Review-only tasks cannot write. Coordinate disjoint edits if other workers share the project. Submit result once with the deliverable, any change receipts, evidence and limitations. No Git, PR, shell, or process control. Supervisor verifies results and retains task chats by default. Delete a task chat only when the user explicitly requests deletion of that chat.'};
+    else if(m.method==='initialize')result={protocolVersion,capabilities:{tools:{}},serverInfo:{name:'webgpt-worker',version:'1.4.1-fork.2'},instructions:'Read get_task with your private task token and perform the assigned task. Use read_input for supplied inputs. No workspace or file changes are required for text-only work. Use local file tools only when needed and granted; requested edits are applied directly, with revision hashes from read_file and no per-file grants. Review-only tasks cannot write. Coordinate disjoint edits if other workers share the project. Submit result once with the deliverable, any change receipts, evidence and limitations. No Git, PR, shell, or process control. Supervisor verifies results and retains task chats by default. Delete a task chat only when the user explicitly requests deletion of that chat.'};
     else if(m.method==='tools/list')result={tools};
     else if(m.method==='tools/call'){try{const out=call(m.params?.name,m.params?.arguments);result={content:[{type:'text',text:JSON.stringify(out)}],structuredContent:out,isError:false};}catch(e){result={content:[{type:'text',text:e.message}],isError:true};}}
     else return json(res,200,{jsonrpc:'2.0',id:m.id??null,error:{code:-32601,message:'method not found'}});
@@ -207,7 +207,8 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
           throw Error('task ID conflicts with an existing ID on case-insensitive filesystems');
         if(existing) {
           if(existing.status==='running'&&!existing.collected&&existing.token&&existing.instructions===a.instructions
-              &&isDeepStrictEqual(existing.inputs,a.inputs)&&isDeepStrictEqual(existing.workspace??null,workspace))
+              &&isDeepStrictEqual(existing.inputs,a.inputs)
+              &&isDeepStrictEqual(existing.workspace?{...existing.workspace,root:realpathSync.native(existing.workspace.root)}:null,workspace))
             return json(res,200,{id:existing.id,token:existing.token,duplicate:true});
           throw Error('task ID already exists with different inputs, grant or terminal state');
         }
@@ -218,7 +219,11 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
       const next={...t};
       if(req.url==='/ack'){if(t.status==='running')throw Error('not complete');next.collected=true;revoke(next);}
       else if(req.url==='/checked'){if(t.status==='running')next.nextCheck=now()+backupMs;}
-      else if(req.url==='/cancel'){if(t.status==='running'){next.status='cancelled';next.summary='Cancelled by supervisor';next.nextCheck=null;next.collected=true;revoke(next);}}
+      else if(req.url==='/cancel'){
+        if(t.status==='running'){next.status='cancelled';next.summary='Cancelled by supervisor';next.nextCheck=null;next.collected=true;revoke(next);}
+        // Abandon collection explicitly without rewriting the terminal result or its evidence.
+        else if(!t.collected){next.collected=true;next.discarded=true;revoke(next);}
+      }
       else return json(res,404,{});
       persist(tasks.map(task=>task===t?next:task));wake();json(res,200,{ok:true});
     }catch(e){json(res,400,{error:e.message});}

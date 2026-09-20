@@ -52,6 +52,9 @@ The project root cannot contain or be located inside the private worker data dir
 its recovery subdirectories. Registration checks this, and file calls recheck it for older saved
 grants. Keep projects and runtime data in separate trees. This
 protects worker credentials and records, not arbitrary secrets such as a project's `.env` file.
+The comparison resolves both roots through the native filesystem, including Windows short names;
+saved grants are checked again on file calls. Ordinary short-path project grants and registration
+retries remain supported when they refer to the same directory identity and access mode.
 
 
 ### Worker tool reference
@@ -84,7 +87,10 @@ The service rejects stale revisions, symlinks/hardlinks, traversal and Git metad
 remains the parent's responsibility. The same metadata-name check applies to every path component
 and directory listing: case variants of `.git`, trailing dots/spaces, `GIT~1` and NTFS stream
 aliases are protected on every platform. `.gitignore`, `.gitattributes`, `.gitmodules` and `.github`
-are ordinary project paths, not Git metadata. Other project text files need no individual grant. Never
+remain ordinary project files. Existing components are also checked by their native filesystem
+names, so an actual short alias such as `GIT~2` cannot select `.git` or a Git worktree pointer.
+Link checks precede canonicalization, and existing ancestors are checked before new files or
+directories are created. Other project text files need no individual grant. Never
 transmit secrets unnecessarily. Originals and operation receipts are retained under the private data
 directory's `recovery/<task-id>/`; deletions are recoverable by the parent, never silently restored.
 This is for cooperative developer workspaces, not isolation from hostile local filesystem races.
@@ -160,6 +166,14 @@ rather than repeatedly retrying or restarting active tasks.
   remains for compatibility; do not use it to bypass failed integrity checks.
 - Abandoned tasks: stop their actual generation separately, preserve partial output and
   `await request('cancel', {id})`. Cancellation disables the registration, not the browser chat.
+  For a terminal but uncollected task, this explicitly abandons collection: it revokes the token,
+  redacts inputs/instructions and retires the event while preserving its original terminal status,
+  summary, result path/hash, files and recovery records. Saved state has `discarded:true` alongside
+  `collected:true`; here `collected` means queue retirement, and `discarded` records that collection
+  was abandoned, not integrity-verified. Inspect and preserve a failed collection before choosing
+  this path. Repeated cancellation preserves that disposition, and already collected tasks are
+  unchanged. Cancellation neither repairs nor deletes a corrupt/missing result. A failed state save
+  leaves the task and its token unretired until storage is repaired and cancellation succeeds.
 - `await request('status')` is read-only and reports events/deadlines, not all running tasks.
   `await request('tasks')` or CLI `tasks` returns outstanding IDs, statuses, deadlines, project roots
   and modes, plus running/uncollected counts. It does not return tokens, instructions or input text.

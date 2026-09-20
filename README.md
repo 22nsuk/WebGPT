@@ -44,6 +44,8 @@ Delete a chat only when the user explicitly requests deletion of that chat.
 Git metadata is blocked in file operations and directory listings, including Windows
 case variants, trailing dots/spaces, `GIT~1` and NTFS stream aliases. Ordinary project
 files such as `.gitignore`, `.gitattributes` and `.github` remain accessible.
+Existing path components are checked using their native filesystem names, so other Windows
+short aliases of `.git` are blocked too. Project/runtime overlap checks use native paths as well.
 
 
 ## Scoped task lifecycle
@@ -79,6 +81,10 @@ A project grant cannot overlap the worker's private data directory in either dir
 its recovery subdirectories. Keep projects and runtime data separate. State-save failures do not
 report successful completion or retire task access; an unrecorded file change blocks further edits
 until inspected. See workspace.md for recovery limits.
+
+If a terminal result cannot be collected, inspect and preserve its evidence before explicitly
+cancelling the abandoned registration. Cancellation revokes its token and retires the event,
+preserving the original status and files with `discarded:true` instead of certifying collection.
 
 ## Request and recovery checks
 

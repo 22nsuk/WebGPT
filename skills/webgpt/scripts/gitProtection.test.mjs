@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { grantWorkspace, listWorkspace, readWorkspace, changeWorkspace } from './workspace.mjs';
@@ -128,6 +128,24 @@ test('Windows filesystem case aliases cannot expose or change existing .git file
   assert.equal(readFileSync(join(root, '.GIT', 'config'), 'utf8'), original);
   for (const name of cases) rejectOperations(grant, dir, `${name}/config`);
   assert.equal(readFileSync(join(root, '.git', 'config'), 'utf8'), original);
+}));
+
+for (const pointer of [false, true]) test(`Windows alternate short names protect Git ${pointer ? 'pointer files' : 'directories and new descendants'}`, {
+  skip: process.platform !== 'win32' && 'requires a native Windows filesystem',
+}, t => fixture(({ dir, root, grant }) => {
+  // Occupy the first short name so the filesystem must choose a different alias.
+  mkdirSync(join(root, 'GIT~1'));
+  if (pointer) writeFileSync(join(root, '.git'), original);
+  else { mkdirSync(join(root, '.git')); writeFileSync(join(root, '.git', 'config'), original); }
+  const alias = join(root, 'GIT~2');
+  if (!existsSync(alias)) { t.skip('the temporary volume does not generate this NTFS short name'); return; }
+  assert.equal(realpathSync.native(alias), realpathSync.native(join(root, '.git')));
+  for (const path of pointer ? ['GIT~2'] : ['GIT~2', 'GIT~2/config', 'GIT~2/new/deep.txt']) {
+    rejectOperations(grant, dir, path);
+  }
+  assert.equal(readFileSync(join(root, '.git', ...(pointer ? [] : ['config'])), 'utf8'), original);
+  if (!pointer) assert.equal(existsSync(join(root, '.git', 'new')), false);
+  assert.equal(existsSync(join(dir, 'recovery')), false);
 }));
 
 test('MCP file tools reject protected paths for both read and edit grants without recording changes', () => fixture(async ({ dir, root }) => {
