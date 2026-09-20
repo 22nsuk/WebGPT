@@ -63,10 +63,12 @@ leave the Windows service in STOP_PENDING and requires explicit operator
 inspection and termination of the verified owned processes. Test these failure
 cases before installing the wrapper; an XML timeout does not establish recovery.
 
-If the launcher dies while its child remains alive, do not adopt or kill that child
-by guessing. A subsequent worker's ownership check refuses the duplicate. Inspect
-and stop the identified owner through its permitted local lifecycle interface.
-There is no automatic hang watchdog in this change.
+A responsive Worker shuts down when its launcher's IPC channel disconnects, including
+during startup. This is not an automatic hang watchdog. If the child remains alive,
+do not adopt or kill it by guessing. A subsequent worker's ownership check refuses
+the duplicate. Inspect and stop the identified owner through its permitted local
+lifecycle interface. See [recovery-integrity.md](recovery-integrity.md) for this
+ownership contract and interrupted-result handling.
 
 ## Liveness, readiness and recovery diagnostics
 
@@ -79,7 +81,7 @@ There is no automatic hang watchdog in this change.
 Readiness verifies that state bytes still match the worker's last owned commit,
 performs an isolated write/flush/rename/delete canary in the private runtime, and
 checks active recovery journals and workspace identity/access. Issues distinguish
-`STATE_INVALID`, `STORAGE_UNAVAILABLE`, `RECOVERY_REQUIRED`, `WORKSPACE_UNAVAILABLE`
+`STATE_INVALID`, `STORAGE_UNAVAILABLE`, `RECOVERY_REQUIRED`, `RESULT_RECOVERY_REQUIRED`, `WORKSPACE_UNAVAILABLE`
 and `SHUTTING_DOWN`. Credentials, prompts and inputs are not included. Actual
 storage-write failures are sticky until a successful real persist or a controlled
 restart after repair; a successful canary alone must not hide a failed result save.

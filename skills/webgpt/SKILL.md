@@ -88,6 +88,11 @@ URLs, saved results and collection disposition. Inspect recovery/integrity issue
 further edits. Never reset state, replay a journal or send a duplicate prompt to make a
 reconciliation warning disappear. A verified uncollected result may be collected normally;
 an already collected result needs no new acknowledgment or replacement registration.
+On `resultRecoveryRequired` or `inspect_uncommitted_result`, preserve candidate bytes
+and compare the retained chat/ledger before resubmitting; a result file alone is not
+completion. Do not overwrite it with a replacement answer or retry project edits.
+See [recovery-integrity.md](references/recovery-integrity.md) for candidate handling,
+missing journals, IPC-owner loss and the limits of these recovery checks.
 
 Scoped waits retry only transient transport failures within a finite budget. On `interrupted`
 or exhausted retries, inspect readiness and preserve the task instead of rebuilding a retry

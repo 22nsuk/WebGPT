@@ -146,7 +146,9 @@ recovery guards stop startup for inspection. Never delete an unverified lock or 
 See [operations-windows.md](operations-windows.md) for the optional bounded service launcher,
 Windows deployment prerequisites, graceful stop and parent reconciliation.
 
-The updated installation includes `scripts/protocol.mjs` and `scripts/runtime.mjs`; do not copy only worker.mjs.
+The updated installation includes `scripts/protocol.mjs`, `scripts/runtime.mjs` and
+`scripts/results.mjs`; do not copy only worker.mjs. Preserve and reconcile interrupted
+result candidates as described in [recovery-integrity.md](recovery-integrity.md).
 In a local MCP probe, confirm server version `1.4.1-fork.3`, protocol negotiation and an empty
 `ping` result. Missing or unsupported protocol fields are not evidence of browser readiness.
 Refresh the connection after updating the identified idle service, and still run the real

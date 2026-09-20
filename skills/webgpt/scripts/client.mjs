@@ -1,8 +1,8 @@
-import { readFileSync, existsSync, realpathSync, lstatSync } from 'node:fs';
+import { readFileSync, existsSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, isAbsolute, resolve } from 'node:path';
+import { join, isAbsolute } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { createHash } from 'node:crypto';
+import { verifySavedResult } from './results.mjs';
 import { setTimeout as delay } from 'node:timers/promises';
 
 // Shared by the worker and controller client; never store configuration in the skill.
@@ -63,10 +63,12 @@ export async function request(action, payload, config = configuration(), { signa
   });
   if (ids) {
     if (!result || !Array.isArray(result.events) || !Array.isArray(result.backupDue) || typeof result.settled !== 'boolean'
-        || (result.recoveryRequired !== undefined && !Array.isArray(result.recoveryRequired)))
+        || (result.recoveryRequired !== undefined && !Array.isArray(result.recoveryRequired))
+        || (result.resultRecoveryRequired !== undefined && !Array.isArray(result.resultRecoveryRequired)))
       throw Error('worker does not support task-scoped waits; update the idle worker and client together');
     if (result.events.some(event => !ids.includes(event?.id)) || result.backupDue.some(id => !ids.includes(id))
-        || result.recoveryRequired?.some(event => !ids.includes(event?.id)))
+        || result.recoveryRequired?.some(event => !ids.includes(event?.id))
+        || result.resultRecoveryRequired?.some(event => !ids.includes(event?.id)))
       throw Error('worker returned state outside the requested task scope');
   }
   return result;
@@ -100,23 +102,12 @@ export async function waitForTasks(ids, config = configuration(), { signal, retr
     }
     // Successful empty long polls are renewals, not failures. They do not reset
     // this invocation's retry budget, so a flapping worker cannot loop forever.
-    if (result.events.length || result.backupDue.length || result.recoveryRequired?.length || result.settled || result.interrupted) return result;
+    if (result.events.length || result.backupDue.length || result.recoveryRequired?.length || result.resultRecoveryRequired?.length || result.settled || result.interrupted) return result;
   }
 }
 
 export function verifyResult(event, config) {
-  taskIds([event.id]);
-  const id = event.id;
-  const expectedPath = resolve(config.dataDir, id + '.result.txt');
-  if (typeof event.artifact !== 'string' || resolve(event.artifact) !== expectedPath)
-    throw Error('unexpected saved result path');
-  const stat = lstatSync(expectedPath);
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size > 1024 * 1024)
-    throw Error('saved result must be a regular single-link file <=1 MiB');
-  const bytes = readFileSync(expectedPath);
-  if (bytes.length > 1024 * 1024 || createHash('sha256').update(bytes).digest('hex') !== event.sha256)
-    throw Error('saved result integrity mismatch');
-  return 'verified';
+  return verifySavedResult(event, config.dataDir);
 }
 
 // Verify saved bytes before acknowledgment; this is not a code-quality verdict.
@@ -141,7 +132,7 @@ export async function reconcileTasks(config = configuration(), { signal } = {}) 
       catch (error) { integrity = error.code === 'ENOENT' ? 'missing' : 'mismatch_or_unreadable'; }
     }
     const recovery = task.recoveryRequired?.length || task.journalIssues?.length;
-    const attention = recovery ? 'inspect_recovery' : integrity !== 'verified' && integrity !== 'not_expected'
+    const attention = recovery ? 'inspect_recovery' : task.pendingResults?.length ? 'inspect_uncommitted_result' : integrity !== 'verified' && integrity !== 'not_expected'
       ? 'inspect_result' : task.collected ? 'already_collected_or_cancelled'
       : task.status === 'running' ? 'inspect_retained_chat' : 'collect_saved_result';
     return { ...task, integrity, attention };
