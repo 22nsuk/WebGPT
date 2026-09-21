@@ -32,6 +32,8 @@ and update rules are in [fork-policy.md](references/fork-policy.md).
   for the task; omit credentials and unrelated data.
 - Keep a private ledger: task ID, objective, ownership, allowed inputs/actions, URL/tab IDs (including recovery tabs), output
   paths, work/cleanup states, chat retention/deletion disposition and last backup check. Preserve it for handoffs.
+  Extend that one task ledger with the parent-only [dispatch helper](references/dispatch.md);
+  do not create a competing completion store or a fresh ledger to bypass a blocked attempt.
 - Development means WebGPT directly reads/creates/edits/deletes project files through a verified
   connector. Use [workspace.md](references/workspace.md) for task registration and completion.
   Grant the project root and `edit` mode, not per-file lists; use `read` for reviews/analysis.
@@ -44,10 +46,18 @@ and update rules are in [fork-policy.md](references/fork-policy.md).
   yourself or claim edits. Patch-only delivery requires a request. File access adds no Git/PR/push,
   process-control or out-of-scope authority. Text-only work needs no connector.
 
-Prepare prompt, mode, attachments and any callback registration before typing. Fill and immediately
+Prepare prompt, mode, attachments and any callback registration before typing. Persist `sending`
+before the send-capable call using `dispatchPrompt` or `client.mjs dispatch begin`. Fill and immediately
 submit in one browser-tool call using observed controls where supported. No snapshot, round trip,
-commentary or fixed sleep between them; wait only for Send to become actionable. Verify afterward;
-inspect uncertain submission before retrying to prevent duplicates.
+commentary or fixed sleep between them; wait only for Send to become actionable. Verify afterward.
+Use the bounded observation contract in [dispatch.md](references/dispatch.md): return only the
+selected mode/connector, approval state, composer digest and the exact owned target/message evidence.
+Keep target identifiers and payload files private; never return the sidebar, other chats, full
+transcripts, prompt/token text or raw browser errors. Do not bypass action-time tool confirmations.
+A click, cleared composer or assistant activity is not submission proof. Confirm the actual new user
+message against the saved baseline and full prepared body. On timeout (including partial character
+entry), missing evidence or interruption, preserve `sending`/`uncertain` and inspect the retained chat
+and controller; never automatically type the remainder, resend, or create replacement work.
 
 ## Collect
 

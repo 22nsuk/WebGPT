@@ -150,7 +150,10 @@ if (process.argv[1] && process.argv[1] !== '-' && import.meta.url === pathToFile
     let result;
     const isTaskId = value => typeof value === 'string' && /^[a-zA-Z0-9_-]{1,80}$/.test(value);
     const readPayload = file => JSON.parse(readFileSync(file, 'utf8'));
-    if (action === 'reconcile' || action === 'ready' || action === 'shutdown') {
+    if (action === 'dispatch') {
+      const { dispatchCli } = await import('./dispatch.mjs');
+      result = await dispatchCli(args);
+    } else if (action === 'reconcile' || action === 'ready' || action === 'shutdown') {
       if (args.length) throw Error('unexpected controller arguments');
       result = action === 'reconcile' ? await reconcileTasks() : await request(action, action === 'shutdown' ? {} : undefined);
     } else if (action === 'wait' && args.length) {
