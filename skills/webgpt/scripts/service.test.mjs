@@ -5,33 +5,36 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, readdirSy
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createServer } from 'node:http';
 import { setTimeout as delay } from 'node:timers/promises';
 import { runService, requestServiceStop, restartDelay } from './service.mjs';
 import { request } from './client.mjs';
+import { spawnFixtureWorker, untilFixture } from './test-fixtures/worker-process.mjs';
 
-async function freePort() {
-  const server = createServer(); await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  const port = server.address().port; await new Promise(resolve => server.close(resolve)); return port;
-}
 async function fixture(fn) {
   const base = mkdtempSync(join(tmpdir(), 'webgpt-service-')), dataDir = join(base, 'runtime'), file = join(base, 'config.json');
-  let controlPort = await freePort(), mcpPort = await freePort();
-  while (mcpPort === controlPort) mcpPort = await freePort();
-  const config = { dataDir, controlPort, mcpPort };
+  // Valid configuration placeholders; the real child binds its own ephemeral ports.
+  const config = { dataDir, controlPort: 12341, mcpPort: 12340 };
   writeFileSync(file, JSON.stringify(config));
   const env = { ...process.env, WEBGPT_CONFIG: file, WEBGPT_DATA_DIR: dataDir };
   try { await fn({ base, env, config, file }); }
   finally { rmSync(base, { recursive: true, force: true }); }
 }
-async function until(fn) {
-  const deadline = Date.now() + 5000;
-  let last;
-  while (Date.now() < deadline) {
-    try { if (await fn()) return; } catch (error) { last = error; }
-    await delay(20);
-  }
-  throw last ?? Error('fixture deadline exceeded');
+function realService(f, options = {}) {
+  const launches = [];
+  let finished = false;
+  const service = runService(f.env, { ...options, spawnWorker: (executable, args, settings) => {
+    const observed = spawnFixtureWorker(executable, args, settings, ports => {
+      f.config.mcpPort = ports.mcpPort; f.config.controlPort = ports.controlPort;
+    });
+    launches.push(observed); return observed.child;
+  } });
+  service.then(() => { finished = true; }, () => { finished = true; });
+  return { service, get finished() { return finished; },
+    until: predicate => untilFixture(async () => launches.at(-1)?.listening && await predicate(), {
+      timeoutMs: 5000, label: 'service readiness', stopped: () => finished,
+      diagnostic: () => launches.map(item => item.diagnostic()).join('\n'),
+    }),
+  };
 }
 function exited(code, signal = null) {
   const child = new EventEmitter();
@@ -95,14 +98,14 @@ test('explicit stop during backoff prevents any next worker launch', () => fixtu
 
 test('real worker is restarted after force kill; explicit service stop drains IPC and releases both locks', () => fixture(async f => {
   const waits = [];
-  const service = runService(f.env, { pause: async ms => { waits.push(ms); } });
-  let finished = false; service.then(() => { finished = true; }, () => { finished = true; });
+  const running = realService(f, { pause: async ms => { waits.push(ms); } });
+  const { service } = running;
   try {
-    await until(async () => (await request('ready', undefined, f.config)).ok);
+    await running.until(async () => (await request('ready', undefined, f.config)).ok);
     const task = await request('register', { id: 'survives', instructions: 'fixture', inputs: {} }, f.config);
     const old = JSON.parse(readFileSync(join(f.config.dataDir, 'worker.lock', 'owner.json'), 'utf8'));
     process.kill(old.pid, 'SIGKILL'); // Only this fixture's owned child, never a configured arbitrary PID.
-    await until(async () => {
+    await running.until(async () => {
       const owner = JSON.parse(readFileSync(join(f.config.dataDir, 'worker.lock', 'owner.json'), 'utf8'));
       return owner.instanceId !== old.instanceId && (await request('ready', undefined, f.config)).ok;
     });
@@ -117,28 +120,50 @@ test('real worker is restarted after force kill; explicit service stop drains IP
     assert.equal(existsSync(join(f.config.dataDir, 'service.lock')), false);
     assert.equal(JSON.parse(readFileSync(join(f.config.dataDir, 'state.json')))[0].status, 'running');
   } finally {
-    if (!finished) { requestServiceStop(f.env); await service; }
+    if (!running.finished) { requestServiceStop(f.env); await service; }
   }
 }));
 
 test('a delayed stop request for a different service instance cannot stop the current worker', () => fixture(async f => {
-  const service = runService(f.env);
-  let finished = false; service.then(() => { finished = true; }, () => { finished = true; });
+  const running = realService(f);
+  const { service } = running;
   const marker = join(f.config.dataDir, 'service.lock', 'stop-request');
   try {
-    await until(async () => (await request('ready', undefined, f.config)).ok);
+    await running.until(async () => (await request('ready', undefined, f.config)).ok);
     writeFileSync(marker, '00000000-0000-0000-0000-000000000000');
     await delay(600); // Allow at least two supervisor polls to inspect the marker.
-    assert.equal(finished, false);
+    assert.equal(running.finished, false);
     assert.equal((await request('ready', undefined, f.config)).ok, true);
     assert.throws(() => requestServiceStop(f.env), { code: 'EEXIST' });
     unlinkSync(marker);
     assert.equal(requestServiceStop(f.env).accepted, true);
     assert.equal(await service, 0);
   } finally {
-    if (!finished) {
+    if (!running.finished) {
       if (existsSync(marker)) unlinkSync(marker);
       requestServiceStop(f.env); await service;
+    }
+  }
+}));
+
+
+test('worker fixture reports real startup stderr and exit code before any readiness timeout', () => fixture(async f => {
+  writeFileSync(f.file, JSON.stringify({ ...f.config, publicMcp: 'invalid' }));
+  const observed = spawnFixtureWorker(process.execPath, [fileURLToPath(new URL('./worker.mjs', import.meta.url))], { env: f.env });
+  try {
+    await assert.rejects(untilFixture(() => observed.listening, {
+      timeoutMs: 5000, label: 'intentional invalid config', diagnostic: observed.diagnostic,
+      stopped: () => observed.child.exitCode !== null || observed.child.signalCode !== null,
+    }), error => {
+      assert.match(error.message, /child exited before readiness/);
+      assert.match(error.message, /startup_failed/); assert.match(error.message, /CONFIG_INVALID/);
+      assert.match(error.message, /"exitCode":78/); return true;
+    });
+    assert.deepEqual(await observed.exit, [78, null]);
+    assert.equal(existsSync(join(f.config.dataDir, 'worker.lock')), false);
+  } finally {
+    if (observed.child.exitCode === null && observed.child.signalCode === null) {
+      observed.child.kill('SIGKILL'); await observed.exit;
     }
   }
 }));
