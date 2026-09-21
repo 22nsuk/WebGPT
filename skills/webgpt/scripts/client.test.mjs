@@ -1,13 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync, symlinkSync, statSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { configuration, request } from './client.mjs';
+import { createServer } from 'node:http';
+import { configuration, request, collectTask, reconcileTasks } from './client.mjs';
 import { start } from './worker.mjs';
 
 const execute = promisify(execFile);
@@ -236,4 +237,196 @@ test('restart restores missing applied receipts and surfaces ambiguous crash jou
   assert.equal(readFileSync(join(root, 'a.txt'), 'utf8'), 'applied');
   await f.admin('cancel', { id: 'a' });
   assert.deepEqual(await f.admin('wait'), { events: [], backupDue: [] });
+}));
+
+// Forward only to the disposable fixture worker; observe/lose responses without
+// replacing controller state or weakening its authentication and persistence rules.
+async function controllerProxy(f, run, intercept = async () => false) {
+  const actions = [];
+  const server = createServer(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    actions.push(req.url);
+    const response = await fetch(`http://127.0.0.1:${f.config.controlPort}${req.url}`, {
+      method: req.method, headers: { authorization: req.headers.authorization, 'content-type': 'application/json' },
+      ...(req.method === 'POST' ? { body: Buffer.concat(chunks) } : {}),
+    });
+    const body = await response.text();
+    if (await intercept({ req, res, body, actions })) return;
+    res.writeHead(response.status, { 'content-type': 'application/json' }); res.end(body);
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  try { await run({ config: { ...f.config, controlPort: server.address().port }, actions }); }
+  finally { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
+}
+const retainedEvidence = dir => Object.fromEntries(readdirSync(dir).filter(name => name === 'state.json' || name.endsWith('.result.txt')).map(name => {
+  const path = join(dir, name);
+  return [name, { bytes: readFileSync(path).toString('base64'), modified: statSync(path, { bigint: true }).mtimeNs }];
+}));
+async function completedTask(f, id, status = 'completed') {
+  const task = await f.admin('register', { id, instructions: 'Review', inputs: {} });
+  assert.equal((await invoke(f.service, 'submit_result', { token: task.token, status, summary: 'Done', result: 'saved evidence' })).isError, false);
+  return task;
+}
+
+test('explicit collection resume verifies retired results without repeating acknowledgment or modifying evidence', () => fixture(async f => {
+  for (const status of ['completed', 'failed', 'cancelled']) await completedTask(f, status, status);
+  await controllerProxy(f, async ({ config, actions }) => {
+    for (const status of ['completed', 'failed', 'cancelled']) {
+      const first = await collectTask(status, config, { resume: true });
+      assert.equal(first.disposition, 'collected'); assert.equal(first.status, status);
+      assert.equal(first.integrity, 'verified'); assert.equal(first.browserChecked, false);
+    }
+    assert.equal(actions.filter(action => action === '/ack').length, 3);
+    await f.restart();
+    const before = retainedEvidence(f.dir);
+    for (const status of ['completed', 'failed', 'cancelled']) {
+      const resumed = await collectTask(status, config, { resume: true });
+      assert.equal(resumed.disposition, 'already_collected'); assert.equal(resumed.status, status);
+      assert.equal(resumed.integrity, 'verified');
+    }
+    assert.equal(actions.filter(action => action === '/ack').length, 3);
+    assert.deepEqual(retainedEvidence(f.dir), before);
+  });
+}));
+
+test('resume CLI distinguishes discarded results, cancelled tasks without a result, and active tasks', () => fixture(async f => {
+  await completedTask(f, 'discarded'); await f.admin('cancel', { id: 'discarded' });
+  await f.admin('register', { id: 'cancelled', instructions: 'Review', inputs: {} });
+  await f.admin('cancel', { id: 'cancelled' });
+  const active = await f.admin('register', { id: 'active', instructions: 'Review', inputs: {} });
+  writeFileSync(join(f.dir, 'active.result.txt'), 'uncommitted candidate');
+  await controllerProxy(f, async ({ config, actions }) => {
+    const file = join(f.dir, 'resume-config.json'); writeFileSync(file, JSON.stringify(config));
+    const env = { ...process.env, WEBGPT_CONFIG: file, WEBGPT_DATA_DIR: f.dir };
+    const run = id => execute(process.execPath, [fileURLToPath(new URL('./client.mjs', import.meta.url)), 'collect', '--resume', id], { env });
+    const before = retainedEvidence(f.dir);
+    for (let i = 0; i < 2; i++) {
+      const discarded = JSON.parse((await run('discarded')).stdout);
+      assert.equal(discarded.disposition, 'discarded'); assert.equal(discarded.discarded, true);
+      assert.equal(discarded.integrity, 'verified'); assert.equal(discarded.status, 'completed');
+      const cancelled = JSON.parse((await run('cancelled')).stdout);
+      assert.equal(cancelled.disposition, 'cancelled_without_result'); assert.equal(cancelled.integrity, 'not_expected');
+      await assert.rejects(run('active'), error => { assert.match(error.stderr, /still running/); return true; });
+    }
+    assert.equal(actions.filter(action => action === '/ack').length, 0);
+    assert.deepEqual(retainedEvidence(f.dir), before);
+    assert.equal((await invoke(f.service, 'get_task', { token: active.token })).structuredContent.status, 'running');
+  });
+}));
+
+test('resume rechecks retained hashes and preserves integrity/recovery warnings without acknowledgment', () => fixture(async f => {
+  await completedTask(f, 'retired'); await collectTask('retired', f.config);
+  await completedTask(f, 'pending');
+  const retired = join(f.dir, 'retired.result.txt'); writeFileSync(retired, 'tampered');
+  writeFileSync(join(f.dir, 'pending.result.txt.tmp'), 'candidate');
+  const journalDir = join(f.dir, 'recovery', 'pending'); mkdirSync(journalDir, { recursive: true });
+  writeFileSync(join(journalDir, 'bad.json'), '{');
+  await controllerProxy(f, async ({ config, actions }) => {
+    const before = retainedEvidence(f.dir);
+    await assert.rejects(collectTask('retired', config, { resume: true }), /integrity mismatch/);
+    assert.equal(actions.filter(action => action === '/ack').length, 0);
+    const raw = await request('reconcile', undefined, config);
+    assert.equal(raw.tasks.find(task => task.id === 'retired').integrity, undefined);
+    const verified = await reconcileTasks(config);
+    assert.equal(verified.tasks.find(task => task.id === 'retired').integrity, 'mismatch_or_unreadable');
+    assert.deepEqual(retainedEvidence(f.dir), before);
+    await assert.rejects(collectTask('pending', config, { resume: true }), error => {
+      assert.equal(error.code, 'COLLECTION_RECOVERY_REQUIRED'); assert.equal(error.attention, 'inspect_recovery');
+      assert.equal(error.reconciliation.integrity, 'verified');
+      assert.equal(error.reconciliation.journalIssues.length, 1); assert.equal(error.reconciliation.pendingResults.length, 1);
+      return true;
+    });
+    assert.equal(actions.filter(action => action === '/ack').length, 0);
+    assert.deepEqual(retainedEvidence(f.dir), before);
+    await f.admin('cancel', { id: 'pending' });
+    const result = await collectTask('pending', config, { resume: true });
+    assert.equal(result.disposition, 'discarded'); assert.equal(result.attention, 'inspect_recovery');
+    assert.equal(result.journalIssues.length, 1); assert.equal(result.pendingResults.length, 1);
+    assert.equal(actions.filter(action => action === '/ack').length, 0);
+  });
+}));
+
+test('resume recovers a lost acknowledgment response by observing once without retrying the write', () => fixture(async f => {
+  await completedTask(f, 'lost');
+  await controllerProxy(f, async ({ config, actions }) => {
+    const collected = await collectTask('lost', config, { resume: true });
+    assert.equal(collected.collected, true); assert.equal(collected.integrity, 'verified');
+    assert.equal((await collectTask('lost', config, { resume: true })).disposition, 'already_collected');
+    assert.equal(actions.filter(action => action === '/ack').length, 1);
+  }, async ({ req, res }) => { if (req.url !== '/ack') return false; res.destroy(); return true; });
+}));
+
+test('resume preserves a concurrent discard and reports unverifiable post-ack results as unconfirmed', () => fixture(async f => {
+  await completedTask(f, 'discard'); await completedTask(f, 'changed');
+  await controllerProxy(f, async ({ config, actions }) => {
+    const discarded = await collectTask('discard', config, { resume: true });
+    assert.equal(discarded.disposition, 'discarded'); assert.equal(discarded.discarded, true);
+    await assert.rejects(collectTask('changed', config, { resume: true }), error => {
+      assert.equal(error.code, 'COLLECTION_UNCONFIRMED'); assert.equal(error.acknowledgment, 'accepted');
+      assert.match(error.cause.message, /integrity mismatch/); return true;
+    });
+    assert.equal(actions.filter(action => action === '/ack').length, 2);
+  }, async ({ req, actions }) => {
+    if (req.url === '/reconcile' && actions.length === 1) await f.admin('cancel', { id: 'discard' });
+    if (req.url === '/ack' && actions.filter(action => action === '/ack').length === 2)
+      writeFileSync(join(f.dir, 'changed.result.txt'), 'tampered after acknowledgment');
+    return false;
+  });
+}));
+
+
+test('resume does not trust diagnostic task snapshots after controller state corruption', () => fixture(async f => {
+  await completedTask(f, 'retired'); await collectTask('retired', f.config);
+  writeFileSync(join(f.dir, 'state.json'), '[]');
+  await controllerProxy(f, async ({ config, actions }) => {
+    await assert.rejects(collectTask('retired', config, { resume: true }), { code: 'STATE_INVALID' });
+    assert.equal(actions.filter(action => action === '/ack').length, 0);
+    assert.equal(readFileSync(join(f.dir, 'state.json'), 'utf8'), '[]');
+  });
+}));
+
+test('resume keeps known acknowledgment storage errors and leaves work uncollected for an explicit later retry', () => fixture(async f => {
+  const task = await completedTask(f, 'blocked');
+  mkdirSync(join(f.dir, 'state.json.tmp'));
+  await controllerProxy(f, async ({ config, actions }) => {
+    await assert.rejects(collectTask('blocked', config, { resume: true }), error => {
+      assert.equal(error.statusCode, 503); assert.notEqual(error.code, 'COLLECTION_UNCONFIRMED'); return true;
+    });
+    assert.equal(actions.filter(action => action === '/ack').length, 1);
+    assert.equal((await invoke(f.service, 'get_task', { token: task.token })).isError, false);
+    assert.equal((await f.admin('status')).events[0].id, 'blocked');
+    rmSync(join(f.dir, 'state.json.tmp'), { recursive: true });
+    assert.equal((await collectTask('blocked', config, { resume: true })).disposition, 'collected');
+    assert.equal(actions.filter(action => action === '/ack').length, 2);
+  });
+}));
+
+
+test('resume CLI reports pending recovery and uncertain acknowledgment with safe structured fields', () => fixture(async f => {
+  await completedTask(f, 'pending'); await completedTask(f, 'uncertain');
+  writeFileSync(join(f.dir, 'pending.result.txt.tmp'), 'uncommitted candidate');
+  await controllerProxy(f, async ({ config, actions }) => {
+    const file = join(f.dir, 'resume-config.json'); writeFileSync(file, JSON.stringify(config));
+    const env = { ...process.env, WEBGPT_CONFIG: file, WEBGPT_DATA_DIR: f.dir };
+    const run = id => execute(process.execPath, [fileURLToPath(new URL('./client.mjs', import.meta.url)), 'collect', '--resume', id], { env });
+    await assert.rejects(run('pending'), error => {
+      assert.equal(error.stdout, '');
+      const diagnostic = JSON.parse(error.stderr.slice('WebGPT: '.length));
+      assert.equal(diagnostic.code, 'COLLECTION_RECOVERY_REQUIRED'); assert.equal(diagnostic.attention, 'inspect_uncommitted_result');
+      assert.equal(error.stderr.includes(f.dir), false); return true;
+    });
+    assert.equal(actions.filter(action => action === '/ack').length, 0);
+    await assert.rejects(run('uncertain'), error => {
+      assert.equal(error.stdout, '');
+      const diagnostic = JSON.parse(error.stderr.slice('WebGPT: '.length));
+      assert.equal(diagnostic.code, 'COLLECTION_UNCONFIRMED'); assert.equal(diagnostic.acknowledgment, 'unknown');
+      assert.equal(error.stderr.includes(f.dir), false); assert.equal(error.stderr.includes('cause'), false); return true;
+    });
+    assert.equal(actions.filter(action => action === '/ack').length, 1);
+  }, async ({ req, res }) => {
+    if (req.url !== '/ack') return false;
+    writeFileSync(join(f.dir, 'uncertain.result.txt'), 'tampered after commit');
+    res.destroy(); return true;
+  });
 }));

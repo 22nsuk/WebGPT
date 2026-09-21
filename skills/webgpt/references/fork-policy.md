@@ -24,6 +24,22 @@ reviewed isolation design and explicit authorization, not a silent migration of
 existing file grants. Track selective adaptations as ordinary fork commits, not
 a merge that implies the terminal migration and all other changes were adopted.
 
+## Selective review of faithforone/WebGPT
+
+Reviewed `faithforone/WebGPT` at `b8206c57866cf574fdb65aa2aadc146a4ad2e469` against this fork's
+`ca0a31068c0f5adbf68f20af0f3c0dc01daa9a15` baseline. Its project-first usage explanation and
+bounded file reads are useful here. The usage guide now shows direct repository review and
+implementation instead of requiring pasted source. Optional `read_file` windows preserve our
+existing full-file default, whole-file SHA, grants, UTF-8 limits and path/link checks. They return
+complete lines and explicit partial/range metadata; read the full file before a replacement write.
+
+The reference fork intentionally provides unrestricted OS-user terminal commands, `webgpt open`
+sessions and patch editing without this fork's revision/recovery contracts. Those are different
+authority and lifecycle choices, so their implementation is not imported. Its mandatory credentialed
+tunnel/public-origin setup is also outside this change; existing authorized transport is preserved.
+No claim is made about measured token savings or live connector support before schema refresh and
+an actual installation probe. These are ordinary selective fork changes, not an upstream merge.
+
 ## Terminal review: security and practical work
 
 The upstream terminal is useful: it supports builds, tests, Git, binary tools and

@@ -40,9 +40,22 @@ serialized. Do not delete/copy/reset the ledger or alter its dispatch fields to 
 
 ## Parent helper
 
+For interactive Codex use, prefer the split Node CLI below. Ordinary Node owns filesystem access,
+ledger locks, controller calls and SHA-256 calculation; CUA owns only documented browser actions
+and observations. Do not import this helper or Node filesystem/network modules into the managed
+CUA runtime. A generic MCP server `cwd` setting does not configure that managed runtime.
+
+Capture only the required owned-target UI evidence through supported browser controls and pass it
+privately to the local helper. Compute digests from that actual observed text in ordinary Node,
+not from an assumed copy of the outgoing prompt. If the available browser tool cannot return the
+necessary text privately and narrowly, report the evidence limitation without exposing tokens or
+inventing a digest. Do not use broad UI snapshots as diagnostic output.
+
 Import `registerDispatch`, `dispatchPrompt`, `confirmDispatch`, `inspectDispatch`, `recoverDispatch`
 and `textDigest` from the installed `scripts/dispatch.mjs`. No dependency installation is needed.
 `prepareDispatch` and `beginDispatch` are also available for an explicitly staged workflow.
+The high-level adapter is for a supported ordinary Node host that can call authorized browser
+controls; its availability does not imply that CUA can host arbitrary Node code.
 
 Register with this private shape (the prompt here is illustrative, not a protocol requirement):
 
@@ -118,11 +131,32 @@ The ID must differ from the saved pre-send ID, the predecessor must equal that s
 must match the prepared digest, and target/mode/connector/approval checks must still pass. A cleared
 composer, Send click, assistant response, old matching message or unrelated chat is insufficient.
 
+## Observe UI transitions and exact tool calls
+
+For every browser action, establish the owned target and the expected visible transition. After
+navigation, verify the resulting URL and page control; after opening a menu or selecting a mode or
+connector, verify the menu/selected control; after sending, use the message evidence above.
+A successful click return only establishes that the tool accepted the action. If the state appears
+unchanged, inspect the relevant control and any pending approval/loading state before deciding
+whether another action is needed. Use supported state-based waits where available, never a fixed
+sleep or blind repeated click. Keep the existing fill/send batch intact.
+
+A ChatGPT tool panel may list calls accumulated across the conversation. Once work is terminal,
+inspect that final list once, identify the relevant invocation by its tool name, request/call
+identity and arguments/target, and open that invocation's details. If no explicit call ID is
+exposed, use its observed turn/order plus tool and target; report ambiguity instead of guessing.
+Do not repeatedly expand the same accumulated list, count a call on each panel view, or interpret
+quoted error strings in the answer as tool failures. Actual tool status/result is evidence;
+reported checks remain claims until Codex verifies them locally. Reinspect only for new calls,
+changed state or a specific missing piece of evidence. Preserve the selected evidence and local
+verification disposition for resumption rather than repeating completed checks.
+
 ## CLI and compact output
 
 These commands are local-parent operations and do not read the controller key or invoke MCP:
 
 ```text
+node <skill>/scripts/client.mjs dispatch preflight
 node <skill>/scripts/client.mjs dispatch register <absolute-ledger.json> <absolute-spec.json>
 node <skill>/scripts/client.mjs dispatch prepare <absolute-ledger.json> <absolute-readiness.json>
 node <skill>/scripts/client.mjs dispatch begin <absolute-ledger.json> <absolute-begin.json>
@@ -130,6 +164,10 @@ node <skill>/scripts/client.mjs dispatch confirm <absolute-ledger.json> <absolut
 node <skill>/scripts/client.mjs dispatch inspect <absolute-ledger.json>
 node <skill>/scripts/client.mjs dispatch recover <absolute-ledger.json>
 ```
+
+Run `preflight` in ordinary Node before controller registration. It returns
+`{"runtime":"node","ready":true}` when the local dispatch helper can load; it does not establish
+browser, connector, controller or project readiness. Keep those checks separate.
 
 `begin.json` has exactly `{"prompt":"...","observation":{...readiness...}}`. A separate `prepare`
 call is optional: `begin` captures and validates fresh readiness itself. Only after a successful
@@ -141,6 +179,9 @@ Ordinary helper/dispatch CLI results contain only `state`, `mode`, `connectorReq
 No prompt, task token, task/tab/message ID, conversation URL, digest or raw error is printed.
 Invalid JSON diagnostics also omit source excerpts. A CLI exit of zero means the state operation
 was recorded, **not** that sending succeeded: check `state` and `submissionConfirmed`.
+CLI failures use allowlisted `code`, `stage` and `reason` fields. Interpret those fields rather
+than treating a rejected Promise's raw text as a safe diagnostic; do not print private payloads,
+raw exception messages or stack traces while investigating an error.
 Existing controller commands retain their contracts; notably controller `register` still returns
 a private task token. Consume that result privately, not as general diagnostic output. The compact
 projection does not sanitize separate browser-tool logs; constrain their returned observations too.
