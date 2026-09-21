@@ -26,14 +26,23 @@ Ask only for sign-in or another action that genuinely requires me; continue afte
 Tell Codex:
 
 ```text
-Use webgpt xh as subagents to develop this project's planned features in parallel.
+webgpt p 이 저장소 전체를 읽고 오류 가능성과 개선 우선순위를 검토해줘.
+파일은 수정하지 말고 근거가 되는 파일과 위치를 알려줘.
 ```
 
 ```text
-webgpt p Research this topic and summarize the findings.
+webgpt xh 이 프로젝트의 검색 필터를 구현해줘. 기존 동작을 유지하고 관련 테스트도 수정해줘.
+Codex는 변경 내용을 검토하고 로컬 테스트 결과를 확인해줘.
 ```
 
 `xh` = Extra High · `p` = Pro.
+
+For repository work, WebGPT reads the assigned project directly through a `read` or `edit`
+grant; it can choose relevant files without repeated copy/paste or per-file permission requests.
+WebGPT edits project text, and Codex reviews the changes and runs local checks and Git operations.
+Research that needs no local files can use a text-only task. The
+[practical usage guide (한국어)](skills/webgpt/references/usage.md) covers review, implementation,
+research, follow-ups, parallel ownership and interruption recovery with example prompts.
 
 ## Safety defaults in this fork
 
@@ -67,8 +76,25 @@ Use `node <skill>/scripts/client.mjs tasks` to inspect running tasks and uncolle
 before an update or recovery. An empty `status` event queue alone does not mean the worker is idle.
 The inventory is controller-only and omits task tokens, instructions and input contents.
 
+Run `node <skill>/scripts/client.mjs dispatch preflight` in ordinary Node before task registration.
+Node owns the private ledger, lock, controller and hashes; documented browser tools own UI actions.
+Dispatch errors expose only fixed `code`, `stage`, `reason` and `message` fields, making runtime
+and storage failures distinguishable without printing paths, prompts or tokens. See
+[dispatch.md](skills/webgpt/references/dispatch.md) for the staged commands and UI evidence rules.
+
+Use `collect --resume <task-id>` after an interrupted verification. It verifies retained bytes,
+recognizes already collected or discarded results, and acknowledges only an eligible uncollected
+result. Recovery warnings require inspection; this does not reopen chats, resend work or reset state.
+Keep the original private setup record so browser verification and tab cleanup can resume separately.
+
 `list_files` supports optional `limit` (1–500) and `cursor` arguments. Follow `nextCursor` until
 `truncated:false`; a changed directory invalidates the cursor instead of silently skipping entries.
+`read_file` also accepts optional `offset`, `limit` and `maxChars` for complete-line windows with
+range metadata and the **whole-file** SHA. Calls without them still return the full file. Compare
+revisions between windows, and read the whole file before replacing it; an excerpt is not a new
+file body. This adapts the bounded-read idea from
+[faithforone/WebGPT](https://github.com/faithforone/WebGPT/tree/b8206c57866cf574fdb65aa2aadc146a4ad2e469)
+to this fork's revision and recovery contracts.
 Follow the [update procedure](skills/webgpt/references/operations-windows.md#parent-resume-transition-and-rollback):
 confirm idle, stop the identified worker and restart owner, verify exit, preserve a consistent
 private backup, then replace the matching worker/client/helpers. Keep a healthy existing tunnel

@@ -5,15 +5,12 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawn } from 'node:child_process';
-import { once } from 'node:events';
-import { createServer } from 'node:net';
-import { setTimeout as delay } from 'node:timers/promises';
 import { createHash } from 'node:crypto';
 import { syncBuiltinESMExports } from 'node:module';
 import { start } from './worker.mjs';
 import { request, reconcileTasks, collectTask } from './client.mjs';
 import { inspectRecovery } from './workspace.mjs';
+import { spawnFixtureWorker, untilFixture } from './test-fixtures/worker-process.mjs';
 
 const hash = text => createHash('sha256').update(text).digest('hex');
 // The grant uses the canonical path; Windows temp directories may use 8.3
@@ -267,27 +264,25 @@ test('an applied journal with an additional staged candidate requires inspection
 
 test('the actual worker CLI protects WEBGPT_CONFIG, not only an injected start option', async () => {
   const base = temporary(), root = join(base, 'project'), dir = join(base, 'runtime'); mkdirSync(root);
-  const file = join(root, 'config.json'), reservations = [createServer(), createServer()];
+  const file = join(root, 'config.json');
   let child, exited;
   try {
-    await Promise.all(reservations.map(server => new Promise(resolve => server.listen(0, '127.0.0.1', resolve))));
-    const config = { dataDir: dir, mcpPort: reservations[0].address().port, controlPort: reservations[1].address().port };
-    await Promise.all(reservations.map(server => new Promise(resolve => server.close(resolve))));
-    writeFileSync(file, JSON.stringify(config));
-    child = spawn(process.execPath, [fileURLToPath(new URL('./worker.mjs', import.meta.url))], {
-      env: { ...process.env, WEBGPT_CONFIG: file, WEBGPT_DATA_DIR: dir }, stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+    const savedConfig = { dataDir: dir, mcpPort: 12340, controlPort: 12341 };
+    const config = { ...savedConfig };
+    writeFileSync(file, JSON.stringify(savedConfig));
+    const observed = spawnFixtureWorker(process.execPath, [fileURLToPath(new URL('./worker.mjs', import.meta.url))], {
+      env: { ...process.env, WEBGPT_CONFIG: file, WEBGPT_DATA_DIR: dir },
+    }, ports => { config.mcpPort = ports.mcpPort; config.controlPort = ports.controlPort; });
+    child = observed.child; exited = observed.exit;
+    await untilFixture(() => observed.listening, {
+      timeoutMs: 5000, label: 'config boundary worker', diagnostic: observed.diagnostic,
+      stopped: () => child.exitCode !== null || child.signalCode !== null,
     });
-    exited = once(child, 'exit');
-    let output = ''; child.stdout.on('data', bytes => { output += bytes; }); child.stderr.resume();
-    const end = Date.now() + 5000;
-    while (!output.includes('"event":"listening"') && Date.now() < end && child.exitCode === null) await delay(10);
-    assert.ok(output.includes('"event":"listening"'), 'fixture worker must listen before the assertion');
     await assert.rejects(request('register', { id: 'unsafe-config', instructions: '', inputs: {}, workspace: { root, mode: 'edit' } }, config), /workspace overlaps worker configuration/);
-    assert.deepEqual(JSON.parse(readFileSync(file)), config);
+    assert.deepEqual(JSON.parse(readFileSync(file)), savedConfig);
     const safeRoot = join(base, 'other-project'); mkdirSync(safeRoot);
     assert.ok((await request('register', { id: 'safe', instructions: '', inputs: {}, workspace: { root: safeRoot, mode: 'read' } }, config)).token);
   } finally {
-    for (const server of reservations) if (server.listening) await new Promise(resolve => server.close(resolve));
     if (child && child.exitCode === null && child.signalCode === null) {
       try { if (child.connected) child.send({ type: 'shutdown' }, () => {}); } catch {}
       const deadline = setTimeout(() => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); }, 2000);

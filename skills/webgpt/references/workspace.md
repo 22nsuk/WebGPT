@@ -13,6 +13,9 @@ and completion delivery; no separate callback receiver, arbitrary HTTP tool or s
 
 The parent imports `request` from the installed `scripts/client.mjs`, or uses the CLI with a local
 JSON payload file. The client reads `controller.key` privately; never send that key to WebGPT.
+Run the parent helpers in ordinary Node. Before registering browser work, run
+`node <skill>/scripts/client.mjs dispatch preflight`; a browser REPL need not expose Node's
+`process` or filesystem lifecycle. Keep browser actions in its authorized documented tool.
 
 ```text
 node <skill>/scripts/client.mjs register <private-task.json>
@@ -70,6 +73,17 @@ This is the protocol available to the worker, not a sequence to copy into ordina
   restart without a cursor rather than silently accepting an incomplete listing. `limit` is 1–500.
   Old calls without optional arguments keep their result shape for a non-truncated directory.
   `read_file(token,path)` gets text and SHA-256 (missing files return `exists:false`).
+  Optional `offset` (1-based line), `limit` (1–5000 lines) or `maxChars` (1–200000 UTF-16 code units)
+  enables a bounded window; omitted values then default to 1, 400 and 16000. Calls with none of
+  these options preserve the full-file response. A window adds `partial`, `startLine`, `endLine`,
+  `totalLines` and `nextOffset` (`null` at end). Empty files have zero lines and `endLine:0`;
+  missing files keep `exists:false` without range metadata. An offset beyond the file is rejected.
+  Complete lines retain their original LF, CRLF or CR endings. If the first requested line exceeds
+  the character budget, increase it or use the full-file call; a line tail is never silently omitted.
+  `sha256` always covers the **entire original file**, not the excerpt. Compare it between windows;
+  restart reading after a revision change. Read the whole file before a replacement write so an
+  excerpt is never mistaken for the full body. The 1 MiB/UTF-8/link/path checks still apply to the
+  whole file, including bytes outside the returned window.
 - For requested edits, `write_file(token,path,text,expectedSha256)` creates (`null` revision) or
   replaces a file using its read revision; `delete_file(token,path,expectedSha256)` removes a read
   file. These directly change local files; Codex does not apply a returned patch. No recursive
@@ -143,6 +157,44 @@ const collected = await collectTask(finishedTaskId);
 CLI equivalents are `node <skill>/scripts/client.mjs wait <task-id> [task-id ...]` and
 `node <skill>/scripts/client.mjs collect <task-id>`. Wait also accepts a private JSON file with
 `{"ids":["task-a","task-b"]}` or `{"id":"task-a"}`. Invalid or unknown IDs fail, not widen the scope.
+
+### Resume verification and collection
+
+`request('reconcile')` is the raw controller snapshot. It does **not** perform local result-file
+hash verification. Use `reconcileTasks(config)` or CLI `reconcile` for `integrity` and `attention`.
+Use an explicit private configuration when more than one worker is installed.
+
+After a saved result and its relevant changes/evidence have been reviewed, collection can resume:
+
+```js
+// Run with ordinary Node and the actual installed module URL/configuration.
+const { configuration, reconcileTasks, collectTask } = await import(clientModuleUrl);
+const config = configuration(); // WEBGPT_CONFIG selects the intended private worker.
+const state = await reconcileTasks(config);
+const owned = state.tasks.find(task => task.id === ownedTaskId);
+// Inspect owned.attention and saved evidence; do not interpret integrity as code quality.
+const result = await collectTask(ownedTaskId, config, { resume: true });
+```
+
+CLI: `node <skill>/scripts/client.mjs collect --resume <task-id>`. The existing `collect <task-id>`
+remains strict and still rejects a result already collected. Resume verifies the retained artifact
+again and returns `disposition`: `collected`, `already_collected`, `discarded`, or
+`cancelled_without_result`. Discarded results stay discarded; a cancellation with no result is not
+certified as a successful collection. Status, integrity, recovery warnings and `browserChecked:false`
+remain explicit. Already retired tasks receive no new acknowledgment. Reconciliation may perform
+temporary readiness probes; it does not alter retained task/result/journal evidence.
+
+Running tasks, invalid state, missing/changed result bytes and unresolved recovery or pending-result
+evidence do not authorize a new acknowledgment. Retired records may be returned with recovery
+warnings for inspection. If an acknowledgment response is lost, resume checks controller state
+once without replaying the write. `COLLECTION_UNCONFIRMED` means preserve the task and reconcile;
+it never means register or send again. One parent should own collection: the legacy acknowledgment
+endpoint is not a compare-and-swap operation against concurrent cancellation. Resume keeps the
+controller's final discarded/retired disposition rather than inventing a second completion store.
+
+Keep browser verification, saved-byte verification, collection/token retirement and tab cleanup as
+separate checkpoints in the original private setup record. Re-running this command verifies and
+collects only the result; it cannot prove a browser tool call occurred or close any tab.
 
 Each HTTP wait is bounded to 55 seconds. The client renews empty waits without returning to the
 model and stops on an event, a 15-minute backup check, a recovery signal, or `settled:true` for the

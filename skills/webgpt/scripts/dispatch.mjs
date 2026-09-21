@@ -14,11 +14,47 @@ const messages = {
   CONFLICT: 'dispatch ledger changed outside its lock; preserve it for inspection',
   BLOCKED: 'dispatch already attempted; inspect the retained chat and controller, do not resend',
   NOT_READY: 'dispatch UI is not ready or does not match the owned target',
+  RUNTIME: 'dispatch requires ordinary Node CLI; keep browser operations in authorized browser tools',
+  INTERNAL: 'dispatch operation failed; preserve the ledger and inspect before continuing',
 };
+const defaults = {
+  INPUT: ['input', 'invalid_input'], OBSERVATION: ['observation', 'invalid_observation'],
+  LEDGER: ['ledger_validate', 'invalid_ledger'], STORAGE: ['ledger_read', 'io_failed'],
+  LOCKED: ['lock_acquire', 'lock_exists'], CONFLICT: ['ledger_update', 'ledger_changed'],
+  BLOCKED: ['ledger_update', 'resend_blocked'], NOT_READY: ['observation', 'ui_not_ready'],
+  RUNTIME: ['runtime_preflight', 'node_cli_required'], INTERNAL: ['ledger_update', 'unexpected_failure'],
+};
+const storageStages = ['payload_read', 'ledger_path', 'lock_acquire', 'ledger_read', 'ledger_write',
+  'ledger_publish', 'temporary_cleanup'];
+const diagnosticStages = new Set([...Object.values(defaults).map(([stage]) => stage), ...storageStages, 'lock_release']);
+const diagnosticReasons = new Set([...Object.values(defaults).map(([, reason]) => reason),
+  'not_found', 'permission_denied', 'storage_full', 'lock_owner_changed', 'lock_release_failed']);
+const diagnostics = new WeakMap();
 class DispatchError extends Error {
-  constructor(code) { super(messages[code]); this.code = 'DISPATCH_' + code; }
+  constructor(code, stage = defaults[code][0], reason = defaults[code][1]) {
+    super(messages[code]);
+    this.code = 'DISPATCH_' + code;
+    this.stage = diagnosticStages.has(stage) ? stage : defaults[code][0];
+    this.reason = diagnosticReasons.has(reason) ? reason : defaults[code][1];
+    diagnostics.set(this, { code: this.code, stage: this.stage, reason: this.reason, message: this.message });
+  }
 }
 const fail = code => { throw new DispatchError(code); };
+// Never trust caller-supplied Error fields or copy raw exception/cause/stack into public output.
+export function dispatchDiagnostic(error) {
+  return { ...(diagnostics.get(error) ?? diagnostics.get(new DispatchError('INTERNAL'))) };
+}
+const storageError = (error, stage) => new DispatchError('STORAGE', stage,
+  ({ ENOENT: 'not_found', EACCES: 'permission_denied', EPERM: 'permission_denied', ENOSPC: 'storage_full' })[error?.code] ?? 'io_failed');
+
+// Call before controller registration. No paths, configuration, controller access or ledger I/O.
+export function preflightDispatchRuntime() {
+  if (typeof process !== 'object' || process === null || typeof process.versions?.node !== 'string'
+      || !Number.isSafeInteger(process.pid) || process.pid < 1
+      || typeof Buffer === 'undefined' || typeof Buffer.from !== 'function' || typeof Buffer.byteLength !== 'function'
+      || typeof TextDecoder !== 'function' || typeof String.prototype.isWellFormed !== 'function') fail('RUNTIME');
+  return { runtime: 'node', ready: true };
+}
 const record = v => v !== null && typeof v === 'object' && !Array.isArray(v);
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const digest = v => typeof v === 'string' && /^[a-f0-9]{64}$/.test(v);
@@ -119,43 +155,62 @@ function parseLedger(bytes) {
 }
 
 async function withLedger(file, work) {
+  preflightDispatchRuntime();
   let lock, owner, acquired = false;
+  let stage = 'input';
   try {
     if (typeof file !== 'string' || !isAbsolute(file) || !file.endsWith('.json')) fail('INPUT');
     // Canonicalize native aliases (including existing filenames) without following a linked ledger.
     // Do not create directories or change ACLs. Every parent must use the same canonical ledger.
+    stage = 'ledger_path';
     file = join(realpathSync(dirname(file)), basename(file));
     if (regularFile(file)) file = realpathSync(file);
     lock = file + '.dispatch.lock';
     owner = JSON.stringify({ pid: process.pid, instanceId: randomUUID() });
+    stage = 'lock_acquire';
     try { writeFileSync(lock, owner, { flag: 'wx', mode: 0o600, flush: true }); acquired = true; }
     catch (e) { if (e.code === 'EEXIST') fail('LOCKED'); throw e; }
+    stage = 'ledger_read';
     let previous = readBytes(file);
+    stage = 'ledger_validate';
     const ledger = parseLedger(previous);
     const save = () => {
+      stage = 'ledger_validate';
       validateDispatch(ledger.dispatch);
       const bytes = Buffer.from(JSON.stringify(ledger, null, 2) + '\n');
       if (bytes.length > MAX_BYTES) fail('LEDGER');
+      stage = 'ledger_read';
       const current = readBytes(file);
       if ((current === null) !== (previous === null) || (current && !current.equals(previous))) fail('CONFLICT');
       const temporary = file + '.tmp-' + randomUUID();
       try {
+        stage = 'ledger_write';
         writeFileSync(temporary, bytes, { flag: 'wx', mode: 0o600, flush: true });
+        stage = 'ledger_publish';
         renameSync(temporary, file);
         previous = bytes;
-      } finally { try { unlinkSync(temporary); } catch (e) { if (e.code !== 'ENOENT') throw e; } }
+      } finally {
+        try { unlinkSync(temporary); }
+        catch (e) { if (e.code !== 'ENOENT') throw storageError(e, 'temporary_cleanup'); }
+      }
+      stage = 'ledger_update';
     };
+    stage = 'ledger_update';
     return await work(ledger, save);
   } catch (error) {
     // No paths, browser messages, prompt fragments, request tokens or raw causes in public errors.
-    throw error instanceof DispatchError ? error : new DispatchError('STORAGE');
+    throw error instanceof DispatchError ? error
+      : storageStages.includes(stage) ? storageError(error, stage) : new DispatchError('INTERNAL', stage);
   } finally {
     if (acquired) {
       try {
         const current = readBytes(lock);
-        if (current?.toString('utf8') !== owner) fail('LOCKED');
+        if (current?.toString('utf8') !== owner) throw new DispatchError('LOCKED', 'lock_release', 'lock_owner_changed');
         unlinkSync(lock);
-      } catch { throw new DispatchError('LOCKED'); }
+      } catch (error) {
+        throw error instanceof DispatchError && error.stage === 'lock_release' ? error
+          : new DispatchError('LOCKED', 'lock_release', 'lock_release_failed');
+      }
     }
   }
 }
@@ -285,13 +340,18 @@ export async function dispatchPrompt(file, prompt, adapter) {
 
 // Used by client.mjs; payload/ledger paths stay private and no controller command is changed.
 export async function dispatchCli(args) {
+  preflightDispatchRuntime();
   try {
+    if (!Array.isArray(args)) fail('INPUT');
+    if (args.length === 1 && args[0] === 'preflight') return preflightDispatchRuntime();
     const [action, file, payloadFile] = args;
     const noPayload = { inspect: inspectDispatch, recover: recoverDispatch };
     const withPayload = { register: registerDispatch, prepare: prepareDispatch, begin: beginDispatch, confirm: confirmDispatch };
     if (args.length === 2 && Object.hasOwn(noPayload, action)) return await noPayload[action](file);
     if (args.length !== 3 || !Object.hasOwn(withPayload, action) || !isAbsolute(payloadFile)) fail('INPUT');
-    const bytes = readBytes(payloadFile);
+    let bytes;
+    try { bytes = readBytes(payloadFile); }
+    catch (error) { throw error instanceof DispatchError ? error : storageError(error, 'payload_read'); }
     if (bytes === null) fail('INPUT');
     let payload;
     try { payload = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)); } catch { fail('INPUT'); }

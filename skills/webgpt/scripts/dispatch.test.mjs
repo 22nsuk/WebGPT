@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
 import { registerDispatch, prepareDispatch, beginDispatch, confirmDispatch, dispatchPrompt,
-  inspectDispatch, recoverDispatch, textDigest, dispatchCli } from './dispatch.mjs';
+  inspectDispatch, recoverDispatch, textDigest, dispatchCli, preflightDispatchRuntime, dispatchDiagnostic } from './dispatch.mjs';
 
 const secret = 'PRIVATE-PROMPT-and-task-token-should-never-escape';
 const prompt = `연결 효율화 검토 🧪\r\n${secret}`;
@@ -31,6 +31,134 @@ const safe = value => {
 };
 const adapter = (overrides = {}) => ({ observeReady: async () => ready(), fillAndSend: async () => {}, observeSent: async () => sent(), ...overrides });
 const summaryKeys = ['state', 'mode', 'connectorRequired', 'uiPrepared', 'submissionConfirmed', 'resendBlocked', 'needsInspection', 'reason'];
+
+test('runtime preflight is compact and independent of private files', async () => {
+  assert.deepEqual(preflightDispatchRuntime(), { runtime: 'node', ready: true });
+  assert.deepEqual(await dispatchCli(['preflight']), { runtime: 'node', ready: true });
+  await assert.rejects(dispatchCli(['preflight', 'unexpected']), { code: 'DISPATCH_INPUT' });
+});
+
+test('missing process is diagnosed before any ledger, payload or browser access', async t => {
+  const { file } = fixture(t);
+  const moduleUrl = new URL('./dispatch.mjs', import.meta.url).href;
+  const run = spawnSync(process.execPath, ['--input-type=module', '-e', `
+    import assert from 'node:assert/strict';
+    import fs from 'node:fs';
+    import { syncBuiltinESMExports } from 'node:module';
+    import { preflightDispatchRuntime, registerDispatch, dispatchPrompt, dispatchCli, dispatchDiagnostic } from ${JSON.stringify(moduleUrl)};
+    const file = process.argv[1];
+    let accesses = 0;
+    for (const method of ['lstatSync', 'readFileSync', 'realpathSync', 'writeFileSync'])
+      fs[method] = () => { accesses++; throw Error(${JSON.stringify(secret)}); };
+    syncBuiltinESMExports();
+    delete globalThis.process;
+    for (const operation of [() => preflightDispatchRuntime(), () => registerDispatch(file, {}),
+      () => dispatchPrompt(file, '', {}), () => dispatchCli(['register', file, file])]) {
+      try { await operation(); assert.fail('operation must reject'); }
+      catch (error) { assert.equal(error.code, 'DISPATCH_RUNTIME'); console.log(JSON.stringify(dispatchDiagnostic(error))); }
+    }
+    assert.equal(accesses, 0);
+  `, file], { encoding: 'utf8', timeout: 15000 });
+  assert.equal(run.status, 0, run.stderr);
+  const errors = safe(run.stdout).trim().split('\n').map(line => JSON.parse(line));
+  assert.equal(errors.length, 4);
+  for (const error of errors) assert.deepEqual(error, {
+    code: 'DISPATCH_RUNTIME', stage: 'runtime_preflight', reason: 'node_cli_required',
+    message: 'dispatch requires ordinary Node CLI; keep browser operations in authorized browser tools',
+  });
+  assert.equal(existsSync(file), false);
+  assert.equal(existsSync(file + '.dispatch.lock'), false);
+});
+
+for (const [stage, method, predicate, code, reason] of [
+  ['ledger_path', 'realpathSync', 'true', 'DISPATCH_STORAGE', 'permission_denied'],
+  ['lock_acquire', 'writeFileSync', "args[0].endsWith('.dispatch.lock')", 'DISPATCH_STORAGE', 'permission_denied'],
+  ['ledger_read', 'readFileSync', "args[0].endsWith('ledger.json')", 'DISPATCH_STORAGE', 'permission_denied'],
+  ['ledger_write', 'writeFileSync', "args[0].includes('.tmp-')", 'DISPATCH_STORAGE', 'permission_denied'],
+  ['ledger_publish', 'renameSync', 'true', 'DISPATCH_STORAGE', 'permission_denied'],
+  ['temporary_cleanup', 'unlinkSync', "args[0].includes('.tmp-')", 'DISPATCH_STORAGE', 'permission_denied'],
+  ['lock_release', 'unlinkSync', "args[0].endsWith('.dispatch.lock')", 'DISPATCH_LOCKED', 'lock_release_failed'],
+]) test('storage diagnostics bound and identify ' + stage, async t => {
+  const { file } = fixture(t);
+  await registerDispatch(file, spec());
+  const moduleUrl = new URL('./dispatch.mjs', import.meta.url).href;
+  const run = spawnSync(process.execPath, ['--input-type=module', '-e', `
+    import fs from 'node:fs';
+    import { syncBuiltinESMExports } from 'node:module';
+    import { prepareDispatch, dispatchDiagnostic } from ${JSON.stringify(moduleUrl)};
+    const original = fs[${JSON.stringify(method)}];
+    fs[${JSON.stringify(method)}] = (...args) => {
+      if (${predicate}) throw Object.assign(Error(${JSON.stringify(secret + target.chatUrl)}), { code: 'EACCES', path: process.argv[1] });
+      return original(...args);
+    };
+    syncBuiltinESMExports();
+    try { await prepareDispatch(process.argv[1], ${JSON.stringify(ready())}); }
+    catch (error) { console.log(JSON.stringify(dispatchDiagnostic(error))); }
+  `, file], { encoding: 'utf8', timeout: 15000 });
+  assert.equal(run.status, 0, run.stderr);
+  const diagnostic = safe(JSON.parse(run.stdout));
+  assert.deepEqual(Object.keys(diagnostic), ['code', 'stage', 'reason', 'message']);
+  assert.equal(diagnostic.code, code);
+  assert.equal(diagnostic.stage, stage);
+  assert.equal(diagnostic.reason, reason);
+  assert.ok(!run.stdout.includes(file));
+});
+
+test('unexpected caller failures and forged diagnostics never masquerade as storage or leak exceptions', async t => {
+  const { file } = fixture(t);
+  const input = spec();
+  Object.defineProperty(input, 'prompt', { enumerable: true, get() { throw Error(secret); } });
+  let failure;
+  try { await registerDispatch(file, input); } catch (error) { failure = error; }
+  const diagnostic = dispatchDiagnostic(failure);
+  assert.equal(diagnostic.code, 'DISPATCH_INTERNAL');
+  assert.equal(diagnostic.stage, 'ledger_update');
+  assert.equal(diagnostic.reason, 'unexpected_failure');
+  Object.assign(failure, { code: secret, stage: secret, reason: secret, message: secret });
+  assert.deepEqual(safe(dispatchDiagnostic(failure)), diagnostic);
+  for (const forged of [Error(secret), { code: 'DISPATCH_STORAGE', stage: secret, reason: secret, message: secret }, null])
+    assert.deepEqual(safe(dispatchDiagnostic(forged)), diagnostic);
+  assert.equal(existsSync(file), false);
+  assert.equal(existsSync(file + '.dispatch.lock'), false);
+});
+
+test('a missing parent directory reports a fixed reason without leaking its path', async t => {
+  const { dir } = fixture(t);
+  const file = join(dir, secret, 'ledger.json');
+  await assert.rejects(registerDispatch(file, spec()), error => {
+    const diagnostic = safe(dispatchDiagnostic(error));
+    assert.equal(diagnostic.code, 'DISPATCH_STORAGE');
+    assert.equal(diagnostic.stage, 'ledger_path');
+    assert.equal(diagnostic.reason, 'not_found');
+    return true;
+  });
+});
+
+test('payload read failures use only allowlisted reasons, including unknown secret error codes', async t => {
+  const { dir, file } = fixture(t);
+  const input = join(dir, 'input.json');
+  writeFileSync(input, JSON.stringify(spec()));
+  const moduleUrl = new URL('./dispatch.mjs', import.meta.url).href;
+  for (const [errorCode, reason] of [['ENOSPC', 'storage_full'], ['EPERM', 'permission_denied'], [secret, 'io_failed']]) {
+    const run = spawnSync(process.execPath, ['--input-type=module', '-e', `
+      import fs from 'node:fs';
+      import { syncBuiltinESMExports } from 'node:module';
+      import { dispatchCli, dispatchDiagnostic } from ${JSON.stringify(moduleUrl)};
+      fs.readFileSync = () => { throw Object.assign(Error(${JSON.stringify(secret)}), { code: ${JSON.stringify(errorCode)} }); };
+      syncBuiltinESMExports();
+      try { await dispatchCli(['register', process.argv[1], process.argv[2]]); }
+      catch (error) { console.log(JSON.stringify(dispatchDiagnostic(error))); }
+    `, file, input], { encoding: 'utf8', timeout: 15000 });
+    assert.equal(run.status, 0, run.stderr);
+    assert.deepEqual(safe(JSON.parse(run.stdout)), {
+      code: 'DISPATCH_STORAGE', stage: 'payload_read', reason,
+      message: 'dispatch storage unavailable; inspect private files',
+    });
+    assert.ok(!run.stdout.includes(input));
+    assert.equal(existsSync(file), false);
+    assert.equal(existsSync(file + '.dispatch.lock'), false);
+  }
+});
 
 test('extends the existing ledger without copying task completion authority', async t => {
   const { file } = fixture(t);
@@ -326,6 +454,10 @@ test('client dispatch CLI output and malformed-input stderr are bounded and priv
   const { file, dir } = fixture(t);
   const input = join(dir, 'input.json');
   const client = fileURLToPath(new URL('./client.mjs', import.meta.url));
+  const preflight = spawnSync(process.execPath, [client, 'dispatch', 'preflight'], { encoding: 'utf8', timeout: 15000 });
+  assert.equal(preflight.status, 0, preflight.stderr);
+  assert.deepEqual(JSON.parse(preflight.stdout), { runtime: 'node', ready: true });
+  assert.equal(preflight.stderr, '');
   writeFileSync(input, JSON.stringify(spec()));
   let run = spawnSync(process.execPath, [client, 'dispatch', 'register', file, input], { encoding: 'utf8', timeout: 15000 });
   assert.equal(run.status, 0, run.stderr);
@@ -335,7 +467,9 @@ test('client dispatch CLI output and malformed-input stderr are bounded and priv
   run = spawnSync(process.execPath, [client, 'dispatch', 'begin', file, input], { encoding: 'utf8', timeout: 15000 });
   assert.equal(run.status, 1);
   assert.equal(run.stdout, '');
-  assert.equal(run.stderr.trim(), 'WebGPT: invalid private dispatch input');
+  assert.deepEqual(JSON.parse(run.stderr.trim().replace(/^WebGPT: /, '')), {
+    code: 'DISPATCH_INPUT', stage: 'input', reason: 'invalid_input', message: 'invalid private dispatch input',
+  });
   safe(run.stderr);
 });
 

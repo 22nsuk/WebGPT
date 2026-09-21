@@ -5,12 +5,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
-import { once } from 'node:events';
 import { createHash } from 'node:crypto';
-import { setTimeout as delay } from 'node:timers/promises';
 import { start } from './worker.mjs';
 import { request, reconcileTasks, collectTask } from './client.mjs';
 import { processState } from './runtime.mjs';
+import { observeChild, spawnFixtureWorker, untilFixture } from './test-fixtures/worker-process.mjs';
 
 const hash = text => createHash('sha256').update(text).digest('hex');
 async function fixture(run) {
@@ -135,29 +134,17 @@ test('an already parked wait verifies state again before sending its timeout res
 async function ownedWorker(run) {
   const base = mkdtempSync(join(tmpdir(), 'webgpt-ipc-')), dir = join(base, 'runtime');
   const configPath = join(base, 'config.json');
-  // start() accepts test ports, configuration() does not; reserve distinct ephemeral ports first.
-  const { createServer } = await import('node:net');
-  const servers = [createServer(), createServer()];
-  await Promise.all(servers.map(s => new Promise(resolve => s.listen(0, '127.0.0.1', resolve))));
-  const config = { dataDir: dir, mcpPort: servers[0].address().port, controlPort: servers[1].address().port };
-  await Promise.all(servers.map(s => new Promise(resolve => s.close(resolve))));
+  const config = { dataDir: dir, mcpPort: 12340, controlPort: 12341 };
   writeFileSync(configPath, JSON.stringify(config));
-  const child = spawn(process.execPath, [fileURLToPath(new URL('./worker.mjs', import.meta.url))], {
-    env: { ...process.env, WEBGPT_CONFIG: configPath, WEBGPT_DATA_DIR: dir }, stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+  const observed = spawnFixtureWorker(process.execPath, [fileURLToPath(new URL('./worker.mjs', import.meta.url))], {
+    env: { ...process.env, WEBGPT_CONFIG: configPath, WEBGPT_DATA_DIR: dir },
+  }, ports => { config.mcpPort = ports.mcpPort; config.controlPort = ports.controlPort; });
+  const { child, exit } = observed;
+  const until = (predicate, requireAlive = false) => untilFixture(predicate, {
+    timeoutMs: 2500, label: 'owned worker', diagnostic: observed.diagnostic,
+    stopped: () => requireAlive && (child.exitCode !== null || child.signalCode !== null),
   });
-  let stdout = '', stderr = '';
-  child.stdout.on('data', b => { stdout += b; }); child.stderr.on('data', b => { stderr += b; });
-  const exit = once(child, 'exit');
-  const until = async predicate => {
-    const controller = new AbortController();
-    try {
-      await Promise.race([
-        (async () => { while (!await predicate()) await delay(10, undefined, { signal: controller.signal }); })(),
-        delay(2500, undefined, { signal: controller.signal }).then(() => { throw Error('fixture deadline: ' + stderr); }),
-      ]);
-    } finally { controller.abort(); }
-  };
-  try { await run({ child, dir, config, exit, until, listening: () => stdout.includes('"event":"listening"') }); }
+  try { await run({ child, dir, config, exit, until, listening: () => observed.listening }); }
   finally {
     if (child.exitCode === null && child.signalCode === null) { child.kill('SIGKILL'); await exit; }
     rmSync(base, { recursive: true, force: true });
@@ -165,7 +152,7 @@ async function ownedWorker(run) {
 }
 
 for (const early of [false, true]) test(`owned Worker drains when IPC is lost ${early ? 'during startup' : 'after listening'}`, () => ownedWorker(async f => {
-  if (!early) { await f.until(f.listening); await request('register', { id: 'survives', instructions: '', inputs: {} }, f.config); }
+  if (!early) { await f.until(f.listening, true); await request('register', { id: 'survives', instructions: '', inputs: {} }, f.config); }
   f.child.disconnect();
   await f.until(() => f.child.exitCode !== null || f.child.signalCode !== null);
   assert.deepEqual(await f.exit, [0, null]);
@@ -258,33 +245,36 @@ for (const value of ['invalid', [{ id: 'outside-scope' }]]) test(`new result rec
 });
 
 test('actual supervisor death permits verified drain or dead-owner recovery and resumes saved tasks', async () => {
-  const { createServer } = await import('node:net');
   const { requestServiceStop } = await import('./service.mjs');
   const base = mkdtempSync(join(tmpdir(), 'webgpt-owner-death-')), dir = join(base, 'runtime'), configPath = join(base, 'config.json');
-  const servers = [createServer(), createServer()];
-  await Promise.all(servers.map(s => new Promise(resolve => s.listen(0, '127.0.0.1', resolve))));
-  const config = { dataDir: dir, mcpPort: servers[0].address().port, controlPort: servers[1].address().port };
-  await Promise.all(servers.map(s => new Promise(resolve => s.close(resolve)))); writeFileSync(configPath, JSON.stringify(config));
+  const config = { dataDir: dir, mcpPort: 12340, controlPort: 12341 };
+  writeFileSync(configPath, JSON.stringify(config));
   const env = { ...process.env, WEBGPT_CONFIG: configPath, WEBGPT_DATA_DIR: dir };
-  const source = `import {spawn} from 'node:child_process';
+  const source = `import {spawnFixtureWorker} from ${JSON.stringify(new URL('./test-fixtures/worker-process.mjs', import.meta.url).href)};
     import {runService} from ${JSON.stringify(new URL('./service.mjs', import.meta.url).href)};
     process.exitCode = await runService(process.env, {spawnWorker: (...args) => {
-      const child=spawn(...args); process.send({workerPid: child.pid}); return child;
+      const observed=spawnFixtureWorker(...args, ports => process.send({ports}));
+      const child=observed.child;
+      child.stdout.pipe(process.stdout); child.stderr.pipe(process.stderr);
+      process.send({workerPid: child.pid}); return child;
     }}); process.disconnect();`;
   const launches = [];
   const launch = () => {
-    const parent = spawn(process.execPath, ['--input-type=module', '-e', source], { env, stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
-    const item = { parent, exit: once(parent, 'exit'), workerPid: null };
-    parent.on('message', value => { item.workerPid = value.workerPid; }); launches.push(item); return item;
+    const parent = spawn(process.execPath, ['--input-type=module', '-e', source], { env, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+    const observed = observeChild(parent);
+    const item = { ...observed, parent, workerPid: null, ports: null };
+    parent.on('message', value => {
+      if (value.workerPid) item.workerPid = value.workerPid;
+      if (value.ports) { item.ports = value.ports; config.mcpPort = value.ports.mcpPort; config.controlPort = value.ports.controlPort; }
+    }); launches.push(item); return item;
   };
-  const until = async predicate => {
-    const end = Date.now() + 4000;
-    while (Date.now() < end) { if (await predicate()) return; await delay(10); }
-    throw Error('supervisor fixture deadline');
-  };
-  const ready = async () => { try { return (await request('ready', undefined, config, { timeoutMs: 250 })).ok; } catch { return false; } };
+  const until = (predicate, owner) => untilFixture(predicate, { timeoutMs: 4000, label: 'supervisor',
+    diagnostic: () => launches.map(item => item.diagnostic()).join('\n'),
+    stopped: () => owner && (owner.parent.exitCode !== null || owner.parent.signalCode !== null),
+  });
+  const ready = owner => async () => owner.ports && (await request('ready', undefined, config, { timeoutMs: 250 })).ok;
   try {
-    const first = launch(); await until(ready);
+    const first = launch(); await until(ready(first), first);
     const task = await request('register', { id: 'retained', instructions: '', inputs: {} }, config);
     assert.ok(Number.isSafeInteger(first.workerPid));
     first.parent.kill('SIGKILL'); await first.exit;
@@ -298,7 +288,7 @@ test('actual supervisor death permits verified drain or dead-owner recovery and 
       assert.equal(processState(first.workerPid), 'dead');
       assert.equal(JSON.parse(readFileSync(join(workerLock, 'owner.json'))).pid, first.workerPid);
     }
-    const second = launch(); await until(ready);
+    const second = launch(); await until(ready(second), second);
     assert.notEqual(second.workerPid, first.workerPid);
     if (needsRecovery) {
       const archives = readdirSync(dir).filter(name => name.startsWith('worker.lock.stale-'));

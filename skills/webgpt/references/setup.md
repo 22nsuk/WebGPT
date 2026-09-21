@@ -165,7 +165,7 @@ Windows deployment prerequisites, graceful stop and parent reconciliation.
 The updated installation includes `scripts/protocol.mjs`, `scripts/runtime.mjs` and
 `scripts/results.mjs`; do not copy only worker.mjs. Preserve and reconcile interrupted
 result candidates as described in [recovery-integrity.md](recovery-integrity.md).
-In a local MCP probe, confirm server version `1.4.1-fork.3`, protocol negotiation and an empty
+In a local MCP probe, confirm server version `1.4.1-fork.4`, protocol negotiation and an empty
 `ping` result. Missing or unsupported protocol fields are not evidence of browser readiness.
 Refresh the connection after updating the identified idle service, and still run the real
 browser/connector probe below; no public connection or browser test is implied by local tests.
@@ -222,6 +222,21 @@ do not claim direct editing works or apply WebGPT's patches as a substitute.
 ## 4. Verify the installed path
 
 Run `node --test --test-reporter=tap` from the installed skill directory (no shell glob needed).
+Before controller registration, run `node <skill>/scripts/client.mjs dispatch preflight` in ordinary
+Node. Keep ledger/lock/controller work in Node and browser actions in documented browser tools.
+Initialize the actual browser tool before creating a task or entering a prompt. If initialization
+fails, record the tool, time, stage and actual error; this alone is not evidence of a missing worker,
+failed ChatGPT login or failed project grant. Check current readiness and the most recent verified
+installation record rather than carrying an old handoff's connection diagnosis forward.
+
+A browser tool's current working directory and its accessibility to project files are separate
+questions. An UNC path is not by itself evidence of unsupported browser initialization. A complete
+app restart resolved one observed Windows/UNC initialization failure; its precise original cause
+was not established. Verify initialization in the actual affected task after restarting. A generic
+MCP server's `cwd` setting does not automatically configure an app-managed browser server, and an
+app-managed configuration may be regenerated on launch; verify effective state before attributing
+recovery to that setting. Do not add path aliases or relax sandbox/file checks as a presumed repair.
+
 Then follow [workspace.md](workspace.md) to register one edit task for an **owned temporary project**.
 Record its task ID and owned chat/tab IDs in the private setup note as they are created.
 In a real chat using the requested mode (Extra High or Pro), give WebGPT a natural, outcome-oriented
@@ -229,17 +244,43 @@ probe: exercise direct file creation/editing/deletion, revision-safe writes and 
 reporting on an owned disposable file, and return receipts, evidence and limitations. State what the
 probe must prove rather than prescribing the tool order; let WebGPT choose the exact sequence within
 the temporary project grant. The parent verifies the final on-disk state, recovery copies, saved
-result SHA, callback receipt and empty backup deadline, then uses `client.mjs collect <task-id>`
+result SHA, callback receipt and empty backup deadline, then uses `client.mjs collect --resume <task-id>`
 to verify the saved bytes and acknowledge the result. Retain that task chat under SKILL.md. Record its URL and retained disposition. Close its task-owned tabs
 and verify their absence per SKILL.md; preserve unrelated tabs. Clean only the owned temporary
 probe files after recording evidence; this does not authorize deleting the chat.
+
+Keep the following checkpoints in the **same original private setup record**, with each stage's
+PASS/FAIL/NOT_RUN status and a reference to its private evidence: browser initialization; actual
+mode/connector and sent message; exact relevant tool calls; on-disk changes/recovery originals;
+saved-result integrity; collection/token retirement; retained-chat disposition and tab cleanup.
+After interruption, run `ready` and the hash-verifying CLI `reconcile`, match the original task,
+and resume only unfinished stages. Raw `request('reconcile')` does not add local result integrity.
+An already collected result can be reverified with `collect --resume`; do not re-register it or
+send another probe to repeat cleanup. Stop for missing/tampered artifacts or recovery warnings.
+Neither a saved result nor `collected:true` proves browser E2E or token rejection by itself.
+
+For menus/forms, wait for the expected visible control, expanded state or URL using the browser
+tool's documented observation capability. A click response containing the old view is not proof
+of failure; take one targeted observation before a justified retry. Do not replace this with fixed
+sleeps or repeated clicks. Tool panels may contain cumulative history: open the latest list once
+and locate the exact relevant invocation by identity/name/arguments, then its actual result. Text
+quoting an expected revision conflict in a report is not a tool failure. Do not treat repeated
+views of the same invocation as new calls. See [dispatch.md](dispatch.md) for bounded UI evidence.
 
 If the probe fails, retain its chat and save the exact error shown in the tool-call UI and correlate
 that error with any partial file-operation or callback receipts. A model summary alone does not
 confirm a platform denial or broken feature. Record installation status separately from operation
 verification. Security refusals remain non-bypassable; report them exactly and do not infer or claim
-a prior platform cause without direct evidence. If its terminal callback cannot arrive, cancel the
-local registration immediately so backup checks stop.
+a prior platform cause without direct evidence. If its terminal callback cannot arrive, preserve
+the finished output and inspect the retained chat and controller before a narrow completion retry.
+If the probe is abandoned, cancel its registration after saving partial evidence so backup checks
+stop. A missing callback alone does not authorize replaying edits or creating replacement work.
+For a tool-level `blocked by policy`, distinguish rejection before process creation from an OS or
+worker error. Record only the known policy reason; do not label it Auto-review unless that component
+is identified. Existing user authorization does not change a tool's enforcement policy. Preserve
+the pending stage and use an exposed official approval path when available, without retrying through
+another shell/encoding or requesting broader access as a guessed fix. User-only commands should be
+provided in a copyable code block with the required invocation syntax and no secrets.
 Retain the finished probe chat and close its task tabs before pausing for account setup; keep only
 the actionable sign-in/approval tab open among setup-owned tabs. Repair the connection before
 registering another probe.
