@@ -42,8 +42,9 @@ serialized. Do not delete/copy/reset the ledger or alter its dispatch fields to 
 
 For interactive Codex use, prefer the split Node CLI below. Ordinary Node owns filesystem access,
 ledger locks, controller calls and SHA-256 calculation; CUA owns only documented browser actions
-and observations. Do not import this helper or Node filesystem/network modules into the managed
-CUA runtime. A generic MCP server `cwd` setting does not configure that managed runtime.
+and observations. Do not run this helper's ledger/controller lifecycle inside the managed CUA
+runtime. Use only the browser tool's supported private evidence-transfer capabilities between
+those roles. A generic MCP server `cwd` setting does not configure that managed runtime.
 
 Capture only the required owned-target UI evidence through supported browser controls and pass it
 privately to the local helper. Compute digests from that actual observed text in ordinary Node,

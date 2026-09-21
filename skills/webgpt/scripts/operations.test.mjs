@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { createServer } from 'node:http';
+import { createServer, Server } from 'node:http';
 import { connect } from 'node:net';
 import { setTimeout as delay } from 'node:timers/promises';
 import { randomUUID } from 'node:crypto';
@@ -267,18 +267,35 @@ test('workspace unavailability is diagnosed independently of worker liveness', (
   assert.equal((await fetch(`http://127.0.0.1:${f.service.mcpPort}/health`)).status, 200);
 }));
 
-test('shutdown is authenticated, drains an in-flight wait, is idempotent, and preserves running tasks', () => fixture(async f => {
+test('shutdown is authenticated, drains an in-flight wait, is idempotent, and preserves running tasks', t => fixture(async f => {
   const a = await f.register('a');
   assert.equal((await fetch(`http://127.0.0.1:${f.service.controlPort}/shutdown`, { method: 'POST', body: '{}' })).status, 401);
   await assert.rejects(f.admin('shutdown', { extra: true }), /empty object/);
-  const waiting = f.admin('wait', { ids: ['a'] }); await delay(10);
+  // The GET handler installs its waiter synchronously. Observe its real request
+  // after that handler returns, instead of guessing acceptance from elapsed time.
+  let accepted;
+  const waitAccepted = new Promise(resolve => { accepted = resolve; });
+  const originalEmit = Server.prototype.emit;
+  const observeRequest = t.mock.method(Server.prototype, 'emit', function (event, ...args) {
+    const emitted = Reflect.apply(originalEmit, this, [event, ...args]);
+    if (event === 'request' && this.address()?.port === f.service.controlPort
+        && args[0].method === 'GET' && args[0].url === '/wait?id=a')
+      accepted(!args[1].headersSent && !args[1].writableEnded);
+    return emitted;
+  });
+  const waiting = f.admin('wait', { ids: ['a'] });
+  assert.equal(await Promise.race([waitAccepted, waiting.then(() => false)]), true,
+    'the scoped wait must be accepted and pending before shutdown');
+  observeRequest.mock.restore();
   assert.equal((await f.admin('shutdown', {})).accepted, true);
   assert.equal((await waiting).interrupted, true);
   await Promise.all([f.service.close(), f.service.close()]);
   assert.equal(existsSync(join(f.dir, 'worker.lock')), false);
   await f.restart();
   assert.equal((await f.call('get_task', { token: a.token })).structuredContent.status, 'running');
-}));
+// Use the production long-poll duration for this shutdown test; its completion
+// must come from shutdown, not the fixture's 30 ms timeout expiring under CI load.
+}, { waitMs: 55000 }));
 
 test('bounded drain closes a partial request without accepting its late body', () => fixture(async f => {
   const socket = connect(f.service.controlPort, '127.0.0.1'); await once(socket, 'connect');
