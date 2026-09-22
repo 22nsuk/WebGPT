@@ -10,9 +10,13 @@ import { configuration } from './client.mjs';
 import { acquireRuntimeLock, startupExitCode, fault } from './runtime.mjs';
 
 const backoff = [1000, 5000, 15000];
-export function restartDelay(code, signal, attempt) {
+const report = entry => console.error(JSON.stringify(entry));
+export function restartDelay(code, signal, attempt, platform = process.platform) {
   if (!Number.isSafeInteger(attempt) || attempt < 0 || attempt >= backoff.length) return null;
-  if (code === 1 || (code === null && ['SIGKILL', 'SIGABRT', 'SIGSEGV'].includes(signal))) return backoff[attempt];
+  // Windows Stop-Process/TerminateProcess can surface unsigned DWORD -1, not a
+  // POSIX signal. This observed exit is retryable; arbitrary NTSTATUS codes are not.
+  if (code === 1 || (platform === 'win32' && code === 0xffffffff)
+      || (code === null && ['SIGKILL', 'SIGABRT', 'SIGSEGV'].includes(signal))) return backoff[attempt];
   return null; // Clean stop, configuration/data/storage/ownership errors: no restart.
 }
 function serviceConfig(env) {
@@ -45,16 +49,19 @@ export function requestServiceStop(env = process.env) {
   return { accepted: true }; // No PID kill, secrets, SCM changes or installation.
 }
 
-export async function runService(env = process.env, { spawnWorker = spawn, pause = delay } = {}) {
+export async function runService(env = process.env, { spawnWorker = spawn, pause = delay, record = report } = {}) {
   const config = serviceConfig(env);
   mkdirSync(config.dataDir, { recursive: true, mode: 0o700 });
   const ownership = acquireRuntimeLock(config.dataDir, { name: 'service' });
+  const log = (event, details = {}) => record({ time: new Date().toISOString(), event,
+    supervisorPid: process.pid, parentPid: process.ppid, instanceId: ownership.instanceId, ...details });
   const stopPath = resolve(config.dataDir, 'service.lock', 'stop-request');
   const controller = new AbortController();
   let child, killTimer, stopping = false;
-  const stop = () => {
+  let stopReason = null, result = 1;
+  const stop = (reason = 'cleanup') => {
     if (stopping) return;
-    stopping = true;controller.abort();
+    stopping = true;stopReason = reason;controller.abort();
     if (child && child.exitCode === null && child.signalCode === null) {
       // IPC reaches only the process this supervisor owns, never another worker
       // that might be using the configured HTTP port.
@@ -66,29 +73,41 @@ export async function runService(env = process.env, { spawnWorker = spawn, pause
     }
   };
   const signals = ['SIGINT', 'SIGTERM', ...(process.platform === 'win32' ? ['SIGBREAK'] : [])];
-  for (const signal of signals) process.on(signal, stop);
+  const handlers = signals.map(signal => [signal, () => stop(signal)]);
+  for (const [signal, handler] of handlers) process.on(signal, handler);
   const poll = setInterval(() => {
     // A delayed stop writer for an older instance must not stop its replacement.
-    if (ownsStopRequest(stopPath, ownership.instanceId)) stop();
+    if (ownsStopRequest(stopPath, ownership.instanceId)) stop('stop_request');
   }, 250);
   try {
+    log('service_started', { restartBudget: backoff.length });
     for (let attempt = 0; !stopping; attempt++) {
       child = spawnWorker(process.execPath, [fileURLToPath(new URL('./worker.mjs', import.meta.url))], {
         env: { ...env }, cwd: config.dataDir, shell: false, windowsHide: true,
         stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
       });
+      log('worker_started', { workerPid: child.pid ?? null, attempt });
       let code, signal;
       try { [code, signal] = await once(child, 'exit'); }
       catch (error) { throw fault('CONFIG_INVALID', 'worker could not be launched: ' + (error.code ?? 'UNKNOWN')); }
+      log('worker_exited', { workerPid: child.pid ?? null, exitCode: code, signal, attempt, stopReason });
       clearTimeout(killTimer);child = null;
-      if (stopping) return 0;
+      if (stopping) return result = 0;
       const wait = restartDelay(code, signal, attempt);
-      if (wait === null) return code ?? 1;
-      console.error(JSON.stringify({ event: 'worker_restart_scheduled', attempt: attempt + 1, delayMs: wait }));
+      if (wait === null) {
+        log('worker_restart_refused', { exitCode: code, signal, attempt,
+          reason: attempt >= backoff.length && restartDelay(code, signal, 0) !== null ? 'budget_exhausted' : 'exit_policy' });
+        return result = code ?? 1;
+      }
+      log('worker_restart_scheduled', { attempt: attempt + 1, delayMs: wait });
       try { await pause(wait, undefined, { signal: controller.signal }); }
       catch (error) { if (!stopping) throw error; }
     }
-    return 0;
+    return result = 0;
+  } catch (error) {
+    result = startupExitCode(error);
+    log('service_failed', { code: error.code ?? 'UNEXPECTED', exitCode: result });
+    throw error;
   } finally {
     // Do not release supervisor ownership while a launched child still runs.
     if (child?.pid && child.exitCode === null && child.signalCode === null) {
@@ -96,10 +115,11 @@ export async function runService(env = process.env, { spawnWorker = spawn, pause
       await once(child, 'exit');
     }
     clearInterval(poll);clearTimeout(killTimer);
-    for (const signal of signals) process.off(signal, stop);
+    for (const [signal, handler] of handlers) process.off(signal, handler);
     // A stop request is not recovery evidence; remove only our own regular marker.
     if (ownsStopRequest(stopPath, ownership.instanceId)) unlinkSync(stopPath);
     ownership.release();
+    log('service_exited', { exitCode: result, stopReason });
   }
 }
 if (process.argv[1] && process.argv[1] !== '-' && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
@@ -108,7 +128,8 @@ if (process.argv[1] && process.argv[1] !== '-' && import.meta.url === pathToFile
     if (process.argv[2] === 'stop') console.log(JSON.stringify(requestServiceStop()));
     else process.exitCode = await runService();
   } catch (error) {
-    console.error(JSON.stringify({ event: 'service_failed', code: error.code ?? 'UNEXPECTED' }));
+    report({ time: new Date().toISOString(), event: 'service_failed', supervisorPid: process.pid,
+      parentPid: process.ppid, code: error.code ?? 'UNEXPECTED', exitCode: startupExitCode(error) });
     process.exitCode = startupExitCode(error);
   }
 }

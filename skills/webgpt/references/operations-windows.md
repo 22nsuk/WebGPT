@@ -115,8 +115,11 @@ repair method. Readiness/reconciliation do not authorize task recovery decisions
 ## Failure classes and retry budgets
 
 The optional launcher owns a single lifetime budget: at most three worker restarts
-after 1, 5 and 15 seconds. Only unexpected exit 1 or supported abnormal termination
-signals are retry candidates. Clean exit 0 is not restarted. Worker exit 65 means
+after 1, 5 and 15 seconds. Only unexpected exit 1, supported abnormal termination
+signals, and Windows DWORD exit `4294967295` (observed with PowerShell
+`Stop-Process`) are retry candidates. The latter is an exit-code policy, not proof
+of who terminated the process. Other unknown Windows status codes still stop.
+Clean exit 0 is not restarted. Worker exit 65 means
 invalid state, 73 means ownership/port conflict, 74 means storage failure, and 78
 means invalid configuration: all stop without automatic retry. Unknown nonzero
 codes also stop. These codes are this launcher's contract, not a claim about
@@ -151,6 +154,69 @@ terminal result retry remains supported by the existing worker contract.
 | Sleep/power off | Local files/server unavailable; use an approved power policy or always-on host. A fixed DNS name cannot fix this. |
 
 ## Explicit paths, accounts, credentials and logs
+
+### Current-user Task Scheduler deployment
+
+For an existing private current-user installation, the optional
+`deploy/windows/register-worker-task.ps1` registers an OS-owned launch with that
+same interactive identity and `RunLevel Limited`. It neither creates an account
+nor modifies ACLs, credentials, the tunnel or ChatGPT. Windows may require an
+elevated **same-user** PowerShell to register it; `Access denied` must be resolved
+through the authorized OS administration step, not another launch trick.
+Registration does not start or stop anything and refuses an existing task name.
+
+```powershell
+& 'C:/path/to/installed/webgpt/deploy/windows/register-worker-task.ps1' `
+  -TaskName 'WebGPTWorker' -NodePath 'C:/Program Files/nodejs/node.exe' `
+  -ConfigPath 'C:/private/config.json' -DataPath 'C:/private/runtime' -AtLogon
+```
+
+Without `-AtLogon`, the task is manual-only. With it, it starts at this user's
+logon, **not before login**, and is not guaranteed to survive logoff. A built-in
+Administrator account is not made into a dedicated low-privilege identity by this
+setting; inspect the actual token. The scheduler uses IgnoreNew, no execution time
+limit, no battery stop, and **no scheduler restart policy**. Each explicit start or
+new logon creates a new supervisor lifetime; do not repeatedly start it to conceal
+an exhausted budget. The WinSW option remains appropriate for separately reviewed
+boot-before-login requirements.
+
+Before starting the registered task, freeze dispatch, verify idle and back up the
+deployment as described below, then gracefully stop the existing identified
+Worker and verify its exit. Only then run `Start-ScheduledTask -TaskName WebGPTWorker`.
+Check the task principal/action/settings, actual process ancestry, both runtime
+locks, listeners, `ready`, `reconcile`, and the existing HTTPS endpoint. A successful
+registration or Task Scheduler's Running state is not readiness proof.
+
+Stop using `service.mjs stop` with the explicit private environment, then verify
+both locks and processes are gone. Do not use `Stop-ScheduledTask` as the normal
+graceful stop. To disable future launches, disable the exact registered task;
+this alone does not stop an already running process. Delete the task only after
+verifying the reviewed action and stopped state. Do not remove runtime evidence.
+
+The runner starts only its sibling supervisor via the explicit Node executable.
+It records launcher/supervisor exit observations, plus supervisor and worker
+stdout/stderr, in `dataDir/service-logs`. An exclusive OS file handle prevents
+concurrent runner log rotation. It retains eight sessions; each reviewed supervisor
+has at most four child launches, with lifecycle-only normal output. This is session
+retention, not a general byte quota for arbitrary diagnostic output. Existing
+symlink/hardlink log targets are refused. Keep all logs under private runtime ACLs.
+Forced termination of the runner itself cannot reliably write a final log; inspect
+`Get-ScheduledTaskInfo` and available Windows Task Scheduler history as external
+evidence. Do not infer an exit cause merely from a missing final record.
+
+Supervisor JSON records contain UTC time, supervisor PID/parent PID/instance ID,
+child PID and attempt, observed exit code/signal, stop reason and retry disposition.
+They omit prompts, tokens and config contents. `worker.pid` is not maintained or
+read by this launcher: use the instance-scoped locks plus process identity and
+readiness. Preserve obsolete PID notes as historical evidence rather than treating
+them as current status.
+
+Validate the wrapper with disposable data first, including actual Windows
+`Stop-Process`, explicit stop, config failure, duplicate launch, and log retention.
+Then validate Codex full restart and a later Windows login separately. Do not
+report app-lifetime independence or reboot recovery from direct-shell tests alone.
+
+### Service identity and paths
 
 `service.mjs` requires an absolute `WEBGPT_CONFIG` and an explicitly configured
 absolute data directory (in that file or `WEBGPT_DATA_DIR`). It refuses to infer a
