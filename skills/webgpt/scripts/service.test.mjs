@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, readdirSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -49,11 +51,15 @@ test('restart policy is bounded and never retries clean/data/config/storage/owne
   for (const code of [0, 65, 73, 74, 78, 2, 9]) assert.equal(restartDelay(code, null, 0), null);
   assert.equal(restartDelay(null, 'SIGTERM', 0), null);
   assert.equal(restartDelay(1, null, -1), null);
+  assert.equal(restartDelay(0xffffffff, null, 0, 'win32'), 1000);
+  assert.equal(restartDelay(0xffffffff, null, 3, 'win32'), null);
+  assert.equal(restartDelay(0xffffffff, null, 0, 'linux'), null);
+  assert.equal(restartDelay(0xc0000005, null, 0, 'win32'), null);
 });
 
 test('supervisor launches only the fixed worker without a shell and exhausts its one lifetime retry budget', () => fixture(async f => {
-  const waits = []; let attempts = 0;
-  const code = await runService(f.env, { spawnWorker(executable, args, options) {
+  const waits = [], records = []; let attempts = 0;
+  const code = await runService(f.env, { record: entry => records.push(entry), spawnWorker(executable, args, options) {
     attempts++; assert.equal(executable, process.execPath);
     assert.deepEqual(args, [fileURLToPath(new URL('./worker.mjs', import.meta.url))]);
     assert.equal(options.shell, false); assert.equal(options.cwd, f.config.dataDir);
@@ -62,6 +68,18 @@ test('supervisor launches only the fixed worker without a shell and exhausts its
   }, pause: async value => { waits.push(value); } });
   assert.equal(code, 1); assert.equal(attempts, 4); assert.deepEqual(waits, [1000, 5000, 15000]);
   assert.equal(existsSync(join(f.config.dataDir, 'service.lock')), false);
+  assert.equal(records[0].event, 'service_started');
+  assert.equal(records.filter(entry => entry.event === 'worker_started').length, 4);
+  assert.equal(records.filter(entry => entry.event === 'worker_exited').length, 4);
+  assert.equal(records.find(entry => entry.event === 'worker_restart_refused').reason, 'budget_exhausted');
+  assert.equal(records.at(-1).event, 'service_exited');
+  assert.equal(records.at(-1).exitCode, 1);
+  for (const entry of records) {
+    assert.ok(Number.isFinite(Date.parse(entry.time)));
+    assert.equal(entry.supervisorPid, process.pid); assert.equal(entry.parentPid, process.ppid);
+    assert.equal(entry.instanceId, records[0].instanceId);
+    assert.equal(JSON.stringify(entry).includes(f.base), false);
+  }
 }));
 
 for (const code of [0, 65, 73, 74, 78]) test(`supervisor does not restart worker exit ${code}`, () => fixture(async f => {
@@ -87,13 +105,15 @@ test('service cannot use a relative configuration or implicit account-profile ru
 }));
 
 test('explicit stop during backoff prevents any next worker launch', () => fixture(async f => {
-  let attempts = 0;
-  const code = await runService(f.env, { spawnWorker: () => { attempts++; return exited(1); }, pause: async (_ms, _value, { signal }) => {
+  let attempts = 0; const records = [];
+  const code = await runService(f.env, { record: entry => records.push(entry), spawnWorker: () => { attempts++; return exited(1); }, pause: async (_ms, _value, { signal }) => {
     assert.equal(requestServiceStop(f.env).accepted, true);
     await delay(5000, undefined, { signal });
   } });
   assert.equal(code, 0); assert.equal(attempts, 1);
   assert.equal(existsSync(join(f.config.dataDir, 'service.lock')), false);
+  assert.equal(records.at(-1).stopReason, 'stop_request');
+  assert.equal(records.at(-1).exitCode, 0);
 }));
 
 test('real worker is restarted after force kill; explicit service stop drains IPC and releases both locks', () => fixture(async f => {
@@ -143,6 +163,29 @@ test('a delayed stop request for a different service instance cannot stop the cu
       if (existsSync(marker)) unlinkSync(marker);
       requestServiceStop(f.env); await service;
     }
+  }
+}));
+
+test('Windows Stop-Process DWORD exit is retried and recorded by the owned supervisor', { skip: process.platform !== 'win32' }, () => fixture(async f => {
+  const records = [], waits = [];
+  const running = realService(f, { record: entry => records.push(entry), pause: async ms => waits.push(ms) });
+  try {
+    await running.until(async () => (await request('ready', undefined, f.config)).ok);
+    const old = JSON.parse(readFileSync(join(f.config.dataDir, 'worker.lock', 'owner.json')));
+    // PID comes only from this disposable worker's private lock.
+    const terminator = spawn(join(process.env.SystemRoot, 'System32/WindowsPowerShell/v1.0/powershell.exe'),
+      ['-NoProfile', '-NonInteractive', '-Command', `Stop-Process -Id ${old.pid} -ErrorAction Stop`],
+      { windowsHide: true, stdio: 'ignore' });
+    assert.deepEqual(await once(terminator, 'exit'), [0, null]);
+    await running.until(async () => JSON.parse(readFileSync(join(f.config.dataDir, 'worker.lock', 'owner.json'))).instanceId !== old.instanceId
+      && (await request('ready', undefined, f.config)).ok);
+    assert.equal(records.find(entry => entry.event === 'worker_exited').exitCode, 0xffffffff);
+    assert.deepEqual(waits, [1000]);
+    requestServiceStop(f.env);
+    assert.equal(await running.service, 0);
+    assert.equal(records.at(-1).stopReason, 'stop_request');
+  } finally {
+    if (!running.finished) { requestServiceStop(f.env); await running.service; }
   }
 }));
 
