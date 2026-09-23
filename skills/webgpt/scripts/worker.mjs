@@ -9,6 +9,7 @@ import { configuration, configurationFile } from './client.mjs';
 import { inspectPendingResults, storeResult, verifySavedResult } from './results.mjs';
 import { acquireRuntimeLock, readStateBytes, readStateMarker, createStateMarker, assertNoStateStage, writeStateBytes, parseState, fault, startupExitCode } from './runtime.mjs';
 import { protocolVersions, validateMessage, negotiateProtocol, validateArguments } from './protocol.mjs';
+import { auditFromEnvironment, createAuditWriter } from './audit.mjs';
 
 const schema = properties => ({type:'object',properties,required:Object.keys(properties),additionalProperties:false});
 const str = {type:'string'};
@@ -21,12 +22,14 @@ export const tools = [
   {name:'read_input',description:'Read one explicitly supplied input by name; no arbitrary filesystem access.',inputSchema:schema({token:str,name:str}),annotations:{readOnlyHint:true,openWorldHint:false}},
   {name:'submit_result',description:'Save the task deliverable, evidence and limitations, and notify the supervisor. No file changes required. Terminal: stops backup checks. Retry identical submission safely. Do not delete the chat.',inputSchema:schema({token:str,status:{type:'string',enum:['completed','failed','cancelled']},summary:str,result:str}),annotations:{readOnlyHint:false,destructiveHint:false,idempotentHint:true,openWorldHint:false}}
 ];
-export async function start({dir,port=43137,controlPort=43139,publicMcp=false,backupMs=900000,waitMs=55000,closeGraceMs=5000,now=Date.now,configFile=configurationFile()}={}) {
+export async function start({dir,port=43137,controlPort=43139,publicMcp=false,backupMs=900000,waitMs=55000,closeGraceMs=5000,now=Date.now,configFile=configurationFile(),audit=false}={}) {
+  if(typeof audit!=='boolean')throw fault('CONFIG_INVALID','audit must be boolean');
   if(!Number.isSafeInteger(waitMs)||waitMs<1||waitMs>55000)throw Error('waitMs must be between 1 and 55000');
   if(typeof configFile!=='string'||!isAbsolute(configFile))throw fault('CONFIG_INVALID','configFile must be absolute');
   dir=resolve(dir); mkdirSync(dir,{recursive:true,mode:0o700});
   if(!Number.isSafeInteger(closeGraceMs)||closeGraceMs<1||closeGraceMs>30000)throw Error('invalid closeGraceMs');
-  const ownership=acquireRuntimeLock(dir), release=()=>ownership.release();
+  let auditClosed=false;
+  const ownership=acquireRuntimeLock(dir), release=()=>{auditClosed=true;ownership.release();};
   try{
   const statePath=resolve(dir,'state.json'), keyPath=resolve(dir,'controller.key');
   const key=existsSync(keyPath)?readFileSync(keyPath,'utf8'):randomUUID();
@@ -236,9 +239,32 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
     updateTask(t,{status:args.status,summary:args.summary,artifact,sha256:sha,nextCheck:null});
     wake();return {accepted:true,sha256:sha};
   };
+  const captureAudit=createAuditWriter(dir,audit), auditResponses=new Set();
+  const writeAudit=event=>{if(!auditClosed)captureAudit(event);};
   const mcp=createServer(async(req,res)=>{
+    // Generated IDs only: request URLs, headers and caller JSON-RPC IDs stay private.
+    let transportId;
+    if(audit){
+      transportId=randomUUID();
+      const started=performance.now(), record={requestId:transportId,method:['GET','HEAD','POST'].includes(req.method)?req.method:'OTHER'};
+      writeAudit({...record,phase:'http_received'});
+      let recorded=false;
+      const finished=aborted=>{
+        if(recorded)return;recorded=true;auditResponses.delete(finishAudit);
+        writeAudit({...record,phase:'http_completed',statusCode:res.headersSent?res.statusCode:null,
+          aborted,durationMs:Math.max(0,Math.round(performance.now()-started))});
+      };
+      const finishAudit=()=>finished(!res.writableFinished);
+      auditResponses.add(finishAudit);
+      res.once('finish',()=>finished(false));
+      res.once('close',()=>finished(!res.writableFinished));
+    }
     if(req.headers.origin)return json(res,403,{});
-    if(req.method==='GET'&&req.url==='/health')return json(res,200,{ok:true,name:'WebGPT Worker'});
+    if(req.url==='/health'){
+      if(req.method==='GET')return json(res,200,{ok:true,name:'WebGPT Worker'});
+      if(req.method==='HEAD'){res.writeHead(200,{'content-type':'application/json','cache-control':'no-store'});return res.end();}
+      res.setHeader('allow','GET, HEAD');return json(res,405,{});
+    }
     if(stopping)return json(res,503,{error:'worker is stopping',code:'SHUTTING_DOWN'});
     const actual=Buffer.from(req.url??''),expected=Buffer.from(mcpPath);
     if(actual.length!==expected.length||!timingSafeEqual(actual,expected))return json(res,404,{});
@@ -261,7 +287,18 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
     if(m.method==='ping')result={};
     else if(m.method==='initialize')result={protocolVersion,capabilities:{tools:{}},serverInfo:{name:'webgpt-worker',version:'1.4.1-fork.4'},instructions:'Read get_task with your private task token and perform the assigned task. Use read_input for supplied inputs. No workspace or file changes are required for text-only work. Use local file tools only when needed and granted; requested edits are applied directly, with revision hashes from read_file and no per-file grants. Review-only tasks cannot write. Coordinate disjoint edits if other workers share the project. Submit result once with the deliverable, any change receipts, evidence and limitations. No Git, PR, shell, or process control. Supervisor verifies results and retains task chats by default. Delete a task chat only when the user explicitly requests deletion of that chat.'};
     else if(m.method==='tools/list')result={tools};
-    else if(m.method==='tools/call'){try{const out=call(m.params?.name,m.params?.arguments);result={content:[{type:'text',text:JSON.stringify(out)}],structuredContent:out,isError:false};}catch(e){result={content:[{type:'text',text:e.message}],isError:true};}}
+    else if(m.method==='tools/call'){
+      let record,started;
+      if(audit){
+        const name=m.params?.name,token=m.params?.arguments?.token;
+        record={requestId:randomUUID(),transportId,tool:tools.some(t=>t.name===name)?name:'unknown',
+          taskId:typeof token==='string'?(tasks.find(t=>t.token&&t.token===token)?.id??null):null};
+        started=performance.now();writeAudit({...record,phase:'tool_received'});
+      }
+      try{const out=call(m.params?.name,m.params?.arguments);result={content:[{type:'text',text:JSON.stringify(out)}],structuredContent:out,isError:false};}
+      catch(e){result={content:[{type:'text',text:e.message}],isError:true};}
+      if(record)writeAudit({...record,phase:'tool_completed',isError:result.isError,durationMs:Math.max(0,Math.round(performance.now()-started))});
+    }
     else return json(res,200,{jsonrpc:'2.0',id:m.id??null,error:{code:-32601,message:'method not found'}});
     json(res,200,{jsonrpc:'2.0',id:m.id??null,result});
   });
@@ -370,9 +407,15 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
       const deadline=setTimeout(()=>server.closeAllConnections(),closeGraceMs);
       server.close(()=>{clearTimeout(deadline);done();});
       server.closeIdleConnections();
-    }))).then(()=>release());
+    }))).then(()=>{
+      // Socket-close callbacks may follow server.close. Finalize observations
+      // before releasing runtime ownership; late events cannot write again.
+      for(const finishAudit of [...auditResponses])finishAudit();
+      release();
+    });
     return closePromise;
   };
+  writeAudit({phase:'started'});
   return {mcpPort:mcp.address().port,controlPort:control.address().port,key,close};
   }catch(e){release();throw e;}
 }
@@ -393,7 +436,7 @@ if(process.argv[1]&&process.argv[1]!=='-'&&import.meta.url===pathToFileURL(realp
   for(const signal of ['SIGINT','SIGTERM',...(process.platform==='win32'?['SIGBREAK']:[])])process.on(signal,stop);
   try{config=configuration();}catch(error){console.error(JSON.stringify({event:'startup_failed',code:'CONFIG_INVALID'}));process.exitCode=78;}
   if(config&&!stopRequested)try{
-    service=await start({dir:config.dataDir,port:config.mcpPort,controlPort:config.controlPort,publicMcp:config.publicMcp});
+    service=await start({dir:config.dataDir,port:config.mcpPort,controlPort:config.controlPort,publicMcp:config.publicMcp,audit:auditFromEnvironment()});
     if(stopRequested)await stop();
     else console.log(JSON.stringify({event:'listening',mcpPort:service.mcpPort,controlPort:service.controlPort}));
   }catch(error){
