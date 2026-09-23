@@ -7,7 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { grantWorkspace, listWorkspace, readWorkspace, changeWorkspace, inspectRecovery } from './workspace.mjs';
 import { configuration, configurationFile } from './client.mjs';
 import { inspectPendingResults, storeResult, verifySavedResult } from './results.mjs';
-import { acquireRuntimeLock, readStateBytes, readStateMarker, createStateMarker, parseState, fault, startupExitCode } from './runtime.mjs';
+import { acquireRuntimeLock, readStateBytes, readStateMarker, createStateMarker, assertNoStateStage, writeStateBytes, parseState, fault, startupExitCode } from './runtime.mjs';
 import { protocolVersions, validateMessage, negotiateProtocol, validateArguments } from './protocol.mjs';
 
 const schema = properties => ({type:'object',properties,required:Object.keys(properties),additionalProperties:false});
@@ -51,6 +51,7 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
   if(savedState===null&&(stateInitialized||existsSync(statePath+'.tmp')||readdirSync(dir).some(name=>(name.endsWith('.result.txt')||name.endsWith('.result.txt.tmp')))
       ||existsSync(resolve(dir,'recovery'))))
     throw fault('STATE_INVALID','state.json is missing beside recovery evidence; do not start an empty runtime');
+  assertNoStateStage(statePath);
   let tasks=parseState(savedState,dir), stopping=false, closePromise;
   // Existing valid state is the evidence needed to migrate legacy runtimes.
   // Keys alone may belong to a worker that has never registered a task.
@@ -81,8 +82,7 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
     try{
       if(!stateInitialized){createStateMarker(markerPath);stateInitialized=true;}
       const bytes=Buffer.from(JSON.stringify(next));
-      writeFileSync(statePath+'.tmp',bytes,{mode:0o600,flush:true});
-      renameSync(statePath+'.tmp',statePath);
+      writeStateBytes(statePath,bytes);
       savedState=bytes;tasks=next;storageFailure=null;
     }catch(error){throw storageError(error);}
   };
@@ -166,6 +166,7 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
     let probe;
     try{
       verifyState();
+      assertNoStateStage(statePath);
       // Check write/rename ability without rewriting state or recovery evidence.
       probe=resolve(dir,'.health-'+randomUUID());
       writeFileSync(probe+'.tmp','probe',{flag:'wx',mode:0o600,flush:true});

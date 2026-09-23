@@ -2,7 +2,7 @@
 import { randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
 import { isAbsolute, resolve } from 'node:path';
-import { lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs';
 
 export const fault = (code, message) => Object.assign(Error(message), { code, retryable: false });
 const record = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -91,6 +91,56 @@ export function readStateBytes(path) {
   return readFileSync(path);
 }
 
+// An interrupted state stage is evidence, not authority to replay a transition.
+// Startup must not overwrite it with the older committed state, even for [] or
+// a dangling symlink. Recovery is a deliberate offline inspection, not a reset.
+const stateStageConflict = () => fault('STATE_STAGING_CONFLICT',
+  'state.json.tmp requires inspection; preserve committed state and staged evidence');
+export function assertNoStateStage(path) {
+  if (stat(path + '.tmp')) throw stateStageConflict();
+}
+
+// Caller owns the runtime lock and verifies the committed state before calling.
+// Never truncate an existing stage. Only an explicit byte-identical retry can
+// reuse a regular private single-link file, with a new flush before publication.
+export function writeStateBytes(path, bytes) {
+  if (!Buffer.isBuffer(bytes)) throw TypeError('state bytes must be a Buffer');
+  const temporary = path + '.tmp';
+  let fd, created = false;
+  // Check before opening: on Windows, exclusive creation through a dangling
+  // symlink can create its target even though the open ultimately fails.
+  const info = stat(temporary);
+  if (info) {
+    if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || info.size !== bytes.length
+        || (process.platform !== 'win32' && (info.mode & 0o077))) throw stateStageConflict();
+    fd = openSync(temporary, constants.O_RDWR | constants.O_NOFOLLOW);
+  } else {
+    try {
+      fd = openSync(temporary, constants.O_RDWR | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+      created = true;
+    } catch (error) {
+      if (error.code === 'EEXIST') throw stateStageConflict();
+      throw error;
+    }
+  }
+  let staged;
+  try {
+    staged = fstatSync(fd);
+    if (!staged.isFile() || staged.nlink !== 1
+        || (process.platform !== 'win32' && (staged.mode & 0o077))) throw stateStageConflict();
+    if (created) writeFileSync(fd, bytes);
+    else if (staged.size !== bytes.length || !readFileSync(fd).equals(bytes)) throw stateStageConflict();
+    fsyncSync(fd); // Required on retries too: a previous flush may have failed.
+  } finally { closeSync(fd); }
+  const current = stat(temporary);
+  if (!current?.isFile() || current.isSymbolicLink() || current.nlink !== 1
+      || current.dev !== staged.dev || current.ino !== staged.ino || current.size !== bytes.length)
+    throw stateStageConflict();
+  renameSync(temporary, path);
+  // On write/flush/rename failure keep the candidate; do not publish caller state
+  // or erase a partial stage. This is not hostile-filesystem or power-loss isolation.
+}
+
 const initializedBytes = Buffer.from('WebGPT state initialized v1\n');
 export function readStateMarker(path) {
   const bytes = readStateBytes(path);
@@ -146,6 +196,6 @@ export function startupExitCode(error) {
   if (error.code === 'STATE_INVALID') return 65;
   if (['LOCK_HELD', 'LOCK_UNCERTAIN', 'EADDRINUSE'].includes(error.code)) return 73;
   if (error.code === 'CONFIG_INVALID') return 78;
-  if (['EACCES', 'EPERM', 'ENOSPC', 'EROFS', 'EIO', 'EMFILE', 'ENFILE', 'ENOENT', 'EISDIR', 'ENOTDIR', 'STORAGE_UNAVAILABLE'].includes(error.code)) return 74;
+  if (['EACCES', 'EPERM', 'ENOSPC', 'EROFS', 'EIO', 'EMFILE', 'ENFILE', 'ENOENT', 'EISDIR', 'ENOTDIR', 'STORAGE_UNAVAILABLE', 'STATE_STAGING_CONFLICT'].includes(error.code)) return 74;
   return 1;
 }
