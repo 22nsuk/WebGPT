@@ -4,7 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-const workflow = readFileSync(new URL('../../../.github/workflows/test.yml', import.meta.url), 'utf8').replace(/\r\n?/g, '\n');
+const workflow = readFileSync(new URL('../.github/workflows/test.yml', import.meta.url), 'utf8').replace(/\r\n?/g, '\n');
 const allowedActions = ['actions/checkout', 'actions/setup-node'];
 function assertPinnedActions(text) {
   const lines = text.split(/\r?\n/).filter(line => /^\s*(?:-\s*)?uses\s*:/.test(line));

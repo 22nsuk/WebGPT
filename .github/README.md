@@ -19,7 +19,7 @@ workaround for testing an action update. Runner images and the selected Node maj
 versions intentionally continue to receive updates; action pinning does not make
 the complete CI environment reproducible or remove downloads performed by an action.
 
-`skills/webgpt/scripts/ciPolicy.test.mjs` checks the current workflow's simple
+`tests/ciPolicy.test.mjs` checks the current workflow's simple
 one-line `uses` mappings and its safety controls. It catches accidental regressions;
 it is not a general YAML security scanner, a tamper-proof policy, or a pre-execution
 gate. The referenced actions execute before the tests. Adding an action or changing

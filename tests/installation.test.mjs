@@ -17,19 +17,21 @@ test('repository README keeps fork installation and explicit chat retention/dele
   assert.doesNotMatch(text, /Workflow requests include permanent deletion|permanently delete its test chats|acknowledges and deletes that task chat|Delete the finished probe chat|delete task chats per SKILL\.md/i);
 });
 
-test('installed skill tests do not depend on a surrounding repository README', async () => {
+test('installed skill tests do not depend on surrounding repository files', async () => {
   const base = mkdtempSync(join(tmpdir(), 'webgpt-install-layout-'));
   const installed = join(base, 'skills', 'webgpt');
   try {
     cpSync(fileURLToPath(new URL('../skills/webgpt', import.meta.url)), installed, { recursive: true });
     assert.equal(existsSync(join(base, 'README.md')), false);
+    assert.equal(existsSync(join(base, '.github')), false);
     // Run the installed command as an independent CLI, not as this runner's internal child.
     const env = { ...process.env }; delete env.NODE_TEST_CONTEXT;
-    const { stdout } = await execute(process.execPath, ['--test', '--test-reporter=tap', 'scripts/chatRetention.test.mjs'], {
-      cwd: installed, env, timeout: 15000, windowsHide: true,
+    // Exercise the documented installed-skill command so every shipped test must be self-contained.
+    const { stdout } = await execute(process.execPath, ['--test', '--test-reporter=tap'], {
+      cwd: installed, env, timeout: 60000, windowsHide: true,
     });
-    assert.match(stdout, /# tests 4\b/);
-    assert.match(stdout, /# pass 4\b/);
+    assert.match(stdout, /# tests [1-9]\d*\b/);
+    assert.match(stdout, /# pass [1-9]\d*\b/);
     assert.match(stdout, /# fail 0\b/);
   } finally { rmSync(base, { recursive: true, force: true }); }
 });
