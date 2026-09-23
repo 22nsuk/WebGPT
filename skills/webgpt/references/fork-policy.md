@@ -40,6 +40,15 @@ tunnel/public-origin setup is also outside this change; existing authorized tran
 No claim is made about measured token savings or live connector support before schema refresh and
 an actual installation probe. These are ordinary selective fork changes, not an upstream merge.
 
+## Selective review of upstream, captainsoldier and bizstoa1
+
+The [2026-09-23 comparison](upstream-review-2026-09-23.md) records pinned source
+revisions and adoption decisions. Adopt exact-path GET/HEAD liveness probes and
+opt-in metadata-only diagnostics, not terminal transport or automatic deletion.
+Use [diagnostics.md](diagnostics.md) for bounded, task-scoped inspection when a
+connection fails. Diagnostic observations never replace saved-state authority,
+result verification, permission checks or the retained-chat recovery process.
+
 ## Terminal review: security and practical work
 
 The upstream terminal is useful: it supports builds, tests, Git, binary tools and
