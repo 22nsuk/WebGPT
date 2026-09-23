@@ -1,9 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { closeSync, constants, fchmodSync, fchownSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, constants, fchmodSync, fchownSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, parse, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { readBytesUpTo } from './bounded-read.mjs';
 
 const MAX_BYTES = 1024 * 1024;
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -63,7 +64,7 @@ function snapshot(path) {
   try {
     const stat=fstatSync(fd);
     if(!stat.isFile() || stat.nlink!==1 || stat.size>MAX_BYTES) throw Error('file must be regular, unlinked and <=1 MiB');
-    const bytes=readFileSync(fd),text=bytes.toString('utf8');
+    const bytes=readBytesUpTo(fd,MAX_BYTES+1),text=bytes.toString('utf8');
     if(bytes.length>MAX_BYTES || text.includes('\0') || !Buffer.from(text).equals(bytes)) throw Error('UTF-8 text file required');
     return {exists:true,text,sha256:hash(bytes),mode:stat.mode & 0o777};
   } finally {closeSync(fd);}

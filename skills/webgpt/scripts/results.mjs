@@ -1,9 +1,10 @@
 // Result bytes and state are separate commits. Preserve an interrupted candidate;
 // only an explicit identical submission may finish publishing it. Never auto-ack.
 import { createHash } from 'node:crypto';
-import { closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync, renameSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fault } from './runtime.mjs';
+import { readBytesUpTo } from './bounded-read.mjs';
 
 const MAX_BYTES = 1024 * 1024;
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -24,7 +25,7 @@ function readCandidate(file) {
   const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     regular(fstatSync(fd));
-    const bytes = readFileSync(fd);
+    const bytes = readBytesUpTo(fd, MAX_BYTES + 1);
     if (bytes.length > MAX_BYTES) throw fault('RESULT_INVALID', 'saved result exceeds 1 MiB');
     return { bytes, sha256: digest(bytes) };
   } finally { closeSync(fd); }
@@ -46,7 +47,7 @@ function flushCandidate(file, bytes) {
   const fd = openSync(file, constants.O_RDWR | constants.O_NOFOLLOW);
   try {
     regular(fstatSync(fd));
-    if (!readFileSync(fd).equals(bytes)) throw fault('RESULT_CONFLICT', 'result changed before publication; preserve evidence');
+    if (!readBytesUpTo(fd, MAX_BYTES + 1).equals(bytes)) throw fault('RESULT_CONFLICT', 'result changed before publication; preserve evidence');
     fsyncSync(fd);
   } finally { closeSync(fd); }
 }

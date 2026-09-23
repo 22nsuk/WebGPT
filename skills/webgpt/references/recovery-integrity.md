@@ -48,6 +48,15 @@ Missing or changed bytes are an error, not permission to reconstruct the artifac
 or bypass collection's integrity check. Once collected, its revoked token remains
 revoked. Hash verification says nothing about the quality of work or reported tests.
 
+Result verification, pending-candidate inspection and explicit candidate re-flushing read
+at most 1 MiB plus one overflow-detection byte per snapshot. A file that grows after its
+size check is rejected without reading its entire new contents. No oversized prefix is
+hashed as a valid result, acknowledged or published. Existing candidates remain unchanged
+and I/O errors keep the existing failure behavior. The shared bounded reader also serves
+workspace/recovery snapshots and diagnostic reads, each with its existing limit; this
+introduces no new size cap on the worker's committed task inventory. It is a byte-budget
+bound, not a transaction, read-timeout, hostile-filesystem sandbox or total-heap guarantee.
+
 ## Mutation journals are checked in both directions
 
 Each applied journal must agree with its recorded state receipt, and each recorded

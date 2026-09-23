@@ -111,6 +111,14 @@ This is for cooperative developer workspaces, not isolation from hostile local f
 Read-only blocks changes, not disclosure: project text files can contain secrets. Use a sanitized
 project snapshot or explicitly supplied inputs when unrelated credentials must remain inaccessible.
 
+File, original-backup and mutation-journal reads enforce the 1 MiB limit with actual
+bounded reads, not only an earlier file-size check. They read at most 1 MiB plus one
+sentinel byte per snapshot and reject overflow; no prefix is returned as a complete file.
+Optional line windows still validate and hash the whole bounded snapshot before selecting
+lines. Empty files, UTF-8, CRLF and whole-file revision semantics are unchanged. A read
+error does not authorize truncation, retrying a write or skipping recovery inspection.
+This byte cap is not a read deadline or an atomic snapshot against concurrent writers.
+
 ### MCP request contract
 
 Send tool invocations as JSON-RPC 2.0 requests with a string or safe-integer request ID and
