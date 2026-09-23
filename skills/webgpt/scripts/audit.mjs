@@ -1,9 +1,10 @@
 // Selective adaptation of Nhahan/WebGPT's metadata-only MCP audit. No payloads,
 // raw errors, paths, tokens, client request IDs or browser data enter this format.
 import { randomUUID } from 'node:crypto';
-import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, renameSync, writeFileSync } from 'node:fs';
+import { closeSync, constants, fstatSync, lstatSync, openSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fault } from './runtime.mjs';
+import { readBytesUpTo } from './bounded-read.mjs';
 
 export const AUDIT_LIMIT = 1024 * 1024;
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
@@ -109,14 +110,8 @@ export function readDiagnosticBytes(file, limit) {
     const opened = fstatSync(fd);
     regular(opened, limit);
     if (opened.dev !== info.dev || opened.ino !== info.ino) throw unavailable();
-    const bytes = Buffer.alloc(limit + 1);
-    let size = 0;
-    while (size < bytes.length) {
-      const count = readSync(fd, bytes, size, bytes.length - size, null);
-      if (!count) break;
-      size += count;
-    }
-    if (size > limit) throw unavailable();
-    return bytes.subarray(0, size);
+    const bytes = readBytesUpTo(fd, limit + 1);
+    if (bytes.length > limit) throw unavailable();
+    return bytes;
   } finally { closeSync(fd); }
 }
