@@ -113,8 +113,20 @@ test('valid empty backups and earlier receipts remain valid after later edits', 
 for (const stage of ['backup', 'prepared', 'project']) test(`a ${stage} flush failure is not acknowledged as a successful file change`, () => fixture(async f => {
   writeFileSync(join(f.root, 'source.txt'), 'old');
   const { token } = await f.register();
-  const originalWrite = fs.writeFileSync;
-  let reached = false;
+  const originalWrite = fs.writeFileSync, originalOpen = fs.openSync, originalFsync = fs.fsyncSync;
+  let reached = false, projectDescriptor;
+  fs.openSync = (path, ...args) => {
+    const fd = originalOpen(path, ...args);
+    if (String(path).includes(join('project', '.webgpt-'))) projectDescriptor = fd;
+    return fd;
+  };
+  fs.fsyncSync = fd => {
+    if (stage === 'project' && fd === projectDescriptor) {
+      reached = true;
+      throw Object.assign(Error('fixture flush failure'), { code: 'EIO' });
+    }
+    return originalFsync(fd);
+  };
   fs.writeFileSync = (path, bytes, options) => {
     const name = String(path);
     const match = stage === 'backup' ? name.endsWith('.before.txt') : stage === 'prepared' ? name.endsWith('.json') && name.includes(join('recovery', 'a'))
@@ -130,7 +142,10 @@ for (const stage of ['backup', 'prepared', 'project']) test(`a ${stage} flush fa
     assert.equal(reply.isError, true);
     assert.equal(readFileSync(join(f.root, 'source.txt'), 'utf8'), 'old');
     assert.deepEqual(JSON.parse(readFileSync(join(f.dir, 'state.json')))[0].changes, []);
-  } finally { fs.writeFileSync = originalWrite; syncBuiltinESMExports(); }
+  } finally {
+    fs.writeFileSync = originalWrite; fs.openSync = originalOpen; fs.fsyncSync = originalFsync;
+    syncBuiltinESMExports();
+  }
 }));
 
 test('a partial applied-record write preserves the complete prepared journal and original backup', () => fixture(async f => {

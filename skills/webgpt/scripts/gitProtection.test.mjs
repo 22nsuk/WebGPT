@@ -165,14 +165,37 @@ test('MCP file tools reject protected paths for both read and edit grants withou
       const { token } = await request('register', { id: mode, instructions: 'test boundaries', inputs: {}, workspace: { root, mode } }, config);
       for (const path of ['.GIT/config', 'nested/.GiT/config', '.git. /config', 'GIT~1/config', '.git::$INDEX_ALLOCATION/config']) {
         for (const name of ['list_files', 'read_file', 'write_file', 'delete_file']) {
-          const result = await call(name, { token, path, text: 'unauthorized', expectedSha256: revision });
+          const args = { token, path };
+          if (name === 'write_file') args.text = 'unauthorized';
+          if (name === 'write_file' || name === 'delete_file') args.expectedSha256 = revision;
+          const result = await call(name, args);
           assert.equal(result.isError, true, `${mode}: ${name} ${path}`);
+          assert.match(result.content[0].text, /invalid path or Git metadata/, `${mode}: ${name} must reach path validation`);
         }
       }
       const listed = await call('list_files', { token, path: '.' });
       assert.deepEqual(listed.structuredContent.entries, []);
       const task = await call('get_task', { token });
       assert.deepEqual(task.structuredContent.changes, []);
+      // Same schemas must reach ordinary files, rather than fail on extra keys.
+      writeFileSync(join(root, 'ordinary.txt'), original);
+      const read = await call('read_file', { token, path: 'ordinary.txt' });
+      assert.equal(read.isError, false);
+      assert.equal(read.structuredContent.sha256, revision);
+      const ordinaryList = await call('list_files', { token, path: '.' });
+      assert.equal(ordinaryList.isError, false);
+      assert.deepEqual(ordinaryList.structuredContent.entries.map(entry => entry.name), ['ordinary.txt']);
+      const edited = await call('write_file', { token, path: 'ordinary.txt', text: 'allowed', expectedSha256: revision });
+      assert.equal(edited.isError, mode === 'read');
+      if (mode === 'read') assert.match(edited.content[0].text, /read-only/);
+      const removed = await call('delete_file', { token, path: 'ordinary.txt',
+        expectedSha256: mode === 'edit' ? edited.structuredContent.afterSha256 : revision });
+      assert.equal(removed.isError, mode === 'read');
+      if (mode === 'read') {
+        assert.match(removed.content[0].text, /read-only/);
+        assert.equal(readFileSync(join(root, 'ordinary.txt'), 'utf8'), original);
+        rmSync(join(root, 'ordinary.txt'));
+      } else assert.equal(existsSync(join(root, 'ordinary.txt')), false);
       await request('cancel', { id: mode }, config);
     }
     assert.equal(readFileSync(join(root, '.git', 'config'), 'utf8'), original);
