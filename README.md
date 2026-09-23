@@ -154,3 +154,8 @@ record if interrupted. See [backup safety](skills/webgpt/references/backup-safet
 See [Windows operation and recovery](skills/webgpt/references/operations-windows.md) for failure
 classes, migration, rollback and the review-only WinSW template. Service registration, accounts,
 ACLs, fixed tunnel addresses and browser/Codex resumption are separate deployment work.
+
+## CI maintenance
+
+See [CI dependency maintenance](.github/ci-maintenance.md) for GitHub Actions version
+updates, pinned action revisions and test-workflow safeguards.
