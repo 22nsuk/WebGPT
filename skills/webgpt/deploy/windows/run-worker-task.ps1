@@ -51,6 +51,16 @@ $launcherLog = Join-Path $logDir 'launcher.0.log'
 @{ time = [DateTime]::UtcNow.ToString('o'); event = 'task_launcher_started'; launcherPid = $PID } |
     ConvertTo-Json -Compress | Set-Content -LiteralPath $launcherLog -Encoding UTF8
 $exitCode = 1
+$child = $null
+# Once the supervisor exists, diagnostics must not release its launcher guard or
+# abandon supervision. A broken log sink is reported only to the fallback stream.
+function Write-LauncherEvent([hashtable]$Event) {
+    try {
+        $Event | ConvertTo-Json -Compress | Add-Content -LiteralPath $launcherLog -Encoding UTF8
+    } catch {
+        try { [Console]::Error.WriteLine('WebGPT launcher log write failed; supervision continues.') } catch { }
+    }
+}
 try {
     $child = Start-Process -FilePath $NodePath -ArgumentList @(('"{0}"' -f $servicePath), 'run') `
         -WorkingDirectory $DataPath -WindowStyle Hidden -PassThru `
@@ -59,17 +69,22 @@ try {
     # Retain the native handle before waiting; Windows PowerShell's returned
     # Process object can otherwise lose ExitCode after a short-lived child exits.
     $null = $child.Handle
-    @{ time = [DateTime]::UtcNow.ToString('o'); event = 'supervisor_launched'; supervisorPid = $child.Id; launcherPid = $PID } |
-        ConvertTo-Json -Compress | Add-Content -LiteralPath $launcherLog -Encoding UTF8
+    Write-LauncherEvent @{ time = [DateTime]::UtcNow.ToString('o'); event = 'supervisor_launched'; supervisorPid = $child.Id; launcherPid = $PID }
     $child.WaitForExit()
     $exitCode = $child.ExitCode
     if ($null -eq $exitCode) { throw 'Supervisor exit code unavailable.' }
-    @{ time = [DateTime]::UtcNow.ToString('o'); event = 'supervisor_exited'; supervisorPid = $child.Id; exitCode = $exitCode } |
-        ConvertTo-Json -Compress | Add-Content -LiteralPath $launcherLog -Encoding UTF8
+    Write-LauncherEvent @{ time = [DateTime]::UtcNow.ToString('o'); event = 'supervisor_exited'; supervisorPid = $child.Id; exitCode = $exitCode }
 } catch {
     # Exception text may contain private paths. Keep only a fixed failure category.
-    @{ time = [DateTime]::UtcNow.ToString('o'); event = 'task_launcher_failed' } |
-        ConvertTo-Json -Compress | Add-Content -LiteralPath $launcherLog -Encoding UTF8
     $exitCode = 1
+    Write-LauncherEvent @{ time = [DateTime]::UtcNow.ToString('o'); event = 'task_launcher_failed' }
+} finally {
+    # Also retain ownership on a non-logging exception after Start-Process.
+    # The existing service stop protocol remains available while we wait.
+    if ($null -ne $child) {
+        $child.WaitForExit()
+        $child.Dispose()
+    }
+    $guard.Dispose()
 }
 exit $exitCode

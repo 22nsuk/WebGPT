@@ -200,6 +200,12 @@ concurrent runner log rotation. It retains eight sessions; each reviewed supervi
 has at most four child launches, with lifecycle-only normal output. This is session
 retention, not a general byte quota for arbitrary diagnostic output. Existing
 symlink/hardlink log targets are refused. Keep all logs under private runtime ACLs.
+After a supervisor has started, launcher event logging is best-effort: a log write
+failure emits a fixed fallback diagnostic and does not stop supervision, release
+the exclusive guard, or replace the supervisor's exit code. Startup log failure
+before launch still prevents starting a child. If another launcher error occurs
+after launch, the runner retains its guard and waits for its child before returning
+failure; use the existing service stop protocol if the child needs to be stopped.
 Forced termination of the runner itself cannot reliably write a final log; inspect
 `Get-ScheduledTaskInfo` and available Windows Task Scheduler history as external
 evidence. Do not infer an exit cause merely from a missing final record.

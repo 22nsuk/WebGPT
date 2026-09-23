@@ -268,8 +268,11 @@ On restart, structurally valid applied recovery journals restore missing change 
 worker checks operation/filename identity, relative path, action, hashes and expected backup path;
 a conflict with an existing saved receipt is not silently resolved. Null, incomplete, malformed or
 unreadable journal data (including an invalid recovery directory) produces `recoveryRequired` in `status`/`wait` and `get_task`, blocking further edits and
-successful completion for that task while independent tasks remain usable. This validates recovery
-metadata, not every backup/file byte or all of state.json. Inspect its journal, original and current file without guessing
+successful completion for that task while independent tasks remain usable. Recovery inspection validates
+the journal metadata and each referenced original backup's actual bytes against `beforeSha256`,
+rejecting missing, linked or corrupted backups. It does not compare every historical `afterSha256`
+with the current project file (which may have changed again), or validate all of state.json.
+Inspect its journal, original and current file without guessing
 or silently restoring. Preserve partial output, cancel the affected registration after inspection,
 and register any narrow correction in the same chat with a new task token. Stop waiting on that
 blocked task; other independent tasks can continue. No crash-durability guarantee is made for
@@ -279,5 +282,20 @@ Both the shared `recovery` directory and each task's directory must be real dire
 symlinks or Windows junctions. A link or invalid type at the shared parent prevents trusting the
 recovery tree for every running task, so several tasks may require inspection; task lookup and
 explicit cancellation remain available. Do not delete or follow linked records as a repair.
+
+Existing-file edits preserve POSIX permission bits (`0777`), owner and group before replacing the
+file; the process umask does not reduce the final mode. Edits to files with setuid, setgid or sticky
+bits are rejected before mutation. The worker cannot safely infer whether those special bits should
+survive changed contents. If the operating system refuses ownership or mode preservation, the
+original is not replaced. Extended POSIX ACLs and other extended attributes are outside this contract.
+
+On Windows, existing-file edits require Windows PowerShell 5.1 and use a staging file created with a
+protected current-user DACL before any replacement bytes are written. Owner and group must match the
+original. Native `ReplaceFile` (through .NET `File.Replace`) preserves the target's DACL and fails on
+ACL merge errors; there is no plain-rename fallback. This contract covers DACL, owner and group, not
+SACL auditing settings. An error from native replacement can leave partial filesystem changes: retain
+any `.webgpt-<operation>.tmp` in the project beside the prepared journal and original backup for
+inspection. Do not retry or delete that evidence automatically. Windows edits use two short helper
+processes; the helper checks the content revision again before replacement.
 
 Test locally: `node --test --test-reporter=tap` from the installed skill directory; Node discovers the test files without shell glob expansion.
