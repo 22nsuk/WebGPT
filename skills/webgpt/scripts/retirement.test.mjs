@@ -128,7 +128,9 @@ test('failed terminal retirement preserves access and pending evidence until a d
   const blocked = join(f.dir, 'state.json.tmp');
   mkdirSync(blocked);
   try {
-    await assert.rejects(f.admin('cancel', { id }), /EISDIR|EPERM|EACCES/);
+    await assert.rejects(f.admin('cancel', { id }), {
+      code: 'STATE_STAGING_CONFLICT', statusCode: 503, retryable: false,
+    });
     assert.equal(readFileSync(join(f.dir, 'state.json')).equals(savedState), true);
     assert.equal(f.state(id).collected, false);
     assert.notEqual(f.state(id).discarded, true);
