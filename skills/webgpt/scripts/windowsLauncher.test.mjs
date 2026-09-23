@@ -25,7 +25,7 @@ function launch(script) {
   return { child, done, output: () => output };
 }
 async function fixture(run) {
-  const base = mkdtempSync(join(tmpdir(), 'webgpt launcher '));
+  const base = mkdtempSync(join(tmpdir(), 'webgpt launcher 한글 '));
   const deploy = join(base, 'deploy', 'windows'), scripts = join(base, 'scripts'), data = join(base, 'data');
   for (const dir of [deploy, scripts, data]) mkdirSync(dir, { recursive: true });
   const runner = join(deploy, 'run-worker-task.ps1'), config = join(base, 'config.json');
@@ -39,9 +39,13 @@ async function fixture(run) {
     }, 20);
   `);
   const children = [];
-  const start = (failure = '') => {
+  const startScript = source => {
     const script = join(base, `invoke-${children.length}.ps1`);
-    writeFileSync(script, `
+    // Windows PowerShell 5.1 needs a BOM for literal Unicode fixture paths.
+    writeFileSync(script, '\ufeff' + source);
+    const instance = launch(script); children.push(instance); return instance;
+  };
+  const start = (failure = '') => startScript(`
       $ErrorActionPreference = 'Stop'
       function Add-Content {
         [CmdletBinding()]
@@ -56,9 +60,7 @@ async function fixture(run) {
       & ${quote(runner)} -NodePath ${quote(process.execPath)} -ConfigPath ${quote(config)} -DataPath ${quote(data)}
       exit $LASTEXITCODE
     `);
-    const instance = launch(script); children.push(instance); return instance;
-  };
-  try { await run({ base, scripts, data, start }); }
+  try { await run({ base, scripts, data, start, startScript }); }
   finally {
     // Release the fixture child before removing any paths, even after an assertion fails.
     writeFileSync(join(data, 'release'), '');
@@ -94,19 +96,50 @@ for (const failure of ['', 'all', 'supervisor_exited']) {
   }));
 }
 
-test('Windows launcher reports start failure even when its error log also fails', windows, () => fixture(async ({ base, data, start }) => {
+test('Windows launcher reports start failure even when its error log also fails', windows, () => fixture(async ({ base, data, start, startScript }) => {
   // Fail the launch after the normal path/log preflight.
-  const script = join(base, 'fail-spawn.ps1');
   const runner = join(base, 'deploy', 'windows', 'run-worker-task.ps1');
-  writeFileSync(script, `
+  const failed = startScript(`
     function Start-Process { throw [IO.IOException]::new('Injected spawn failure') }
     function Add-Content { throw [IO.IOException]::new('Injected error log failure') }
     & ${quote(runner)} -NodePath ${quote(process.execPath)} -ConfigPath ${quote(join(base, 'config.json'))} -DataPath ${quote(data)}
     exit $LASTEXITCODE
   `);
-  const failed = launch(script);
   assert.equal(await failed.done, 1, failed.output());
   assert.match(failed.output(), /launcher log write failed/);
+  assert.equal(existsSync(join(data, 'child.pid')), false);
+  writeFileSync(join(data, 'release'), '');
+  assert.equal(await start().done, 7);
+}));
+
+for (const code of [0, 78]) test(`Windows launcher preserves immediate child exit ${code}`, windows, () => fixture(async ({ scripts, data, start }) => {
+  writeFileSync(join(scripts, 'service.mjs'), `process.exit(${code});`);
+  const instance = start();
+  assert.equal(await instance.done, code, instance.output());
+  const events = readFileSync(join(data, 'service-logs', 'launcher.0.log'), 'utf8')
+    .replace(/^\ufeff/, '').trim().split(/\r?\n/).map(line => JSON.parse(line));
+  assert.equal(events.at(-1).event, 'supervisor_exited');
+  assert.equal(events.at(-1).exitCode, code);
+}));
+
+test('Windows initial-log failure releases its guard without starting a supervisor', windows, () => fixture(async ({ base, data, start, startScript }) => {
+  const runner = join(base, 'deploy', 'windows', 'run-worker-task.ps1');
+  // Keep the PowerShell host alive after catching the script error. Process exit
+  // must not mask a guard left open by the failed invocation.
+  const failed = startScript(`
+    $ErrorActionPreference = 'Stop'
+    function Set-Content { throw [IO.IOException]::new('Injected initial log failure') }
+    try {
+      & ${quote(runner)} -NodePath ${quote(process.execPath)} -ConfigPath ${quote(join(base, 'config.json'))} -DataPath ${quote(data)}
+      throw 'Expected initial log failure'
+    } catch {
+      if ($_.Exception.Message -ne 'Injected initial log failure') { throw }
+    }
+    $handle = [IO.File]::Open(${quote(join(data, 'service-logs', 'launcher.guard'))}, [IO.FileMode]::Open, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    $handle.Dispose()
+    exit 0
+  `);
+  assert.equal(await failed.done, 0, failed.output());
   assert.equal(existsSync(join(data, 'child.pid')), false);
   writeFileSync(join(data, 'release'), '');
   assert.equal(await start().done, 7);

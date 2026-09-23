@@ -295,7 +295,9 @@ original. Native `ReplaceFile` (through .NET `File.Replace`) preserves the targe
 ACL merge errors; there is no plain-rename fallback. This contract covers DACL, owner and group, not
 SACL auditing settings. An error from native replacement can leave partial filesystem changes: retain
 any `.webgpt-<operation>.tmp` in the project beside the prepared journal and original backup for
-inspection. Do not retry or delete that evidence automatically. Windows edits use two short helper
+inspection. A failed staging creation does not authorize deleting an existing file at that path;
+an unconfirmed Windows preparation also retains any stage because its creation was not acknowledged.
+Do not retry or delete that evidence automatically. Windows edits use two short helper
 processes; the helper checks the content revision again before replacement.
 
 Test locally: `node --test --test-reporter=tap` from the installed skill directory; Node discovers the test files without shell glob expansion.
