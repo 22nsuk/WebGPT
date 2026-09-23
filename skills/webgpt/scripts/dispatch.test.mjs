@@ -48,7 +48,7 @@ test('missing process is diagnosed before any ledger, payload or browser access'
     import { preflightDispatchRuntime, registerDispatch, dispatchPrompt, dispatchCli, dispatchDiagnostic } from ${JSON.stringify(moduleUrl)};
     const file = process.argv[1];
     let accesses = 0;
-    for (const method of ['lstatSync', 'readFileSync', 'realpathSync', 'writeFileSync'])
+    for (const method of ['lstatSync', 'readFileSync', 'realpathSync', 'writeFileSync', 'openSync', 'readSync', 'fstatSync', 'fsyncSync', 'closeSync'])
       fs[method] = () => { accesses++; throw Error(${JSON.stringify(secret)}); };
     syncBuiltinESMExports();
     delete globalThis.process;
@@ -72,13 +72,13 @@ test('missing process is diagnosed before any ledger, payload or browser access'
 
 for (const [stage, method, predicate, code, reason] of [
   ['ledger_path', 'realpathSync', 'true', 'DISPATCH_STORAGE', 'permission_denied'],
-  ['lock_acquire', 'writeFileSync', "args[0].endsWith('.dispatch.lock')", 'DISPATCH_STORAGE', 'permission_denied'],
-  ['ledger_read', 'readFileSync', "args[0].endsWith('ledger.json')", 'DISPATCH_STORAGE', 'permission_denied'],
-  ['ledger_write', 'writeFileSync', "args[0].includes('.tmp-')", 'DISPATCH_STORAGE', 'permission_denied'],
+  ['lock_acquire', 'openSync', "args[0].endsWith('.dispatch.lock')", 'DISPATCH_STORAGE', 'permission_denied'],
+  ['ledger_read', 'openSync', "args[0].endsWith('ledger.json')", 'DISPATCH_STORAGE', 'permission_denied'],
+  ['ledger_write', 'openSync', "args[0].includes('.tmp-')", 'DISPATCH_STORAGE', 'permission_denied'],
   ['ledger_publish', 'renameSync', 'true', 'DISPATCH_STORAGE', 'permission_denied'],
-  ['temporary_cleanup', 'unlinkSync', "args[0].includes('.tmp-')", 'DISPATCH_STORAGE', 'permission_denied'],
+  ['ledger_write', 'fsyncSync', '++calls === 2', 'DISPATCH_STORAGE', 'permission_denied'],
   ['lock_release', 'unlinkSync', "args[0].endsWith('.dispatch.lock')", 'DISPATCH_LOCKED', 'lock_release_failed'],
-]) test('storage diagnostics bound and identify ' + stage, async t => {
+]) test('storage diagnostics bound and identify ' + stage + ' via ' + method, async t => {
   const { file } = fixture(t);
   await registerDispatch(file, spec());
   const moduleUrl = new URL('./dispatch.mjs', import.meta.url).href;
@@ -87,6 +87,7 @@ for (const [stage, method, predicate, code, reason] of [
     import { syncBuiltinESMExports } from 'node:module';
     import { prepareDispatch, dispatchDiagnostic } from ${JSON.stringify(moduleUrl)};
     const original = fs[${JSON.stringify(method)}];
+    let calls = 0;
     fs[${JSON.stringify(method)}] = (...args) => {
       if (${predicate}) throw Object.assign(Error(${JSON.stringify(secret + target.chatUrl)}), { code: 'EACCES', path: process.argv[1] });
       return original(...args);
@@ -144,7 +145,7 @@ test('payload read failures use only allowlisted reasons, including unknown secr
       import fs from 'node:fs';
       import { syncBuiltinESMExports } from 'node:module';
       import { dispatchCli, dispatchDiagnostic } from ${JSON.stringify(moduleUrl)};
-      fs.readFileSync = () => { throw Object.assign(Error(${JSON.stringify(secret)}), { code: ${JSON.stringify(errorCode)} }); };
+      fs.openSync = () => { throw Object.assign(Error(${JSON.stringify(secret)}), { code: ${JSON.stringify(errorCode)} }); };
       syncBuiltinESMExports();
       try { await dispatchCli(['register', process.argv[1], process.argv[2]]); }
       catch (error) { console.log(JSON.stringify(dispatchDiagnostic(error))); }

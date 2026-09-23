@@ -1,8 +1,10 @@
 // Parent-only browser dispatch bookkeeping. No browser, controller or MCP transport.
 // Extend the one private task ledger; completion remains authoritative in the controller.
+// Storage and evidence handling: ../references/dispatch-storage.md.
 import { createHash, randomUUID } from 'node:crypto';
-import { lstatSync, readFileSync, writeFileSync, renameSync, unlinkSync, realpathSync } from 'node:fs';
+import { closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync, writeFileSync, renameSync, unlinkSync, realpathSync } from 'node:fs';
 import { dirname, basename, isAbsolute, join } from 'node:path';
+import { readBytesUpTo } from './bounded-read.mjs';
 
 const MAX_BYTES = 2 * 1024 * 1024;
 const phases = ['registered', 'prepared', 'sending', 'uncertain', 'submitted'];
@@ -25,7 +27,7 @@ const defaults = {
   RUNTIME: ['runtime_preflight', 'node_cli_required'], INTERNAL: ['ledger_update', 'unexpected_failure'],
 };
 const storageStages = ['payload_read', 'ledger_path', 'lock_acquire', 'ledger_read', 'ledger_write',
-  'ledger_publish', 'temporary_cleanup'];
+  'ledger_publish'];
 const diagnosticStages = new Set([...Object.values(defaults).map(([stage]) => stage), ...storageStages, 'lock_release']);
 const diagnosticReasons = new Set([...Object.values(defaults).map(([, reason]) => reason),
   'not_found', 'permission_denied', 'storage_full', 'lock_owner_changed', 'lock_release_failed']);
@@ -138,13 +140,39 @@ function safeSummary(d) {
     needsInspection: ['sending', 'uncertain'].includes(d.state), reason: d.reason ?? null };
 }
 
-function regularFile(file) {
-  let info;
-  try { info = lstatSync(file); } catch (e) { if (e.code === 'ENOENT') return null; throw e; }
+function fileInfo(file) {
+  try { return lstatSync(file); } catch (e) { if (e.code === 'ENOENT') return null; throw e; }
+}
+function regular(info) {
   if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || info.size > MAX_BYTES) fail('LEDGER');
   return info;
 }
-const readBytes = file => regularFile(file) ? readFileSync(file) : null;
+function regularFile(file) {
+  const info = fileInfo(file);
+  return info ? regular(info) : null;
+}
+function readBytes(file) {
+  const before = regularFile(file);
+  if (!before) return null;
+  const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const opened = regular(fstatSync(fd));
+    if (opened.dev !== before.dev || opened.ino !== before.ino) fail('LEDGER');
+    const bytes = readBytesUpTo(fd, MAX_BYTES + 1);
+    if (bytes.length > MAX_BYTES) fail('LEDGER');
+    return bytes;
+  } finally { closeSync(fd); }
+}
+function createPrivateFile(file, bytes) {
+  // On Windows, do not even attempt exclusive creation through a known dangling
+  // link. O_EXCL still handles a cooperative creator arriving after this check.
+  if (fileInfo(file)) throw Object.assign(Error('private dispatch file already exists'), { code: 'EEXIST' });
+  const fd = openSync(file, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+  try { writeFileSync(fd, bytes); fsyncSync(fd); }
+  finally { closeSync(fd); }
+  // A failed create/write/flush is not permission to unlink this path. Preserve
+  // unknown or partial evidence; only the caller's successful rename consumes it.
+}
 function parseLedger(bytes) {
   if (bytes === null) return {};
   let value;
@@ -168,7 +196,7 @@ async function withLedger(file, work) {
     lock = file + '.dispatch.lock';
     owner = JSON.stringify({ pid: process.pid, instanceId: randomUUID() });
     stage = 'lock_acquire';
-    try { writeFileSync(lock, owner, { flag: 'wx', mode: 0o600, flush: true }); acquired = true; }
+    try { createPrivateFile(lock, owner); acquired = true; }
     catch (e) { if (e.code === 'EEXIST') fail('LOCKED'); throw e; }
     stage = 'ledger_read';
     let previous = readBytes(file);
@@ -183,16 +211,11 @@ async function withLedger(file, work) {
       const current = readBytes(file);
       if ((current === null) !== (previous === null) || (current && !current.equals(previous))) fail('CONFLICT');
       const temporary = file + '.tmp-' + randomUUID();
-      try {
-        stage = 'ledger_write';
-        writeFileSync(temporary, bytes, { flag: 'wx', mode: 0o600, flush: true });
-        stage = 'ledger_publish';
-        renameSync(temporary, file);
-        previous = bytes;
-      } finally {
-        try { unlinkSync(temporary); }
-        catch (e) { if (e.code !== 'ENOENT') throw storageError(e, 'temporary_cleanup'); }
-      }
+      stage = 'ledger_write';
+      createPrivateFile(temporary, bytes);
+      stage = 'ledger_publish';
+      renameSync(temporary, file);
+      previous = bytes;
       stage = 'ledger_update';
     };
     stage = 'ledger_update';
