@@ -142,12 +142,16 @@ export function writeStateBytes(path, bytes) {
 }
 
 const initializedBytes = Buffer.from('WebGPT state initialized v1\n');
-export function readStateMarker(path) {
-  const bytes = readStateBytes(path);
+// Share the marker contract with bounded offline readers without a second file read.
+export function parseStateMarker(bytes) {
   if (bytes === null) return false;
-  if (!bytes.equals(initializedBytes))
+  if (!Buffer.isBuffer(bytes) || !bytes.equals(initializedBytes))
     throw fault('STATE_INVALID', 'invalid state initialization marker; preserve evidence, do not reset');
   return true;
+}
+
+export function readStateMarker(path) {
+  return parseStateMarker(readStateBytes(path));
 }
 
 export function createStateMarker(path) {

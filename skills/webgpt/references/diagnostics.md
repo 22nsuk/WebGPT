@@ -69,6 +69,38 @@ artifact path supplied by state to an arbitrary location. It reads at most 32 Mi
 state and 1 MiB from each log, rejects malformed UTF-8 and unsafe files, and returns no
 more than 50 recent records for the selected task. Unknown record fields are discarded.
 
+Optional audit failures do not hide a valid task inventory or result information.
+Each `audit.segments` entry identifies `previous` or `current`, with `read`, `missing`
+or `unavailable` status; it contains no path or raw exception. Unsafe, oversized or
+invalid-UTF-8 segments remain rejected, not repaired or treated as empty logs. The
+other segment can still be read. `audit.availability` distinguishes:
+
+- `observed`: at least one readable segment, with no detected segment/record error.
+- `partial`: readable evidence exists, but a segment is unavailable or a line is malformed.
+- `unavailable`: a segment could not be read and no readable segment remains.
+- `not_observed`: both segments are absent.
+
+Counters cover valid records in the readable window only, never missing traffic or
+lifetime totals. Even `observed` does not imply complete capture. A malformed line
+is counted and excluded, without echoing its contents. Corrupt, linked, missing or
+oversized **task state** still prevents a report; optional logs cannot replace it.
+
+`stateMarker` is `valid`, `absent`, or `invalid_or_unreadable`. Its read is capped at
+4 KiB and uses the same marker-byte validator as worker startup. Absence is not by
+itself corruption: valid legacy state can predate the marker. Offline diagnosis
+cannot determine whether a live worker previously saw a now-missing marker.
+
+`pendingResults` lists at most two candidate kinds (`artifact` and `temporary`) using
+the existing result inspector. Each has `uncommitted` or `unreadable` integrity; only
+readable candidates include byte count and observed SHA-256. No paths, contents or
+native error text are returned. A hash describes candidate bytes, not a committed
+result. Candidates remain visible after cancellation, and a verified collected result
+can coexist with an uncommitted temporary candidate. No candidate is promoted/deleted.
+
+Exit code 0 means a report was produced, not that the worker or task is healthy. Check
+the marker, stage, candidate and audit fields separately; this is not a replacement
+for authenticated `ready`/`reconcile`, journal inspection or retained-chat evidence.
+
 `stateStage: present` means an uncommitted state candidate requires the existing recovery
 procedure; the diagnostic command does not promote or remove it. `integrity: verified`
 means saved bytes match their recorded hash, not that the result is correct or its tests
@@ -95,6 +127,8 @@ maintenance; never reset state or erase a journal to make a diagnostic warning d
 `node --test --test-reporter=tap scripts/audit.test.mjs` from the installed skill checks
 real loopback HTTP/MCP traffic, opt-in/disabled behavior, all seven tools, task scoping,
 redaction, rotation, read bounds, link rejection, shutdown ordering and failure isolation.
+`scripts/diagnose.test.mjs` additionally checks degraded audit segments, bounded marker
+reads, uncommitted results, redaction and agreement with real controller warnings.
 Run the full repository suite and supported OS/Node matrix before deployment. Local
 fixtures do not establish live ChatGPT, tunnel or production-service compatibility.
 
