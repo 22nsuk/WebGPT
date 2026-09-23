@@ -107,15 +107,21 @@ export function writeStateBytes(path, bytes) {
   if (!Buffer.isBuffer(bytes)) throw TypeError('state bytes must be a Buffer');
   const temporary = path + '.tmp';
   let fd, created = false;
-  try {
-    fd = openSync(temporary, constants.O_RDWR | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
-    created = true;
-  } catch (error) {
-    if (error.code !== 'EEXIST') throw error;
-    const info = stat(temporary);
-    if (!info?.isFile() || info.isSymbolicLink() || info.nlink !== 1 || info.size !== bytes.length
+  // Check before opening: on Windows, exclusive creation through a dangling
+  // symlink can create its target even though the open ultimately fails.
+  const info = stat(temporary);
+  if (info) {
+    if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || info.size !== bytes.length
         || (process.platform !== 'win32' && (info.mode & 0o077))) throw stateStageConflict();
     fd = openSync(temporary, constants.O_RDWR | constants.O_NOFOLLOW);
+  } else {
+    try {
+      fd = openSync(temporary, constants.O_RDWR | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+      created = true;
+    } catch (error) {
+      if (error.code === 'EEXIST') throw stateStageConflict();
+      throw error;
+    }
   }
   let staged;
   try {

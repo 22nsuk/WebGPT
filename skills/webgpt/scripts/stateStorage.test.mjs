@@ -78,6 +78,33 @@ for (const kind of ['symlink', 'dangling', 'hardlink', 'directory']) {
   });
 }
 
+test('state writer rejects a known symlink before attempting to open it', t => {
+  const f = files(t), originalStat = fs.lstatSync;
+  let opened = false;
+  t.mock.method(fs, 'lstatSync', (path, ...args) => path === f.stage
+    ? { isFile: () => false, isSymbolicLink: () => true }
+    : originalStat(path, ...args));
+  t.mock.method(fs, 'openSync', () => { opened = true; throw Error('must not open a known symlink'); });
+  syncBuiltinESMExports();
+  try { assert.throws(() => writeStateBytes(f.path, next), { code: 'STATE_STAGING_CONFLICT' }); }
+  finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+  assert.equal(opened, false);
+  assert.deepEqual(fs.readFileSync(f.path), prior);
+  assert.equal(fs.existsSync(f.stage), false);
+});
+
+test('state writer preserves a stage that appears after the absence check', t => {
+  const f = files(t), originalOpen = fs.openSync;
+  patched(t, 'openSync', (path, flags, ...args) => {
+    if (path === f.stage && (flags & fs.constants.O_EXCL)) {
+      fs.writeFileSync(f.stage, next, { mode: 0o600 });
+    }
+    return originalOpen(path, flags, ...args);
+  }, () => assert.throws(() => writeStateBytes(f.path, next), { code: 'STATE_STAGING_CONFLICT' }));
+  assert.deepEqual(fs.readFileSync(f.stage), next);
+  assert.deepEqual(fs.readFileSync(f.path), prior);
+});
+
 test('state writer refuses a same-byte hardlink, not just mismatched bytes', t => {
   const f = files(t);
   fs.writeFileSync(f.other, next, { mode: 0o600 });
