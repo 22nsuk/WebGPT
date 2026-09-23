@@ -4,8 +4,8 @@ import { join } from 'node:path';
 import { realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { configuration } from './client.mjs';
-import { parseState, assertNoStateStage } from './runtime.mjs';
-import { verifySavedResult } from './results.mjs';
+import { parseState, parseStateMarker, assertNoStateStage } from './runtime.mjs';
+import { verifySavedResult, inspectPendingResults } from './results.mjs';
 import { AUDIT_LIMIT, auditRecord, readDiagnosticBytes, validAuditTaskId } from './audit.mjs';
 
 export function diagnoseTask(id, config = configuration()) {
@@ -26,19 +26,32 @@ export function diagnoseTask(id, config = configuration()) {
     try { integrity = verifySavedResult(task, config.dataDir); }
     catch (error) { integrity = error.code === 'ENOENT' ? 'missing' : 'mismatch_or_unreadable'; }
   }
-  const records = [], starts = new Set();
+  let stateMarker;
+  try { stateMarker = parseStateMarker(readDiagnosticBytes(join(config.dataDir, 'state.initialized'), 4096)) ? 'valid' : 'absent'; }
+  catch { stateMarker = 'invalid_or_unreadable'; }
+  // Candidate paths come only from the existing task-scoped inspector. Project
+  // results are not completion authority, and their paths/raw errors stay private.
+  const pendingResults = inspectPendingResults(task, config.dataDir).map(candidate => ({
+    kind: candidate.artifact.endsWith('.tmp') ? 'temporary' : 'artifact',
+    integrity: candidate.integrity,
+    ...(candidate.integrity === 'uncommitted' ? { bytes: candidate.bytes, sha256: candidate.sha256 } : {}),
+  }));
+  const records = [], starts = new Set(), segments = [];
   let filesRead = 0, malformedLines = 0, received = 0, completed = 0, failed = 0;
   const pending = new Set();
   const unscoped = { httpErrors: 0, abortedResponses: 0, unassignedToolCalls: 0 };
-  for (const suffix of ['.1', '']) {
-    let bytes;
-    try { bytes = readDiagnosticBytes(join(config.dataDir, 'mcp-audit.jsonl' + suffix), AUDIT_LIMIT); }
-    catch { throw Error('diagnostic data unavailable'); }
-    if (bytes === null) continue;
-    filesRead++;
+  for (const [segment, suffix] of [['previous', '.1'], ['current', '']]) {
     let text;
-    try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
-    catch { throw Error('diagnostic data unavailable'); }
+    try {
+      const bytes = readDiagnosticBytes(join(config.dataDir, 'mcp-audit.jsonl' + suffix), AUDIT_LIMIT);
+      if (bytes === null) { segments.push({ segment, status: 'missing' }); continue; }
+      text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    } catch {
+      // Reject this segment, not the verified inventory or another valid segment.
+      // Report degraded coverage explicitly; never substitute empty/sanitized bytes.
+      segments.push({ segment, status: 'unavailable' }); continue;
+    }
+    segments.push({ segment, status: 'read' }); filesRead++;
     for (const line of text.split('\n')) {
       if (!line.trim()) continue;
       let event;
@@ -62,13 +75,15 @@ export function diagnoseTask(id, config = configuration()) {
       if (records.length > 50) records.shift();
     }
   }
+  const degraded = segments.some(segment => segment.status === 'unavailable') || malformedLines > 0;
+  const availability = filesRead ? (degraded ? 'partial' : 'observed') : (degraded ? 'unavailable' : 'not_observed');
   return {
     task: { id, status: task.status, collected: task.collected, integrity },
-    stateStage, browserChecked: false,
-    audit: { availability: filesRead ? 'observed' : 'not_observed', filesRead, observedRunStarts: starts.size,
+    stateStage, stateMarker, pendingResults, browserChecked: false,
+    audit: { availability, segments, filesRead, observedRunStarts: starts.size,
       malformedLines, received, completed, failed, receivedWithoutCompletionInWindow: pending.size,
       recent: records, recentTruncated: received + completed > records.length, unscoped },
-    interpretation: 'Bounded local observations only; capture may be disabled, failed, partial or rotated. Missing completion is not proof of a hung call. HTTP failures and invalid-token calls are unscoped. HTTP finish does not prove client receipt. Audit is not completion authority or proof of platform cause.',
+    interpretation: 'Bounded local observations only, not readiness. An absent marker may be legacy state. Pending results are uncommitted evidence, not task completion. Audit counters cover readable records only; capture may be disabled, failed, partial or rotated. Missing completion is not proof of a hung call. HTTP failures and invalid-token calls are unscoped. HTTP finish does not prove client receipt. Audit is not completion authority or proof of platform cause.',
   };
 }
 

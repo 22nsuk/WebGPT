@@ -245,7 +245,13 @@ for (const name of ['state.json', logName]) for (const kind of ['symlink', 'hard
     const file = join(f.dir, name), original = readFileSync(file), target = join(f.base, 'copy');
     writeFileSync(target, original); unlinkSync(file);
     if (!makeLink(t, kind, target, file)) { writeFileSync(file, original, { mode: 0o600 }); return; }
-    assert.throws(() => diagnoseTask('owned', f.config), /unavailable/);
+    if (name === 'state.json') assert.throws(() => diagnoseTask('owned', f.config), /unavailable/);
+    else {
+      const report = diagnoseTask('owned', f.config);
+      assert.equal(report.audit.availability, 'unavailable');
+      assert.equal(report.task.status, 'running');
+      assert.throws(() => readDiagnosticBytes(file, AUDIT_LIMIT), /unavailable/);
+    }
     assert.deepEqual(readFileSync(target), original);
   }));
 }
@@ -325,14 +331,14 @@ test('a new worker run appends a distinct run ID without changing retained task 
   } finally { await restarted.close(); }
 }));
 
-test('diagnosis fails safely on invalid UTF-8, oversized logs and corrupt state', () => fixture(async f => {
+test('diagnosis isolates invalid UTF-8/oversized logs but still rejects corrupt state', () => fixture(async f => {
   await f.register('owned');
   await f.service.close();
   const log = join(f.dir, logName);
   writeFileSync(log, Buffer.from([0xff]));
-  assert.throws(() => diagnoseTask('owned', f.config), /diagnostic data unavailable/);
+  assert.equal(diagnoseTask('owned', f.config).audit.availability, 'unavailable');
   writeFileSync(log, Buffer.alloc(AUDIT_LIMIT + 1));
-  assert.throws(() => diagnoseTask('owned', f.config), /diagnostic data unavailable/);
+  assert.equal(diagnoseTask('owned', f.config).audit.availability, 'unavailable');
   const state = join(f.dir, 'state.json'); writeFileSync(state, '{PRIVATE_CORRUPT_STATE');
   assert.throws(() => diagnoseTask('owned', f.config), { message: 'task state unavailable' });
   assert.equal(readFileSync(state, 'utf8'), '{PRIVATE_CORRUPT_STATE');
