@@ -58,6 +58,41 @@ file mutations. Unrelated tasks remain available. Edit/delete receipts also requ
 an intact original backup matching their recorded hash, as described in
 [backup-safety.md](backup-safety.md). No deleted backup or history is reconstructed.
 
+## Interrupted controller state stages
+
+`state.json` is the committed task inventory; `state.json.tmp` is only a candidate.
+The writer creates the stage exclusively instead of truncating an existing path.
+A partial, different, linked or invalid stage is preserved and cannot replace the
+committed inventory. Existing stages with group/other POSIX permissions are also
+rejected; Windows still relies on the private runtime directory's configured ACLs.
+
+Within the same live worker, an explicit transition may reuse a regular single-link
+stage only when its bytes exactly match the proposed next state. The writer flushes
+those bytes again before replacement. A repeated API payload is not necessarily
+byte-identical state: registration can generate a new token/deadline, and another
+transition may change the inventory. Do not retry unrelated actions to clear a
+conflict. Failed state publication does not report success, retire tokens or publish
+the proposed in-memory transition. Project edits and result bytes have separate
+journals/commits and may already exist; inspect those rather than repeating them.
+
+Startup refuses any remaining stage, including one beside an empty committed array
+or a dangling symlink. It neither overwrites the candidate with older state nor
+promotes the candidate automatically. `STATE_STAGING_CONFLICT` is non-retryable;
+at startup it maps to storage exit 74, not a supervisor restart loop. While the
+worker is running, `ready` and `reconcile` detect a remaining stage and report
+`STORAGE_UNAVAILABLE` with `storage.code: STATE_STAGING_CONFLICT`. Read-only task
+inspection remains available when committed state is intact. Unlike a per-task
+result conflict, the shared state stage can block persistence for every task.
+
+For offline recovery, stop new dispatch and the worker/restart owner, then preserve
+both state files, results and recovery records in the private backup. Compare the
+candidate with committed state and the retained task/collection evidence. Have the
+authorized supervisor resolve the uncommitted transition and preserve its disposition
+before removing the stage from the active runtime path. Do not delete evidence,
+rename a candidate over committed state, reset the inventory or replay edits merely
+to get startup working. No automatic repair or persisted-state format migration is
+introduced. Older workers can still truncate these candidates on restart or save.
+
 ## State and owner interruptions
 
 Authenticated `wait`, `status`, and `tasks` verify state consistency at request entry.
