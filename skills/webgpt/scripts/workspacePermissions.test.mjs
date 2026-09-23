@@ -103,7 +103,88 @@ test('Windows replacement rechecks revision after helper startup',{skip:!windows
   assert.equal(inspectRecovery(f.dir,'permissions').unresolved.length,1);
 }));
 
-for(const mask of [0o000,0o022,0o077])for(const mode of [0o600,0o664,0o751,0o755])
+test('staging creation collision preserves the unowned file and recovery evidence',()=>fixture(f=>{
+  const revision=readWorkspace(f.grant,f.path).sha256;
+  const originalOpen=fs.openSync, originalSpawn=childProcess.spawnSync;
+  let collision;
+  const createCollision=temporary=>{
+    collision=temporary;fs.writeFileSync(temporary,'unrelated staging bytes',{flag:'wx'});
+  };
+  if(windows)childProcess.spawnSync=(command,args,options)=>{
+    if(args.at(-1)==='prepare')createCollision(JSON.parse(options.input).temporary);
+    return originalSpawn(command,args,options);
+  };
+  else fs.openSync=(path,flags,...args)=>{
+    if(typeof path==='string' && (flags & fs.constants.O_EXCL)
+        && path.startsWith(join(f.grant.root,'.webgpt-')))createCollision(path);
+    return originalOpen(path,flags,...args);
+  };
+  syncBuiltinESMExports();
+  try {
+    assert.throws(()=>changeWorkspace(f.grant,f.dir,'collision',{path:f.path,text:'changed',expectedSha256:revision}),
+      windows?/permission-preserving replacement failed/:{code:'EEXIST'});
+  } finally {fs.openSync=originalOpen;childProcess.spawnSync=originalSpawn;syncBuiltinESMExports();}
+  assert.ok(collision);assert.equal(fs.readFileSync(collision,'utf8'),'unrelated staging bytes');
+  assert.equal(fs.readFileSync(f.file,'utf8'),'original');
+  const recovery=inspectRecovery(f.dir,'collision');
+  assert.equal(recovery.receipts.length,0);assert.equal(recovery.unresolved.length,1);
+  const prepared=JSON.parse(fs.readFileSync(recovery.unresolved[0],'utf8'));
+  assert.equal(prepared.state,'prepared');assert.equal(fs.readFileSync(prepared.backup,'utf8'),'original');
+}));
+
+test('Windows unconfirmed preparation preserves staging evidence',{skip:!windows},()=>fixture(f=>{
+  const revision=readWorkspace(f.grant,f.path).sha256, originalSpawn=childProcess.spawnSync;
+  let temporary;
+  childProcess.spawnSync=(command,args,options)=>{
+    const result=originalSpawn(command,args,options);
+    if(args.at(-1)==='prepare') {
+      assert.equal(result.status,0,result.stderr);
+      temporary=JSON.parse(options.input).temporary;
+      // The helper created the file, but its successful completion was not confirmed.
+      return {...result,status:1,stderr:'fixture preparation confirmation failure'};
+    }
+    return result;
+  };syncBuiltinESMExports();
+  try {assert.throws(()=>changeWorkspace(f.grant,f.dir,'prepare',{path:f.path,text:'changed',expectedSha256:revision}),/fixture preparation confirmation failure/);}
+  finally {childProcess.spawnSync=originalSpawn;syncBuiltinESMExports();}
+  assert.ok(temporary);assert.equal(fs.readFileSync(temporary,'utf8'),'');
+  assert.equal(fs.readFileSync(f.file,'utf8'),'original');
+  const recovery=inspectRecovery(f.dir,'prepare');
+  assert.equal(recovery.receipts.length,0);assert.equal(recovery.unresolved.length,1);
+  const prepared=JSON.parse(fs.readFileSync(recovery.unresolved[0],'utf8'));
+  assert.equal(prepared.state,'prepared');assert.equal(fs.readFileSync(prepared.backup,'utf8'),'original');
+}));
+
+for(const failure of ['open','write','sync'])test(`owned staging ${failure} failure cleans only its stage and preserves recovery`,
+  {skip:failure==='open'&&!windows},()=>fixture(f=>{
+    const revision=readWorkspace(f.grant,f.path).sha256, before=fs.statSync(f.file);
+    const saved={openSync:fs.openSync,writeFileSync:fs.writeFileSync,fsyncSync:fs.fsyncSync};
+    let stagedFd,reached=false;
+    const fail=()=>{reached=true;throw Object.assign(Error('fixture staging failure'),{code:'EIO'});};
+    fs.openSync=(path,...args)=>{
+      const stage=typeof path==='string'&&path.startsWith(join(f.grant.root,'.webgpt-'));
+      if(stage&&failure==='open')fail(); // Windows prepare already created this stage.
+      const fd=saved.openSync(path,...args);if(stage)stagedFd=fd;return fd;
+    };
+    fs.writeFileSync=(fd,...args)=>{
+      if(failure==='write'&&stagedFd!==undefined&&fd===stagedFd){saved.writeFileSync(fd,'partial');fail();}
+      return saved.writeFileSync(fd,...args);
+    };
+    fs.fsyncSync=fd=>{
+      if(failure==='sync'&&stagedFd!==undefined&&fd===stagedFd)fail();
+      return saved.fsyncSync(fd);
+    };syncBuiltinESMExports();
+    try {assert.throws(()=>changeWorkspace(f.grant,f.dir,'stage-failure',{path:f.path,text:'changed',expectedSha256:revision}),{code:'EIO'});}
+    finally {Object.assign(fs,saved);syncBuiltinESMExports();}
+    assert.equal(reached,true);assert.equal(fs.readFileSync(f.file,'utf8'),'original');
+    assert.equal(fs.statSync(f.file).mode,before.mode);assert.deepEqual(fs.readdirSync(f.root),[f.path]);
+    const recovery=inspectRecovery(f.dir,'stage-failure');
+    assert.equal(recovery.receipts.length,0);assert.equal(recovery.unresolved.length,1);
+    const prepared=JSON.parse(fs.readFileSync(recovery.unresolved[0],'utf8'));
+    assert.equal(prepared.state,'prepared');assert.equal(fs.readFileSync(prepared.backup,'utf8'),'original');
+  }));
+
+for(const mask of [0o000,0o022,0o077])for(const mode of [0o444,0o600,0o664,0o751,0o755])
   test(`POSIX edit preserves mode ${mode.toString(8)} and ownership under umask ${mask.toString(8)}`,{skip:windows},()=>fixture(f=>{
     fs.chmodSync(f.file,mode);const before=fs.statSync(f.file),revision=readWorkspace(f.grant,f.path).sha256;
     const previous=process.umask(mask);let receipt;

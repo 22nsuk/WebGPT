@@ -199,14 +199,18 @@ export function changeWorkspace(grant,dir,taskId,{path,text,expectedSha256},dele
     writeFileSync(file,text,{flag:'wx',mode:0o644,flush:true});
   } else {
     const temporary=resolve(dirname(file),'.webgpt-'+operation+'.tmp');
-    let replacementAttempted=false;
+    let created=false, replacementAttempted=false;
     try {
       // Never put replacement bytes into a Windows file with an inherited DACL.
       // POSIX creation also starts private; chmod below applies the exact mode,
       // independently of umask, after chown. Special-mode edits are rejected above.
-      if(process.platform==='win32')windowsReplacement('prepare',file,temporary);
+      if(process.platform==='win32') {
+        windowsReplacement('prepare',file,temporary);
+        created=true;
+      }
       const fd=openSync(temporary,constants.O_RDWR|constants.O_NOFOLLOW
         |(process.platform==='win32'?0:constants.O_CREAT|constants.O_EXCL),0o600);
+      created=true;
       try {
         writeFileSync(fd,text);
         if(process.platform!=='win32') {
@@ -230,7 +234,9 @@ export function changeWorkspace(grant,dir,taskId,{path,text,expectedSha256},dele
     } finally {
       // ReplaceFile can fail after moving the original or merging its streams.
       // Keep that staging file as evidence alongside the prepared journal.
-      if((process.platform!=='win32'||!replacementAttempted) && metadata(temporary))unlinkSync(temporary);
+      // Failed creation does not establish ownership of an existing stage;
+      // an unconfirmed Windows preparation also leaves its evidence intact.
+      if(created && (process.platform!=='win32'||!replacementAttempted) && metadata(temporary))unlinkSync(temporary);
     }
   }
   // Keep the prepared record intact if writing/flushing the applied state

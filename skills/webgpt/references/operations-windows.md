@@ -203,7 +203,9 @@ symlink/hardlink log targets are refused. Keep all logs under private runtime AC
 After a supervisor has started, launcher event logging is best-effort: a log write
 failure emits a fixed fallback diagnostic and does not stop supervision, release
 the exclusive guard, or replace the supervisor's exit code. Startup log failure
-before launch still prevents starting a child. If another launcher error occurs
+before launch still prevents starting a child. Log rotation and initial logging
+are inside the guard's cleanup scope, so their failures release the handle even
+when the calling PowerShell host stays alive. If another launcher error occurs
 after launch, the runner retains its guard and waits for its child before returning
 failure; use the existing service stop protocol if the child needs to be stopped.
 Forced termination of the runner itself cannot reliably write a final log; inspect
