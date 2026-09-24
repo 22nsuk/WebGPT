@@ -23,9 +23,8 @@ export function restartDelay(code, signal, attempt, platform = process.platform)
 function serviceConfig(env) {
   if (!env.WEBGPT_CONFIG || !isAbsolute(env.WEBGPT_CONFIG)) throw fault('CONFIG_INVALID', 'service requires an explicit absolute WEBGPT_CONFIG');
   try {
-    const saved = JSON.parse(readFileSync(env.WEBGPT_CONFIG, 'utf8'));
-    if (!(env.WEBGPT_DATA_DIR ?? saved?.dataDir)) throw Error('explicit dataDir required');
-    return configuration(env);
+    // Validate the explicit directory against the same strictly decoded snapshot.
+    return configuration(env, { requireExplicitDataDir: true });
   } catch { throw fault('CONFIG_INVALID', 'service configuration requires an explicit absolute dataDir and valid ports'); }
 }
 function ownsStopRequest(file, instanceId) {

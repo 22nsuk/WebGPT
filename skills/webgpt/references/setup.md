@@ -120,6 +120,28 @@ when overriding defaults; set `publicMcp:true` before forwarding MCP over public
 `WEBGPT_CONFIG` selects another configuration file; `WEBGPT_DATA_DIR`
 overrides only the data directory. Give the worker and client the same configuration/environment.
 Keep data/configuration outside projects and installed skill files, private to the current user.
+
+Configuration and controller CLI JSON payload files must be UTF-8. One leading
+UTF-8 BOM is accepted; Korean text, emoji, CRLF and BOM characters inside JSON
+strings are preserved. Invalid UTF-8 and malformed JSON fail without substituting
+replacement characters or echoing file contents. UTF-16 and legacy code-page files
+are not automatically detected or transcoded. Save a reviewed UTF-8 copy instead
+of rewriting a live configuration. Windows PowerShell 5.1's `-Encoding UTF8` writes
+a BOM and is supported; its default `>` output is UTF-16LE and is not.
+
+The configuration pathname and effective `dataDir` must also be well-formed Unicode
+absolute paths; escaped unpaired surrogates are rejected before runtime creation.
+A literal U+FFFD character in a valid UTF-8 path remains valid. An explicitly selected
+missing config is an error. Only an absent implicit config uses the existing defaults;
+permission/I/O failures do not masquerade as an unconfigured installation. Environment
+overrides retain their precedence but do not make invalid config bytes acceptable.
+
+Each configuration load decodes once. The service's explicit-directory check and its
+selected settings use that same read, rather than reopening the file. This is not a
+cross-process snapshot: a worker and a later stop request load configuration separately.
+Do not edit configuration while its service is running; keep the existing stopped-update
+procedure. No file, charset, service setting or saved runtime is migrated automatically.
+
 The worker rejects a project root containing or located inside its private data directory,
 including recovery subdirectories, even for read-only tasks.
 Existing overlapping grants remain cancellable but cannot use file tools; choose a separate, safe
