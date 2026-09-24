@@ -103,6 +103,21 @@ and directory listing: case variants of `.git`, trailing dots/spaces, `GIT~1` an
 aliases are protected on every platform. `.gitignore`, `.gitattributes`, `.gitmodules` and `.github`
 remain ordinary project files. Existing components are also checked by their native filesystem
 names, so an actual short alias such as `GIT~2` cannot select `.git` or a Git worktree pointer.
+The root itself and its ancestors use the same metadata-name policy: do not register `.git`,
+`.git/hooks`, or their protected aliases as a project. Registration checks both the named root
+and its native target; every file-tool access rechecks retained grants, including a parent
+alias redirected into metadata while the root directory identity stays unchanged. An invalid
+root fails before file contents are read, parent directories are created, or mutation backups
+and journals are written. A normal working-tree root containing a hidden `.git` child stays
+usable, as do ordinary `.github`, `.git-notes` and `git~10` directories.
+
+Older overlapping grants are retained, not silently cancelled or rewritten. Their file access
+fails and readiness reports the workspace unavailable; task/input inspection, saved evidence,
+independent work and explicit cancellation remain available. Retire the bad grant deliberately
+and register the actual working-tree root. These checks extend the existing name-based rule;
+they do not discover arbitrary bare repositories, custom `GIT_DIR` locations or every host alias,
+and are not an OS sandbox against hostile concurrent filesystem changes.
+
 Link checks precede canonicalization, and existing ancestors are checked before new files or
 directories are created. Other project text files need no individual grant. Never
 transmit secrets unnecessarily. Originals and operation receipts are retained under the private data
