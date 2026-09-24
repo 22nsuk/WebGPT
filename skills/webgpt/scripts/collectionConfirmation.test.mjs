@@ -146,6 +146,24 @@ test('known ack storage failures remain direct errors and do not trigger outcome
   assert.deepEqual(readFileSync(f.stateFile), before); assert.equal(f.state().token, f.task.token);
 });
 
+for (const resume of [false, true]) test(`${resume ? 'resumed' : 'ordinary'} collection preserves an explicit SHUTTING_DOWN ack rejection`, async t => {
+  const rejection = { error: 'worker is stopping', code: 'SHUTTING_DOWN', retryable: true };
+  const f = await fixture(t, async ({ req, res, phase }) => {
+    if (phase === 'before' && req.url === '/ack') { reply(res, rejection, 503); return true; }
+  });
+  const before = readFileSync(f.stateFile);
+  await assert.rejects(collectTask('owned', f.config, { resume }), error => {
+    assert.equal(error.statusCode, 503); assert.equal(error.code, 'SHUTTING_DOWN');
+    assert.equal(error.message, rejection.error); assert.deepEqual(error.details, rejection);
+    assert.equal(error.retryable, true); assert.equal(retryableControllerError(error), true);
+    return true;
+  });
+  assert.deepEqual(f.actions, [resume ? '/reconcile' : '/wait?id=owned', '/ack']);
+  assert.deepEqual(readFileSync(f.stateFile), before);
+  assert.equal(f.state().collected, false); assert.equal(f.state().token, f.task.token);
+  assert.equal(readFileSync(f.artifact, 'utf8'), resultText);
+});
+
 test('an explicit abort during ack stops collection without another HTTP request', async t => {
   const controller = new AbortController();
   const f = await fixture(t, async ({ req, res, phase }) => {

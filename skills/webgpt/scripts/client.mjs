@@ -186,8 +186,9 @@ async function acknowledgeCollection(id, before, config, { signal }) {
   try { await request('ack', { id }, config, { signal }); }
   catch (error) {
     // A lost transport response may follow a committed acknowledgment. Observe
-    // once; never retry the write here. Other failures keep their existing contract.
-    if (!retryableControllerError(error) || signal?.aborted) throw error;
+    // once; never retry the write here. Explicit HTTP rejections, including the
+    // wait-retryable SHUTTING_DOWN response, are not ambiguous transport failures.
+    if (error.statusCode !== undefined || !retryableControllerError(error) || signal?.aborted) throw error;
     ackError = error;
   }
   let after;
