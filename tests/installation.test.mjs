@@ -30,7 +30,10 @@ test('installed skill tests do not depend on surrounding repository files', asyn
     let stdout;
     try {
       ({ stdout } = await execute(process.execPath, ['--test', '--test-reporter=tap'], {
-        cwd: installed, env, timeout: 60000, windowsHide: true,
+        // This runs the entire shipped suite (500+ tests), including native process
+        // fixtures. Successful hosted Windows runs already take about 50 seconds;
+        // allow runner variance without changing individual test deadlines.
+        cwd: installed, env, timeout: process.platform === 'win32' ? 120000 : 60000, windowsHide: true,
       }));
     } catch (error) {
       t.diagnostic(`Installed suite failed: code=${error.code}, signal=${error.signal}, killed=${error.killed}`);
