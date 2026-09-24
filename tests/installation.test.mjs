@@ -17,7 +17,7 @@ test('repository README keeps fork installation and explicit chat retention/dele
   assert.doesNotMatch(text, /Workflow requests include permanent deletion|permanently delete its test chats|acknowledges and deletes that task chat|Delete the finished probe chat|delete task chats per SKILL\.md/i);
 });
 
-test('installed skill tests do not depend on surrounding repository files', async () => {
+test('installed skill tests do not depend on surrounding repository files', async t => {
   const base = mkdtempSync(join(tmpdir(), 'webgpt-install-layout-'));
   const installed = join(base, 'skills', 'webgpt');
   try {
@@ -27,9 +27,19 @@ test('installed skill tests do not depend on surrounding repository files', asyn
     // Run the installed command as an independent CLI, not as this runner's internal child.
     const env = { ...process.env }; delete env.NODE_TEST_CONTEXT;
     // Exercise the documented installed-skill command so every shipped test must be self-contained.
-    const { stdout } = await execute(process.execPath, ['--test', '--test-reporter=tap'], {
-      cwd: installed, env, timeout: 60000, windowsHide: true,
-    });
+    let stdout;
+    try {
+      ({ stdout } = await execute(process.execPath, ['--test', '--test-reporter=tap'], {
+        cwd: installed, env, timeout: 60000, windowsHide: true,
+      }));
+    } catch (error) {
+      t.diagnostic(`Installed suite failed: code=${error.code}, signal=${error.signal}, killed=${error.killed}`);
+      for (const stream of ['stdout', 'stderr']) {
+        t.diagnostic(`Installed suite ${stream}:`);
+        for (const line of (error[stream] ?? '').split(/\r?\n/)) t.diagnostic(line);
+      }
+      throw error;
+    }
     assert.match(stdout, /# tests [1-9]\d*\b/);
     assert.match(stdout, /# pass [1-9]\d*\b/);
     assert.match(stdout, /# fail 0\b/);

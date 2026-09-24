@@ -17,8 +17,10 @@ facility, not a general command runner or an MCP capability. Workspace grants
 cannot contain or sit inside the running `scripts/` directory or its sibling
 `deploy/` tree, which contains the shipped Windows launchers and service templates.
 Both read and edit grants are rejected. The named deployment tree and native targets
-of `deploy/` and `deploy/windows/` are checked at registration and each file-tool use,
-including directory aliases/junctions. A scripts-only installation can omit deployment
+of `deploy/`, `deploy/windows/`, and the shipped `run-worker-task.ps1`,
+`register-worker-task.ps1`, and `worker.xml.example` files are checked at registration
+and each file-tool use, including directory aliases/junctions and individual file
+symlinks. A scripts-only installation can omit deployment
 files; checking the boundary does not create directories. To develop WebGPT, use a
 separate source checkout and install reviewed updates while idle. The service never
 starts a browser, Codex, Git, cloudflared or arbitrary user-supplied commands.

@@ -64,12 +64,66 @@ async function fixture(t, { deploy = true, linkedScripts = false } = {}) {
   };
   return { base, installed, scripts, nativeScripts, deployment, windows, dir, configFile, config, original, boot, admin, register, call, legacy, start };
 }
-function alias(t, destination, name) {
-  try { fs.symlinkSync(destination, name, process.platform === 'win32' ? 'junction' : 'dir'); return true; }
+function alias(t, destination, name, type = process.platform === 'win32' ? 'junction' : 'dir') {
+  try { fs.symlinkSync(destination, name, type); return true; }
   catch (error) {
-    if (['EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) { t.skip('directory aliases are unavailable'); return false; }
+    if (['EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) { t.skip(`${type} aliases are unavailable`); return false; }
     throw error;
   }
+}
+
+for (const name of ['run-worker-task.ps1', 'register-worker-task.ps1', 'worker.xml.example']) {
+  for (const mode of ['read', 'edit']) test(`linked ${name} protects both installation targets from ${mode} grants`, async t => {
+    const f = await fixture(t, { linkedScripts: true, deploy: false }); if (!f) return;
+    const roots = [f.windows, join(f.nativeScripts, '..', 'deploy', 'windows')];
+    const projects = roots.map((_, index) => join(f.base, 'project-' + index));
+    for (const [index, windows] of roots.entries()) {
+      const project = projects[index];
+      fs.mkdirSync(windows, { recursive: true }); fs.mkdirSync(project);
+      fs.writeFileSync(join(project, name), f.original);
+      if (!alias(t, join(project, name), join(windows, name), 'file')) return;
+    }
+    await f.boot();
+    for (const project of projects) {
+      await assert.rejects(f.register('linked-file', project, mode), denied);
+      assert.equal(fs.readFileSync(join(project, name), 'utf8'), f.original);
+    }
+    assert.equal(fs.existsSync(join(f.dir, 'state.json')), false);
+    assert.equal(fs.existsSync(join(f.dir, 'recovery')), false);
+  });
+
+  for (const timing of ['legacy', 'after registration']) test(`linked ${name} blocks ${timing} grants on every file tool and readiness`, async t => {
+    const f = await fixture(t, { deploy: false }), project = join(f.base, 'project');
+    fs.mkdirSync(project); fs.mkdirSync(f.windows, { recursive: true });
+    fs.writeFileSync(join(project, name), f.original);
+    let token;
+    if (timing === 'legacy') {
+      token = f.legacy('linked-file', project, 'edit');
+      if (!alias(t, join(project, name), join(f.windows, name), 'file')) return;
+      await f.boot();
+    } else {
+      await f.boot();
+      ({ token } = await f.register('linked-file', project));
+      assert.equal((await f.call('read_file', { token, path: name })).isError, false);
+      if (!alias(t, join(project, name), join(f.windows, name), 'file')) return;
+    }
+    for (const [tool, extra] of [
+      ['list_files', { path: '.' }], ['read_file', { path: name }],
+      ['write_file', { path: 'new.txt', text: 'no', expectedSha256: null }],
+      ['delete_file', { path: name, expectedSha256: '0'.repeat(64) }],
+    ]) {
+      const result = await f.call(tool, { token, ...extra });
+      assert.equal(result.isError, true); assert.match(result.content[0].text, denied);
+    }
+    await assert.rejects(f.register('linked-file', project), denied);
+    await assert.rejects(f.admin('ready'), error => error.details.unavailableWorkspaces.includes('linked-file'));
+    assert.equal(fs.readFileSync(join(f.windows, name), 'utf8'), f.original);
+    assert.equal(fs.existsSync(join(project, 'new.txt')), false);
+    assert.equal(fs.existsSync(join(f.dir, 'recovery')), false);
+    assert.equal((await f.call('get_task', { token })).isError, false);
+    await f.admin('cancel', { id: 'linked-file' });
+    assert.equal((await f.admin('ready')).ok, true);
+  });
 }
 
 for (const mode of ['read', 'edit']) for (const location of ['deployment', 'windows', 'nested']) {

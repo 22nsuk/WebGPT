@@ -115,7 +115,9 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
     // both their named location and current native target on every grant/use.
     for(const [protectedRoot,label] of [[realpathSync.native(dir),'private worker data'],[codeRoot,'running worker code'],
       [entryRoot,'running worker code'],[canonicalOperationalPath(entryRoot),'running worker code'],
-      ...deploymentRoots.flatMap(root=>[root,canonicalOperationalPath(root),canonicalOperationalPath(resolve(root,'windows'))]
+      ...deploymentRoots.flatMap(root=>[root,canonicalOperationalPath(root),canonicalOperationalPath(resolve(root,'windows')),
+        ...['run-worker-task.ps1','register-worker-task.ps1','worker.xml.example']
+          .map(name=>canonicalOperationalPath(resolve(root,'windows',name)))]
         .map(path=>[path,'worker deployment files']))])
       for(const rel of [relative(workspaceRoot,protectedRoot),relative(protectedRoot,workspaceRoot)])
         if(rel===''||(!isAbsolute(rel)&&rel!=='..'&&!rel.startsWith('..'+sep)))
