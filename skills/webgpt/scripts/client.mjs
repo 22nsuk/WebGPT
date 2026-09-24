@@ -71,6 +71,9 @@ export async function request(action, payload, config = configuration(), { signa
   const timeout = AbortSignal.timeout(timeoutMs);
   const response = await fetch('http://127.0.0.1:' + config.controlPort + '/' + action + query, {
     method: read ? 'GET' : 'POST',
+    // A controller response must not reroute private input or select another action,
+    // even on the same origin. Reject before following, not after response arrival.
+    redirect: 'error',
     headers: { authorization: 'Bearer ' + key, 'content-type': 'application/json' },
     body: read ? undefined : JSON.stringify(payload),
     signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
