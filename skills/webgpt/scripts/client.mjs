@@ -168,17 +168,20 @@ async function resumeCollection(id, config, { signal }) {
 // Both collection paths use the same authoritative post-ack observation. A
 // successful HTTP reply alone cannot establish retirement or its disposition.
 async function inspectCollection(id, config, { signal }) {
-  const snapshot = await reconcileTasks(config, { signal });
+  const snapshot = await readReconciliation(config, { signal });
   if (snapshot.health?.issues?.includes('STATE_INVALID'))
     throw Object.assign(Error('controller state is invalid; preserve evidence and inspect'), { code: 'STATE_INVALID' });
   const task = snapshot.tasks.find(task => task.id === id);
   if (!task) throw Error('unknown task');
   if (task.status === 'running')
     throw Object.assign(Error('task has no uncollected result: task is still running'), { code: 'TASK_RUNNING' });
-  if (task.artifact || task.sha256) verifyResult(task, config);
-  else if (task.status !== 'cancelled' || !task.collected)
+  // Verify the selected result once for this observation, never a cached verdict
+  // or every unrelated retained artifact. Full reconcile still audits all tasks.
+  const integrity = task.artifact || task.sha256 ? verifyResult(task, config) : 'not_expected';
+  if (integrity === 'not_expected' && (task.status !== 'cancelled' || !task.collected))
     throw Error('task has no saved result');
-  return { ...task, health: snapshot.health, browserChecked: false };
+  return { ...task, integrity, attention: reconciliationAttention(task, integrity),
+    health: snapshot.health, browserChecked: false };
 }
 
 async function acknowledgeCollection(id, before, config, { signal }) {
@@ -211,21 +214,30 @@ async function acknowledgeCollection(id, before, config, { signal }) {
   return after;
 }
 
-// Read-only reconciliation. Never acknowledges, cancels, re-registers or opens a chat.
-export async function reconcileTasks(config = configuration(), { signal } = {}) {
+// Loading controller metadata and auditing every result are distinct operations.
+// Collection still receives the complete health report; no wire scope is changed.
+async function readReconciliation(config, { signal }) {
   const snapshot = await request('reconcile', undefined, config, { signal });
   if (!snapshot || !Array.isArray(snapshot.tasks)) throw Error('worker does not support reconciliation');
+  return snapshot;
+}
+function reconciliationAttention(task, integrity) {
+  const recovery = task.recoveryRequired?.length || task.journalIssues?.length;
+  return recovery ? 'inspect_recovery' : task.pendingResults?.length ? 'inspect_uncommitted_result' : integrity !== 'verified' && integrity !== 'not_expected'
+    ? 'inspect_result' : task.collected ? 'already_collected_or_cancelled'
+    : task.status === 'running' ? 'inspect_retained_chat' : 'collect_saved_result';
+}
+
+// Read-only reconciliation. Never acknowledges, cancels, re-registers or opens a chat.
+export async function reconcileTasks(config = configuration(), { signal } = {}) {
+  const snapshot = await readReconciliation(config, { signal });
   return { health: snapshot.health, browserChecked: false, tasks: snapshot.tasks.map(task => {
     let integrity = 'not_expected';
     if (task.artifact || task.sha256) {
       try { integrity = verifyResult(task, config); }
       catch (error) { integrity = error.code === 'ENOENT' ? 'missing' : 'mismatch_or_unreadable'; }
     }
-    const recovery = task.recoveryRequired?.length || task.journalIssues?.length;
-    const attention = recovery ? 'inspect_recovery' : task.pendingResults?.length ? 'inspect_uncommitted_result' : integrity !== 'verified' && integrity !== 'not_expected'
-      ? 'inspect_result' : task.collected ? 'already_collected_or_cancelled'
-      : task.status === 'running' ? 'inspect_retained_chat' : 'collect_saved_result';
-    return { ...task, integrity, attention };
+    return { ...task, integrity, attention: reconciliationAttention(task, integrity) };
   }) };
 }
 
