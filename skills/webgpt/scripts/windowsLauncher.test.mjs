@@ -9,10 +9,18 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 const windows = { skip: process.platform !== 'win32' && 'requires Windows PowerShell and native process handles', timeout: 20000 };
 const quote = value => `'${value.replaceAll("'", "''")}'`;
-async function until(predicate, description) {
-  const deadline = Date.now() + 10000;
-  while (!predicate()) {
-    assert.ok(Date.now() < deadline, description);
+async function until(predicate, description, { retryBusy = false, timeoutMs = 10000 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  let lastBusy;
+  for (;;) {
+    try { if (predicate()) return; }
+    catch (error) {
+      // Only live log reads opt in: a sharing violation may outlive one poll.
+      if (!retryBusy || error.code !== 'EBUSY') throw error;
+      lastBusy = error;
+    }
+    if (Date.now() >= deadline)
+      throw Error(typeof description === 'function' ? description() : description, { cause: lastBusy });
     await delay(25);
   }
 }
@@ -79,7 +87,8 @@ for (const failure of ['', 'all', 'supervisor_exited']) {
     const instance = start(failure);
     await until(() => existsSync(join(data, 'child.pid')), instance.output());
     if (failure === 'all') await until(() => instance.output().includes('supervision continues'), 'missing log failure diagnostic');
-    else await until(() => readFileSync(join(data, 'service-logs', 'launcher.0.log'), 'utf8').includes('supervisor_launched'), 'missing launch event');
+    else await until(() => readFileSync(join(data, 'service-logs', 'launcher.0.log'), 'utf8').includes('supervisor_launched'),
+      () => 'missing launch event; ' + instance.output(), { retryBusy: true });
     assert.equal(instance.child.exitCode, null, instance.output());
     // The live launcher must retain its exclusive guard even when its log sink fails.
     const duplicate = start(failure);
@@ -95,6 +104,48 @@ for (const failure of ['', 'all', 'supervisor_exited']) {
     assert.equal(existsSync(join(data, 'service-logs', 'launcher.1.log')), true);
   }));
 }
+
+test('launcher log polling survives a real Windows sharing violation after release', windows, () => fixture(async ({ base, data, startScript }) => {
+  const log = join(data, 'locked.log'), held = join(base, 'held'), release = join(data, 'release');
+  writeFileSync(log, 'supervisor_launched');
+  const locker = startScript(`
+    $ErrorActionPreference = 'Stop'
+    $handle = [IO.File]::Open(${quote(log)}, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    try {
+      [IO.File]::WriteAllText(${quote(held)}, 'held')
+      $deadline = [DateTime]::UtcNow.AddSeconds(10)
+      while (-not [IO.File]::Exists(${quote(release)}) -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 10 }
+    } finally { $handle.Dispose() }
+  `);
+  await until(() => existsSync(held), 'lock was not acquired');
+  let busy = 0;
+  await until(() => {
+    try { return readFileSync(log, 'utf8').includes('supervisor_launched'); }
+    catch (error) {
+      if (error.code === 'EBUSY') { busy++; writeFileSync(release, ''); }
+      throw error;
+    }
+  }, () => 'missing launch event; ' + locker.output(), { retryBusy: true });
+  assert.ok(busy > 0, 'the read encountered the native sharing violation');
+  assert.equal(await locker.done, 0, locker.output());
+}));
+
+test('launcher log polling fails at its deadline with the last busy error and diagnostics', async () => {
+  const busy = Object.assign(Error('locked fixture log'), { code: 'EBUSY' });
+  await assert.rejects(until(() => { throw busy; }, () => 'missing launch event; fixture output',
+    { retryBusy: true, timeoutMs: 1 }), error => {
+    assert.equal(error.cause, busy);
+    assert.match(error.message, /missing launch event; fixture output/);
+    return true;
+  });
+});
+
+for (const code of ['EACCES', 'EIO', 'ENOENT']) test(`launcher log polling does not retry ${code}`, async () => {
+  const failure = Object.assign(Error('fixture read failure'), { code });
+  let calls = 0;
+  await assert.rejects(until(() => { calls++; throw failure; }, 'must fail', { retryBusy: true }), error => error === failure);
+  assert.equal(calls, 1);
+});
 
 test('Windows launcher reports start failure even when its error log also fails', windows, () => fixture(async ({ base, data, start, startScript }) => {
   // Fail the launch after the normal path/log preflight.
