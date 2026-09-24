@@ -128,7 +128,7 @@ for (const resume of [false, true]) test(`collection${resume ? ' resume' : ''} r
   const before = readFileSync(join(f.dir, 'state.json')), paths = [];
   const proxy = await server(t, async (req, res, bytes) => {
     paths.push(req.url);
-    if (req.url === '/ack') {
+    if (req.url === '/collect') {
       // A 303 would turn POST ack into a successful GET tasks; a 307 would
       // turn it into POST cancel, deliberately discarding the result instead.
       res.writeHead(resume ? 307 : 303, { location: resume ? '/cancel' : '/tasks' }); res.end(); return;
@@ -136,7 +136,7 @@ for (const resume of [false, true]) test(`collection${resume ? ' resume' : ''} r
     await f.forward(req, res, bytes);
   });
   await assert.rejects(collectTask('owned', { ...f.config, controlPort: proxy.port }, { resume }), redirectFailure);
-  assert.deepEqual(paths, [...(resume ? ['/reconcile'] : ['/wait?id=owned', '/reconcile']), '/ack']);
+  assert.deepEqual(paths, [...(resume ? ['/reconcile'] : ['/wait?id=owned']), '/collect']);
   assert.deepEqual(readFileSync(join(f.dir, 'state.json')), before);
   assert.equal(f.state().collected, false); assert.equal(f.state().token, f.task.token);
   assert.equal(readFileSync(join(f.dir, 'owned.result.txt'), 'utf8'), resultBytes);
@@ -148,8 +148,8 @@ test('a redirect after a committed ack still requires explicit reconciliation, n
   const f = await workerFixture(t); await f.complete();
   let acks = 0, targets = 0;
   const proxy = await server(t, async (req, res, bytes) => {
-    if (req.url === '/ack') {
-      acks++; await request('ack', JSON.parse(bytes), f.config);
+    if (req.url === '/collect') {
+      acks++; await request('collect', JSON.parse(bytes), f.config);
       res.writeHead(303, { location: '/target' }); res.end(); return;
     }
     if (req.url === '/target') { targets++; json(res, { ok: true }); return; }

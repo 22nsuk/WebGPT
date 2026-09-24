@@ -55,13 +55,13 @@ async function observeReads(t, f, run) {
 const expectedReads = (f, count) => Array.from({ length: count }, () => ({ file: f.path('owned'), bytes: Buffer.byteLength(text) }));
 
 for (const count of [1, 8]) for (const status of ['completed', 'failed', 'cancelled']) {
-  test(`ordinary ${status} collection reads only its result twice with ${count} saved tasks`, async t => {
+  test(`ordinary ${status} collection reads only its result: two client verifications and one guarded controller verification with ${count} saved tasks`, async t => {
     const f = await fixture(t, { count, status });
     const reads = await observeReads(t, f, async () => {
       assert.deepEqual(await collectTask('owned', f.config), { id: 'owned', status, summary: 'done',
         artifact: f.path('owned'), sha256, integrity: 'verified', collected: true });
     });
-    assert.deepEqual(reads, expectedReads(f, 2));
+    assert.deepEqual(reads, expectedReads(f, 3));
     const stored = JSON.parse(f.state());
     assert.equal(stored[0].token, undefined); assert.equal(stored[0].collected, true);
     assert.equal(fs.readFileSync(f.path('owned'), 'utf8'), text);
@@ -79,7 +79,7 @@ for (const disposition of ['uncollected', 'already_collected', 'discarded']) {
       assert.equal(result.attention, 'already_collected_or_cancelled');
       assert.equal(result.health.ok, true);
     });
-    assert.deepEqual(reads, expectedReads(f, collected ? 1 : 2));
+    assert.deepEqual(reads, expectedReads(f, collected ? 1 : 3));
     if (collected) assert.deepEqual(f.state(), before, 'retired-result inspection is read-only');
   });
 }
@@ -88,7 +88,7 @@ for (const resume of [false, true]) test(`${resume ? 'resume' : 'ordinary'} coll
   const f = await fixture(t);
   fs.unlinkSync(f.path('retained-1')); fs.writeFileSync(f.path('retained-2'), 'different bytes');
   const reads = await observeReads(t, f, async () => assert.equal((await collectTask('owned', f.config, { resume })).collected, true));
-  assert.deepEqual(reads, expectedReads(f, 2));
+  assert.deepEqual(reads, expectedReads(f, 3));
   let snapshot;
   const fullReads = await observeReads(t, f, async () => { snapshot = await reconcileTasks(f.config); });
   assert.equal(snapshot.tasks.length, 8); assert.equal(snapshot.browserChecked, false);

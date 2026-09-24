@@ -175,6 +175,41 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
     // This safety block intentionally stays live even if state storage is unavailable.
     if(pending.size){task.recoveryRequired=[...pending];wake();}
   };
+  const reconciliationTask=t=>({
+    id:t.id,status:t.status,collected:t.collected,discarded:t.discarded??false,nextCheck:t.nextCheck,
+    artifact:t.artifact??null,sha256:t.sha256??null,changes:t.changes??[],
+    recoveryRequired:t.recoveryRequired??[],journalIssues:recoveryFor(t).unresolved,pendingResults:inspectPendingResults(t,dir)
+  });
+  // The controller owns both the decision and the state transition. No await or
+  // event-loop yield may split these checks from persist. This serializes worker
+  // requests, not arbitrary external filesystem writers or power-loss recovery.
+  const commitCollection=a=>{
+    if(!a||typeof a!=='object'||Array.isArray(a)||Object.keys(a).some(k=>!['id','expectedStatus','expectedSha256'].includes(k))
+        ||typeof a.id!=='string'||!/^[a-zA-Z0-9_-]{1,80}$/.test(a.id)
+        ||!['completed','failed','cancelled'].includes(a.expectedStatus)
+        ||typeof a.expectedSha256!=='string'||!/^[a-f0-9]{64}$/.test(a.expectedSha256))throw Error('invalid conditional collection');
+    const t=tasks.find(t=>t.id===a.id);if(!t)throw Error('unknown task');
+    const conflict=(code,message,extra={})=>Object.assign(fault(code,message),{statusCode:409,...extra});
+    if(t.discarded)throw conflict('COLLECTION_DISCARDED','result was discarded; inspect with collect --resume');
+    if(t.status!==a.expectedStatus||t.sha256!==a.expectedSha256)
+      throw conflict('COLLECTION_UNCONFIRMED','saved result differs from the requested collection; preserve evidence and reconcile');
+    // Check bytes at the state owner, not only in an earlier client observation.
+    // Keep raw filesystem errors and paths out of the conditional response.
+    try{verifySavedResult(t,dir);}catch{
+      throw conflict('COLLECTION_UNCONFIRMED','saved result cannot be verified; preserve evidence and reconcile');
+    }
+    const inspected=reconciliationTask(t);
+    const attention=inspected.recoveryRequired.length||inspected.journalIssues.length?'inspect_recovery'
+      :inspected.pendingResults.length?'inspect_uncommitted_result':null;
+    if(attention)throw conflict('COLLECTION_RECOVERY_REQUIRED','saved result requires recovery inspection before collection',{
+      attention,reconciliation:inspected
+    });
+    if(!t.collected){
+      const next={...t,collected:true};revoke(next);
+      persist(tasks.map(task=>task===t?next:task));wake();
+    }
+    return {ok:true,id:t.id,status:t.status,sha256:t.sha256,collected:true,duplicate:t.collected};
+  };
   const readiness=()=>{
     let probe;
     try{
@@ -324,11 +359,7 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
       if(req.method==='GET'&&req.url==='/ready'){
         const report=readiness();return json(res,report.ok?200:503,report);
       }
-      if(req.method==='GET'&&req.url==='/reconcile')return json(res,200,{health:readiness(),tasks:tasks.map(t=>({
-        id:t.id,status:t.status,collected:t.collected,discarded:t.discarded??false,nextCheck:t.nextCheck,
-        artifact:t.artifact??null,sha256:t.sha256??null,changes:t.changes??[],
-        recoveryRequired:t.recoveryRequired??[],journalIssues:recoveryFor(t).unresolved,pendingResults:inspectPendingResults(t,dir)
-      }))});
+      if(req.method==='GET'&&req.url==='/reconcile')return json(res,200,{health:readiness(),tasks:tasks.map(reconciliationTask)});
       if(stopping)return json(res,503,{error:'worker is stopping',code:'SHUTTING_DOWN',retryable:true});
       if(req.method==='GET'&&['/wait','/status','/tasks'].includes(url.pathname))verifyState();
       if(req.method==='GET'&&url.pathname==='/wait'){
@@ -378,6 +409,7 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
         json(res,202,{accepted:true});return;
       }
       verifyState();
+      if(req.url==='/collect')return json(res,200,commitCollection(a));
       if(req.url==='/register'){
         if(a&&['terminal','mode'].some(key=>Object.hasOwn(a,key)))throw Error('terminal/open modes are not supported by this file-scoped fork');
         if(!a||typeof a.id!=='string'||!/^[a-zA-Z0-9_-]{1,80}$/.test(a.id)||typeof a.instructions!=='string'||!a.inputs||typeof a.inputs!=='object'||Array.isArray(a.inputs)||Object.values(a.inputs).some(v=>typeof v!=='string'))throw Error('invalid task');
@@ -409,7 +441,8 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
       }
       else return json(res,404,{});
       persist(tasks.map(task=>task===t?next:task));wake();json(res,200,{ok:true});
-    }catch(e){json(res,e.statusCode??400,{error:e.message,...(e.code?{code:e.code}:{}),retryable:false});}
+    }catch(e){json(res,e.statusCode??400,{error:e.message,...(e.code?{code:e.code}:{}),
+      ...(e.code==='COLLECTION_RECOVERY_REQUIRED'?{attention:e.attention,reconciliation:e.reconciliation}:{}),retryable:false});}
   });
   for(const server of [mcp,control])server.requestTimeout=15000;
   const listen=(s,p)=>new Promise((yes,no)=>{s.once('error',no);s.listen(p,'127.0.0.1',yes);});

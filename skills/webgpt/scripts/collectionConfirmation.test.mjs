@@ -52,8 +52,8 @@ async function fixture(t, intercept = async () => false, status = 'completed') {
   await new Promise(resolve => proxy.listen(0, '127.0.0.1', resolve));
   return { ...f, config: { ...direct, controlPort: proxy.address().port } };
 }
-const collectionStart = resume => resume ? ['/reconcile'] : ['/wait?id=owned', '/reconcile'];
-const expectedCalls = [...collectionStart(false), '/ack', '/reconcile'];
+const collectionStart = resume => resume ? ['/reconcile'] : ['/wait?id=owned'];
+const expectedCalls = [...collectionStart(false), '/collect', '/reconcile'];
 function unconfirmed(error) {
   assert.equal(error.code, 'COLLECTION_UNCONFIRMED');
   assert.equal(retryableControllerError(error), false);
@@ -73,10 +73,10 @@ for (const status of ['completed', 'failed', 'cancelled']) {
   });
   test(`ordinary ${status} collection does not report success when another parent discards before ack`, async t => {
     const f = await fixture(t, async ({ req, phase, admin }) => {
-      if (phase === 'before' && req.url === '/ack') await admin('cancel', { id: 'owned' });
+      if (phase === 'before' && req.url === '/collect') await admin('cancel', { id: 'owned' });
     }, status);
-    await assert.rejects(collectTask('owned', f.config), { code: 'COLLECTION_DISCARDED' });
-    assert.deepEqual(f.actions, expectedCalls);
+    await assert.rejects(collectTask('owned', f.config), { code: 'COLLECTION_DISCARDED', statusCode: 409 });
+    assert.deepEqual(f.actions, expectedCalls.slice(0, -1));
     assert.equal(f.state().collected, true); assert.equal(f.state().discarded, true);
     const resumed = await collectTask('owned', f.direct, { resume: true });
     assert.equal(resumed.disposition, 'discarded'); assert.equal(resumed.integrity, 'verified');
@@ -86,7 +86,7 @@ for (const status of ['completed', 'failed', 'cancelled']) {
 
 for (const data of [{ ok: false }, {}, { ok: true }]) test(`an uncommitted ack reply ${JSON.stringify(data)} is not collection proof`, async t => {
   const f = await fixture(t, async ({ req, res, phase }) => {
-    if (phase === 'before' && req.url === '/ack') { reply(res, data); return true; }
+    if (phase === 'before' && req.url === '/collect') { reply(res, data); return true; }
   });
   const before = readFileSync(f.stateFile);
   await assert.rejects(collectTask('owned', f.config), unconfirmed);
@@ -98,7 +98,7 @@ for (const data of [{ ok: false }, {}, { ok: true }]) test(`an uncommitted ack r
 
 for (const committed of [false, true]) test(`lost ${committed ? 'committed' : 'uncommitted'} ack is observed once without repeating the write`, async t => {
   const f = await fixture(t, async ({ req, res, phase }) => {
-    if (req.url === '/ack' && phase === (committed ? 'after' : 'before')) { res.destroy(); return true; }
+    if (req.url === '/collect' && phase === (committed ? 'after' : 'before')) { res.destroy(); return true; }
   });
   if (committed) assert.equal((await collectTask('owned', f.config)).collected, true);
   else await assert.rejects(collectTask('owned', f.config), error => {
@@ -111,7 +111,7 @@ for (const committed of [false, true]) test(`lost ${committed ? 'committed' : 'u
 
 for (const change of ['missing', 'corrupt']) test(`result bytes ${change} after ack prevent a verified collection report`, async t => {
   const f = await fixture(t, async ({ req, phase, artifact }) => {
-    if (phase === 'after' && req.url === '/ack') {
+    if (phase === 'after' && req.url === '/collect') {
       if (change === 'missing') unlinkSync(artifact); else writeFileSync(artifact, 'different fixture bytes');
     }
   });
@@ -124,8 +124,8 @@ for (const issue of ['unavailable', 'missing-task', 'wrong-status', 'wrong-hash'
   test(`post-ack ${issue} leaves collection unconfirmed without a second ack`, async t => {
     let acknowledged = false;
     const f = await fixture(t, async ({ req, res, phase, data, stateFile }) => {
-      if (req.url === '/ack' && phase === 'after') acknowledged = true;
-      if (issue === 'invalid-state' && phase === 'after' && req.url === '/ack') writeFileSync(stateFile, '[]');
+      if (req.url === '/collect' && phase === 'after') acknowledged = true;
+      if (issue === 'invalid-state' && phase === 'after' && req.url === '/collect') writeFileSync(stateFile, '[]');
       // Exercise the post-ack observation, not the new pre-ack recovery check.
       if (req.url !== '/reconcile' || !acknowledged) return;
       if (issue === 'unavailable' && phase === 'before') { reply(res, { error: 'fixture unavailable' }, 503); return true; }
@@ -146,14 +146,14 @@ test('known ack storage failures remain direct errors and do not trigger outcome
   const f = await fixture(t); mkdirSync(join(f.dir, 'state.json.tmp'));
   const before = readFileSync(f.stateFile);
   await assert.rejects(collectTask('owned', f.config), { statusCode: 503, code: 'STATE_STAGING_CONFLICT' });
-  assert.deepEqual(f.actions, [...collectionStart(false), '/ack']);
+  assert.deepEqual(f.actions, [...collectionStart(false), '/collect']);
   assert.deepEqual(readFileSync(f.stateFile), before); assert.equal(f.state().token, f.task.token);
 });
 
 for (const resume of [false, true]) test(`${resume ? 'resumed' : 'ordinary'} collection preserves an explicit SHUTTING_DOWN ack rejection`, async t => {
   const rejection = { error: 'worker is stopping', code: 'SHUTTING_DOWN', retryable: true };
   const f = await fixture(t, async ({ req, res, phase }) => {
-    if (phase === 'before' && req.url === '/ack') { reply(res, rejection, 503); return true; }
+    if (phase === 'before' && req.url === '/collect') { reply(res, rejection, 503); return true; }
   });
   const before = readFileSync(f.stateFile);
   await assert.rejects(collectTask('owned', f.config, { resume }), error => {
@@ -162,7 +162,7 @@ for (const resume of [false, true]) test(`${resume ? 'resumed' : 'ordinary'} col
     assert.equal(error.retryable, true); assert.equal(retryableControllerError(error), true);
     return true;
   });
-  assert.deepEqual(f.actions, [...collectionStart(resume), '/ack']);
+  assert.deepEqual(f.actions, [...collectionStart(resume), '/collect']);
   assert.deepEqual(readFileSync(f.stateFile), before);
   assert.equal(f.state().collected, false); assert.equal(f.state().token, f.task.token);
   assert.equal(readFileSync(f.artifact, 'utf8'), resultText);
@@ -171,10 +171,10 @@ for (const resume of [false, true]) test(`${resume ? 'resumed' : 'ordinary'} col
 test('an explicit abort during ack stops collection without another HTTP request', async t => {
   const controller = new AbortController();
   const f = await fixture(t, async ({ req, res, phase }) => {
-    if (phase === 'before' && req.url === '/ack') { controller.abort(); res.destroy(); return true; }
+    if (phase === 'before' && req.url === '/collect') { controller.abort(); res.destroy(); return true; }
   });
   await assert.rejects(collectTask('owned', f.config, { signal: controller.signal }), { name: 'AbortError' });
-  assert.deepEqual(f.actions, [...collectionStart(false), '/ack']); assert.equal(f.state().collected, false);
+  assert.deepEqual(f.actions, [...collectionStart(false), '/collect']); assert.equal(f.state().collected, false);
 });
 
 for (const resume of [false, true]) for (const custom of [false, true]) {
@@ -183,14 +183,14 @@ for (const resume of [false, true]) for (const custom of [false, true]) {
     const reason = custom ? Error('explicit fixture cancellation') : undefined;
     let committedState;
     const f = await fixture(t, async ({ req, res, phase, stateFile }) => {
-      if (phase === 'after' && req.url === '/ack') committedState = readFileSync(stateFile);
+      if (phase === 'after' && req.url === '/collect') committedState = readFileSync(stateFile);
       if (phase === 'before' && req.url === '/reconcile' && committedState && !controller.signal.aborted) {
         controller.abort(reason); res.destroy(); return true;
       }
     });
     await assert.rejects(collectTask('owned', f.config, { resume, signal: controller.signal }),
       error => error === controller.signal.reason);
-    assert.deepEqual(f.actions, [...collectionStart(resume), '/ack', '/reconcile']);
+    assert.deepEqual(f.actions, [...collectionStart(resume), '/collect', '/reconcile']);
     assert.deepEqual(readFileSync(f.stateFile), committedState);
     assert.equal(f.state().collected, true); assert.equal(f.state().token, undefined);
     assert.equal(readFileSync(f.artifact, 'utf8'), resultText);
@@ -198,7 +198,7 @@ for (const resume of [false, true]) for (const custom of [false, true]) {
     // verifies the retained result without another write.
     const recovered = await collectTask('owned', f.config, { resume: true });
     assert.equal(recovered.disposition, 'already_collected'); assert.equal(recovered.integrity, 'verified');
-    assert.deepEqual(f.actions, [...collectionStart(resume), '/ack', '/reconcile', '/reconcile']);
+    assert.deepEqual(f.actions, [...collectionStart(resume), '/collect', '/reconcile', '/reconcile']);
     assert.deepEqual(readFileSync(f.stateFile), committedState);
   });
 }
@@ -215,7 +215,7 @@ test('ordinary collection remains strict on already retired results while explic
 
 for (const scenario of ['discarded', 'unconfirmed']) test(`ordinary collection CLI reports ${scenario} without false success or private output`, async t => {
   const f = await fixture(t, async ({ req, res, phase, admin }) => {
-    if (phase !== 'before' || req.url !== '/ack') return;
+    if (phase !== 'before' || req.url !== '/collect') return;
     if (scenario === 'discarded') await admin('cancel', { id: 'owned' });
     else { reply(res, {}); return true; }
   });
@@ -229,5 +229,5 @@ for (const scenario of ['discarded', 'unconfirmed']) test(`ordinary collection C
     for (const secret of [f.dir, f.task.token, 'PRIVATE_COLLECTION_FIXTURE']) assert.ok(!error.stderr.includes(secret));
     return true;
   });
-  assert.deepEqual(f.actions, expectedCalls);
+  assert.deepEqual(f.actions, scenario === 'discarded' ? expectedCalls.slice(0, -1) : expectedCalls);
 });
