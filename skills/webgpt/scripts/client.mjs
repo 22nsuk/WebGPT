@@ -1,29 +1,43 @@
-import { readFileSync, existsSync, realpathSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, isAbsolute } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { verifySavedResult } from './results.mjs';
 import { setTimeout as delay } from 'node:timers/promises';
 
+// Decode user-authored local JSON without silently replacing invalid wire bytes.
+// TextDecoder accepts one leading UTF-8 BOM; BOMs inside strings stay unchanged.
+function readJsonFile(file) {
+  const bytes = readFileSync(file); // Keep filesystem failures and their error codes.
+  try { return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)); }
+  catch { throw Error('invalid JSON or UTF-8 input file'); }
+}
+
 // Shared by the worker and controller client; never store configuration in the skill.
 export function configurationFile(env = process.env) {
   const file = env.WEBGPT_CONFIG ?? join(homedir(), '.config', 'webgpt', 'config.json');
-  if (typeof file !== 'string' || !isAbsolute(file)) throw Error('WEBGPT_CONFIG must be absolute');
+  if (typeof file !== 'string' || !file.isWellFormed() || !isAbsolute(file)) throw Error('WEBGPT_CONFIG must be absolute');
   return file;
 }
 
-export function configuration(env = process.env) {
+export function configuration(env = process.env, { requireExplicitDataDir = false } = {}) {
   const file = configurationFile(env);
-  if (env.WEBGPT_CONFIG && !existsSync(file)) throw Error('WEBGPT_CONFIG file does not exist');
-  const saved = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : {};
+  let saved;
+  try { saved = readJsonFile(file); }
+  catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+    if (env.WEBGPT_CONFIG) throw Error('WEBGPT_CONFIG file does not exist');
+    saved = {}; // Only an absent implicit configuration may use defaults.
+  }
   if (!saved || typeof saved !== 'object' || Array.isArray(saved)) throw Error('invalid WebGPT configuration');
+  if (requireExplicitDataDir && !(env.WEBGPT_DATA_DIR ?? saved.dataDir)) throw Error('explicit dataDir required');
   const config = {
     dataDir: env.WEBGPT_DATA_DIR ?? saved.dataDir ?? join(homedir(), '.local', 'share', 'webgpt'),
     mcpPort: saved.mcpPort ?? 43137,
     controlPort: saved.controlPort ?? 43139,
     publicMcp: saved.publicMcp ?? false,
   };
-  if (typeof config.dataDir !== 'string' || !isAbsolute(config.dataDir)) throw Error('dataDir must be absolute');
+  if (typeof config.dataDir !== 'string' || !config.dataDir.isWellFormed() || !isAbsolute(config.dataDir)) throw Error('dataDir must be absolute');
   if (typeof config.publicMcp !== 'boolean') throw Error('publicMcp must be boolean');
   for (const key of ['mcpPort', 'controlPort']) {
     if (!Number.isInteger(config[key]) || config[key] < 1 || config[key] > 65535) throw Error('invalid ' + key);
@@ -203,7 +217,6 @@ if (process.argv[1] && process.argv[1] !== '-' && import.meta.url === pathToFile
   try {
     let result;
     const isTaskId = value => typeof value === 'string' && /^[a-zA-Z0-9_-]{1,80}$/.test(value);
-    const readPayload = file => JSON.parse(readFileSync(file, 'utf8'));
     if (action === 'dispatch') {
       const { dispatchCli } = await import('./dispatch.mjs');
       result = await dispatchCli(args);
@@ -212,8 +225,8 @@ if (process.argv[1] && process.argv[1] !== '-' && import.meta.url === pathToFile
       result = action === 'reconcile' ? await reconcileTasks() : await request(action, action === 'shutdown' ? {} : undefined);
     } else if (action === 'wait' && args.length) {
       if (args[0] === '--file' && args.length !== 2) throw Error('usage: client.mjs wait --file <json-file>');
-      const saved = args[0] === '--file' ? readPayload(args[1])
-        : args.length === 1 && !isTaskId(args[0]) ? readPayload(args[0]) : null;
+      const saved = args[0] === '--file' ? readJsonFile(args[1])
+        : args.length === 1 && !isTaskId(args[0]) ? readJsonFile(args[0]) : null;
       result = await waitForTasks(saved ? saved.ids ?? [saved.id] : args);
     } else if (action === 'collect') {
       const resume = args[0] === '--resume';
@@ -223,12 +236,12 @@ if (process.argv[1] && process.argv[1] !== '-' && import.meta.url === pathToFile
       if (args[0] === '--file' ? args.length !== 2 : args.length !== 1)
         throw Error(`usage: client.mjs ${action} <task-id|json-file> or --file <json-file>`);
       // Never let an unrelated same-named file redirect a task action to another task.
-      const payload = args[0] === '--file' ? readPayload(args[1])
-        : isTaskId(args[0]) ? { id: args[0] } : readPayload(args[0]);
+      const payload = args[0] === '--file' ? readJsonFile(args[1])
+        : isTaskId(args[0]) ? { id: args[0] } : readJsonFile(args[0]);
       result = await request(action, payload);
     } else {
       if (args.length > 1) throw Error('unexpected controller arguments');
-      const payload = args[0] ? JSON.parse(readFileSync(args[0], 'utf8')) : undefined;
+      const payload = args[0] ? readJsonFile(args[0]) : undefined;
       result = await request(action, payload);
     }
     console.log(JSON.stringify(result));
