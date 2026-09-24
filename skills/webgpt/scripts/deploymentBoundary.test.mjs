@@ -7,20 +7,29 @@ import { join } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { request, collectTask } from './client.mjs';
 import { grantWorkspace } from './workspace.mjs';
+import { spawn } from 'node:child_process';
+import { observeChild, untilFixture } from './test-fixtures/worker-process.mjs';
 
 const denied = /workspace overlaps worker deployment files/;
-async function fixture(t, { deploy = true } = {}) {
+async function fixture(t, { deploy = true, linkedScripts = false } = {}) {
   const base = fs.realpathSync.native(fs.mkdtempSync(join(tmpdir(), 'webgpt deployment 한글 ')));
   const installed = join(base, 'installed'), scripts = join(installed, 'scripts');
   const deployment = join(installed, 'deploy'), windows = join(deployment, 'windows');
   const dir = join(base, 'runtime'), configFile = join(base, 'config.json');
-  fs.mkdirSync(scripts, { recursive: true });
+  let worker;
+  t.after(async () => { await worker?.close(); fs.rmSync(base, { recursive: true, force: true }); });
+  const nativeScripts = linkedScripts ? join(base, 'external-code', 'scripts') : scripts;
+  fs.mkdirSync(nativeScripts, { recursive: true });
+  if (linkedScripts) {
+    fs.mkdirSync(installed);
+    if (!alias(t, nativeScripts, scripts)) return null;
+  }
   fs.mkdirSync(dir);
   // Include every production module/helper, but no tests or executable service launch.
   const source = fileURLToPath(new URL('.', import.meta.url));
   for (const name of fs.readdirSync(source)) {
     if ((name.endsWith('.mjs') && !name.endsWith('.test.mjs')) || name.endsWith('.ps1'))
-      fs.copyFileSync(join(source, name), join(scripts, name));
+      fs.copyFileSync(join(source, name), join(nativeScripts, name));
   }
   const original = '# inert fixture launcher; never executed\n';
   if (deploy) {
@@ -28,11 +37,10 @@ async function fixture(t, { deploy = true } = {}) {
     fs.writeFileSync(join(windows, 'run-worker-task.ps1'), original);
   }
   const { start } = await import(pathToFileURL(join(scripts, 'worker.mjs')).href);
-  let worker;
   const config = { dataDir: dir };
   const boot = async () => {
     await worker?.close();
-    worker = await start({ dir, port: 0, controlPort: 0, configFile, waitMs: 20 });
+    worker = await start({ dir, port: 0, controlPort: 0, configFile, waitMs: 20, entryPath: join(scripts, 'worker.mjs') });
     config.controlPort = worker.controlPort;
   };
   const admin = (action, payload) => request(action, payload, config);
@@ -54,8 +62,7 @@ async function fixture(t, { deploy = true } = {}) {
     fs.writeFileSync(join(dir, 'state.json'), JSON.stringify(tasks), { mode: 0o600 });
     return tasks[0].token;
   };
-  t.after(async () => { await worker?.close(); fs.rmSync(base, { recursive: true, force: true }); });
-  return { base, installed, deployment, windows, dir, configFile, config, original, boot, admin, register, call, legacy };
+  return { base, installed, scripts, nativeScripts, deployment, windows, dir, configFile, config, original, boot, admin, register, call, legacy, start };
 }
 function alias(t, destination, name) {
   try { fs.symlinkSync(destination, name, process.platform === 'win32' ? 'junction' : 'dir'); return true; }
@@ -184,3 +191,109 @@ for (const location of ['source-copy', 'deploy-copy', 'references']) {
     assert.equal((await f.admin('ready')).ok, true);
   });
 }
+
+for (const mode of ['read', 'edit']) {
+  test(`scripts junction preserves both installation boundaries for ${mode} grants`, async t => {
+    const f = await fixture(t, { linkedScripts: true }); if (!f) return;
+    const nativeDeploy = join(f.nativeScripts, '..', 'deploy');
+    fs.mkdirSync(nativeDeploy);
+    await f.boot();
+    for (const root of [f.installed, f.scripts, f.nativeScripts])
+      await assert.rejects(f.register('code', root, mode), /workspace overlaps running worker code/);
+    for (const root of [f.deployment, f.windows, join(f.windows, 'nested'), nativeDeploy])
+      await assert.rejects(f.register('deployment', root, mode), denied);
+    const independent = join(f.base, 'independent'); fs.mkdirSync(independent);
+    await f.register('independent', independent, mode);
+    assert.equal((await f.admin('ready')).ok, true);
+    assert.equal(fs.readFileSync(join(f.windows, 'run-worker-task.ps1'), 'utf8'), f.original);
+  });
+
+  test(`scripts junction blocks retained ${mode} deployment grants without erasing their tasks`, async t => {
+    const f = await fixture(t, { linkedScripts: true }); if (!f) return;
+    const token = f.legacy('legacy', f.windows, mode);
+    await f.boot();
+    assert.equal((await f.call('get_task', { token })).isError, false);
+    for (const [name, extra] of [
+      ['list_files', { path: '.' }], ['read_file', { path: 'run-worker-task.ps1' }],
+      ['write_file', { path: 'new.txt', text: 'no', expectedSha256: null }],
+      ['delete_file', { path: 'run-worker-task.ps1', expectedSha256: '0'.repeat(64) }],
+    ]) {
+      const result = await f.call(name, { token, ...extra });
+      assert.equal(result.isError, true); assert.match(result.content[0].text, denied);
+    }
+    await assert.rejects(f.admin('ready'), error => error.details.unavailableWorkspaces.includes('legacy'));
+    assert.equal(fs.readFileSync(join(f.windows, 'run-worker-task.ps1'), 'utf8'), f.original);
+    assert.equal(fs.existsSync(join(f.windows, 'new.txt')), false);
+    await f.admin('cancel', { id: 'legacy' });
+    assert.equal((await f.admin('ready')).ok, true);
+  });
+}
+
+test('scripts junction rechecks a newly linked logical deployment target', async t => {
+  const f = await fixture(t, { linkedScripts: true, deploy: false }); if (!f) return;
+  const project = join(f.base, 'later-deployment'); fs.mkdirSync(project);
+  fs.writeFileSync(join(project, 'note.txt'), 'retained fixture');
+  await f.boot();
+  const { token } = await f.register('earlier', project);
+  assert.equal((await f.call('read_file', { token, path: 'note.txt' })).isError, false);
+  if (!alias(t, project, f.deployment)) return;
+  const result = await f.call('read_file', { token, path: 'note.txt' });
+  assert.equal(result.isError, true); assert.match(result.content[0].text, denied);
+});
+
+test('invalid embedding entry paths fail before runtime creation', async t => {
+  const f = await fixture(t); const dir = join(f.base, 'untouched-runtime');
+  for (const entryPath of [null, 12, 'worker.mjs', join(f.base, 'missing.mjs'), join(f.scripts, 'service.mjs')])
+    await assert.rejects(f.start({ dir, port: 0, controlPort: 0, entryPath }), { code: 'CONFIG_INVALID' });
+  assert.equal(fs.existsSync(dir), false);
+});
+
+test('an entrypoint file alias also protects its logical scripts directory', async t => {
+  const f = await fixture(t), scripts = join(f.base, 'entry-alias', 'scripts');
+  fs.mkdirSync(scripts, { recursive: true });
+  const entryPath = join(scripts, 'worker.mjs');
+  try { fs.symlinkSync(join(f.scripts, 'worker.mjs'), entryPath, 'file'); }
+  catch (error) {
+    if (['EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) return t.skip('file aliases are unavailable');
+    throw error;
+  }
+  const worker = await f.start({ dir: f.dir, configFile: f.configFile, port: 0, controlPort: 0, entryPath });
+  try {
+    f.config.controlPort = worker.controlPort;
+    await assert.rejects(f.register('alias-directory', scripts), /workspace overlaps running worker code/);
+  } finally { await worker.close(); }
+});
+
+// Invoke real CLI entrypoints and IPC shutdown in disposable copies. The existing
+// preload changes only test listener ports, including the supervisor's child.
+for (const entry of ['worker', 'service']) test(`${entry} CLI retains scripts-junction deployment protection`, async t => {
+  const f = await fixture(t, { linkedScripts: true }); if (!f) return;
+  fs.writeFileSync(f.configFile, JSON.stringify({ dataDir: f.dir, mcpPort: 12340, controlPort: 12341 }));
+  const preload = new URL('./test-fixtures/worker-process.mjs?ephemeral', import.meta.url).href;
+  const observed = observeChild(spawn(process.execPath, [join(f.scripts, entry + '.mjs'), ...(entry === 'service' ? ['run'] : [])], {
+    env: { ...process.env, WEBGPT_CONFIG: f.configFile, WEBGPT_DATA_DIR: f.dir, NODE_OPTIONS: '--import=' + preload },
+    windowsHide: true, stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+  }));
+  try {
+    await untilFixture(() => observed.listening, {
+      timeoutMs: 10000, label: entry + ' alias CLI', diagnostic: observed.diagnostic,
+      stopped: () => observed.child.exitCode !== null || observed.child.signalCode !== null,
+    });
+    f.config.controlPort = observed.listening.controlPort;
+    await assert.rejects(f.register('deployment', f.windows), denied);
+    const project = join(f.base, 'separate-project'); fs.mkdirSync(project);
+    await f.register('independent', project);
+    assert.equal((await f.admin('ready')).ok, true);
+  } finally {
+    if (observed.child.exitCode === null && observed.child.signalCode === null) {
+      if (entry === 'worker' && observed.child.connected) observed.child.send({ type: 'shutdown' });
+      else {
+        const { requestServiceStop } = await import(pathToFileURL(join(f.scripts, 'service.mjs')).href);
+        requestServiceStop({ ...process.env, WEBGPT_CONFIG: f.configFile, WEBGPT_DATA_DIR: f.dir });
+      }
+    }
+    assert.deepEqual(await observed.exit, [0, null], observed.diagnostic());
+  }
+  assert.equal(fs.existsSync(join(f.dir, 'worker.lock')), false);
+  assert.equal(fs.existsSync(join(f.dir, 'service.lock')), false);
+});

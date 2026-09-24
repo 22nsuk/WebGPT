@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, readdirSync, unlinkSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, readdirSync, unlinkSync, mkdirSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -102,6 +102,34 @@ test('service cannot use a relative configuration or implicit account-profile ru
   writeFileSync(f.file, '{}'); const env = { ...f.env }; delete env.WEBGPT_DATA_DIR;
   await assert.rejects(runService(env), { code: 'CONFIG_INVALID' });
   assert.equal(existsSync(f.config.dataDir), false);
+}));
+
+test('invalid service entry paths fail before runtime creation or child launch', () => fixture(async f => {
+  for (const entryPath of [null, 12, 'service.mjs', join(f.base, 'missing.mjs'), f.file])
+    await assert.rejects(runService(f.env, { entryPath, spawnWorker: () => assert.fail('must not launch') }), { code: 'CONFIG_INVALID' });
+  assert.equal(existsSync(f.config.dataDir), false);
+}));
+
+test('service preserves its entry alias and validates the fixed worker again on restart', () => fixture(async f => {
+  const scripts = join(f.base, 'scripts-alias');
+  symlinkSync(fileURLToPath(new URL('.', import.meta.url)), scripts, process.platform === 'win32' ? 'junction' : 'dir');
+  let attempts = 0;
+  await assert.rejects(runService(f.env, {
+    entryPath: join(scripts, 'service.mjs'), record: () => {},
+    spawnWorker(executable, args) {
+      attempts++;
+      assert.equal(executable, process.execPath);
+      assert.deepEqual(args, [join(scripts, 'worker.mjs')]);
+      return exited(1);
+    },
+    pause: async () => {
+      // Replace only this fixture's alias, never the real scripts directory.
+      unlinkSync(scripts); mkdirSync(scripts);
+      writeFileSync(join(scripts, 'worker.mjs'), 'throw Error("must never execute");');
+    },
+  }), { code: 'CONFIG_INVALID' });
+  assert.equal(attempts, 1);
+  assert.equal(existsSync(join(f.config.dataDir, 'service.lock')), false);
 }));
 
 test('explicit stop during backoff prevents any next worker launch', () => fixture(async f => {

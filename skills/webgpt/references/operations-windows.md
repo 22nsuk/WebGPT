@@ -23,6 +23,22 @@ files; checking the boundary does not create directories. To develop WebGPT, use
 separate source checkout and install reviewed updates while idle. The service never
 starts a browser, Codex, Git, cloudflared or arbitrary user-supplied commands.
 
+The worker and service CLI retain the original absolute entrypoint path as well as
+the native module path. When `scripts/` is a directory alias/junction, both scripts
+locations and their sibling deployment trees remain protected. The supervisor
+preserves that entry path on every restart and verifies that its fixed `worker.mjs`
+sibling still resolves to the reviewed native worker before launching it. A changed
+or mismatching entry path fails with `CONFIG_INVALID` rather than selecting other code.
+
+Programmatic hosts that import through an alias must pass that original absolute
+module filename as `entryPath` to `start({ ..., entryPath })` or
+`runService(env, { entryPath })`. It must resolve to the imported module itself.
+When omitted, the native module location is used; an unrelated embedding host's
+command-line path is never treated as an installation. Node resolves import aliases
+before exposing the module URL, so an omitted alias cannot be discovered afterward.
+No controller request, workspace grant, environment variable or saved-state field
+can set this option.
+
 A previously stored overlapping deployment grant is retained, not silently migrated
 or removed. Its file tools fail and readiness lists its workspace as unavailable;
 `get_task`, supplied inputs, retained evidence and explicit cancellation remain

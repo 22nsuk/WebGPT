@@ -10,6 +10,7 @@ import { inspectPendingResults, storeResult, verifySavedResult } from './results
 import { acquireRuntimeLock, readStateBytes, readStateMarker, createStateMarker, assertNoStateStage, writeStateBytes, parseState, fault, startupExitCode } from './runtime.mjs';
 import { protocolVersions, validateMessage, negotiateProtocol, validateArguments } from './protocol.mjs';
 import { auditFromEnvironment, createAuditWriter } from './audit.mjs';
+import { validatedEntryPath } from './installation.mjs';
 
 const schema = properties => ({type:'object',properties,required:Object.keys(properties),additionalProperties:false});
 const str = {type:'string'};
@@ -22,7 +23,8 @@ export const tools = [
   {name:'read_input',description:'Read one explicitly supplied input by name; no arbitrary filesystem access.',inputSchema:schema({token:str,name:str}),annotations:{readOnlyHint:true,openWorldHint:false}},
   {name:'submit_result',description:'Save the task deliverable, evidence and limitations, and notify the supervisor. No file changes required. Terminal: stops backup checks. Retry identical submission safely. Do not delete the chat.',inputSchema:schema({token:str,status:{type:'string',enum:['completed','failed','cancelled']},summary:str,result:str}),annotations:{readOnlyHint:false,destructiveHint:false,idempotentHint:true,openWorldHint:false}}
 ];
-export async function start({dir,port=43137,controlPort=43139,publicMcp=false,backupMs=900000,waitMs=55000,closeGraceMs=5000,now=Date.now,configFile=configurationFile(),audit=false}={}) {
+export async function start({dir,port=43137,controlPort=43139,publicMcp=false,backupMs=900000,waitMs=55000,closeGraceMs=5000,now=Date.now,configFile=configurationFile(),audit=false,entryPath}={}) {
+  const entryRoot=dirname(validatedEntryPath(import.meta.url,entryPath));
   if(typeof audit!=='boolean')throw fault('CONFIG_INVALID','audit must be boolean');
   if(!Number.isSafeInteger(waitMs)||waitMs<1||waitMs>55000)throw Error('waitMs must be between 1 and 55000');
   if(typeof configFile!=='string'||!isAbsolute(configFile))throw fault('CONFIG_INVALID','configFile must be absolute');
@@ -91,7 +93,7 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
   };
   const updateTask=(task,changes)=>persist(tasks.map(t=>t===task?{...t,...changes}:t));
   const codeRoot=realpathSync.native(fileURLToPath(new URL('.',import.meta.url)));
-  const deploymentRoot=resolve(codeRoot,'../deploy');
+  const deploymentRoots=[...new Set([codeRoot,entryRoot].map(root=>resolve(root,'../deploy')))];
   const canonicalOperationalPath=path=>{
     // Deployment can be omitted from a scripts-only install, and config may
     // not exist yet. Resolve existing ancestors without creating either path.
@@ -112,8 +114,9 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
     // The shipped service launchers live beside scripts, not beneath it. Check
     // both their named location and current native target on every grant/use.
     for(const [protectedRoot,label] of [[realpathSync.native(dir),'private worker data'],[codeRoot,'running worker code'],
-      [deploymentRoot,'worker deployment files'],[canonicalOperationalPath(deploymentRoot),'worker deployment files'],
-      [canonicalOperationalPath(resolve(deploymentRoot,'windows')),'worker deployment files']])
+      [entryRoot,'running worker code'],[canonicalOperationalPath(entryRoot),'running worker code'],
+      ...deploymentRoots.flatMap(root=>[root,canonicalOperationalPath(root),canonicalOperationalPath(resolve(root,'windows'))]
+        .map(path=>[path,'worker deployment files']))])
       for(const rel of [relative(workspaceRoot,protectedRoot),relative(protectedRoot,workspaceRoot)])
         if(rel===''||(!isAbsolute(rel)&&rel!=='..'&&!rel.startsWith('..'+sep)))
           throw Error('workspace overlaps '+label+'; use a separate project root');
@@ -441,7 +444,7 @@ if(process.argv[1]&&process.argv[1]!=='-'&&import.meta.url===pathToFileURL(realp
   for(const signal of ['SIGINT','SIGTERM',...(process.platform==='win32'?['SIGBREAK']:[])])process.on(signal,stop);
   try{config=configuration();}catch(error){console.error(JSON.stringify({event:'startup_failed',code:'CONFIG_INVALID'}));process.exitCode=78;}
   if(config&&!stopRequested)try{
-    service=await start({dir:config.dataDir,port:config.mcpPort,controlPort:config.controlPort,publicMcp:config.publicMcp,audit:auditFromEnvironment()});
+    service=await start({dir:config.dataDir,port:config.mcpPort,controlPort:config.controlPort,publicMcp:config.publicMcp,audit:auditFromEnvironment(),entryPath:resolve(process.argv[1])});
     if(stopRequested)await stop();
     else console.log(JSON.stringify({event:'listening',mcpPort:service.mcpPort,controlPort:service.controlPort}));
   }catch(error){
