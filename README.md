@@ -144,7 +144,7 @@ Confirmed dead local lock owners can be recovered with the old lock preserved. A
 local `service.mjs` launcher restarts only its own worker within a finite retry budget and
 supports graceful shutdown. These commands do not add MCP tools or shell access. Keep the
 running installation separate from editable source checkouts; workspace grants cannot overlap
-the running scripts directory or private runtime.
+the running scripts directory, sibling deployment files or private runtime.
 
 Operational configuration is also excluded from read/edit workspace grants, including
 canonical aliases and future configuration paths. Recovery checks verify original backup

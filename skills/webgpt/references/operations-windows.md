@@ -14,10 +14,24 @@ client, runtime helper and trusted service launcher on the same reviewed revisio
 The optional `scripts/service.mjs run` launcher starts only its sibling `worker.mjs`
 with the current absolute Node executable and no shell. It is a local parent
 facility, not a general command runner or an MCP capability. Workspace grants
-cannot contain or sit inside the running scripts directory, so delegated edits
-cannot self-update code that an unattended restart would execute. To develop WebGPT,
-use a separate source checkout and install reviewed updates while idle. It never starts a
-browser, Codex, Git, cloudflared or arbitrary user-supplied commands.
+cannot contain or sit inside the running `scripts/` directory or its sibling
+`deploy/` tree, which contains the shipped Windows launchers and service templates.
+Both read and edit grants are rejected. The named deployment tree and native targets
+of `deploy/` and `deploy/windows/` are checked at registration and each file-tool use,
+including directory aliases/junctions. A scripts-only installation can omit deployment
+files; checking the boundary does not create directories. To develop WebGPT, use a
+separate source checkout and install reviewed updates while idle. The service never
+starts a browser, Codex, Git, cloudflared or arbitrary user-supplied commands.
+
+A previously stored overlapping deployment grant is retained, not silently migrated
+or removed. Its file tools fail and readiness lists its workspace as unavailable;
+`get_task`, supplied inputs, retained evidence and explicit cancellation remain
+available. Independent tasks and separate source copies (including their own `deploy/`
+directories) remain usable. Normal task state, result collection and dispatch are
+unchanged. This protects the known installation layout, not every executable the OS
+could run: externally copied/custom wrappers, service definitions and their aliases
+must remain outside grants under the operator's existing ACL/maintenance policy.
+Do not treat this check as permission to install, restart, relink or update a service.
 
 The worker and its controller still bind exclusively to `127.0.0.1`. A tunnel may
 forward only the MCP listener. Never route the controller, readiness, reconciliation

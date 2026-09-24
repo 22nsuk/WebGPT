@@ -91,10 +91,11 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
   };
   const updateTask=(task,changes)=>persist(tasks.map(t=>t===task?{...t,...changes}:t));
   const codeRoot=realpathSync.native(fileURLToPath(new URL('.',import.meta.url)));
-  const canonicalConfigFile=()=>{
-    // Protect a future config too. Resolve existing ancestors so a directory
-    // alias cannot hide an in-project target, even before config.json exists.
-    let cursor=resolve(configFile);const suffix=[];
+  const deploymentRoot=resolve(codeRoot,'../deploy');
+  const canonicalOperationalPath=path=>{
+    // Deployment can be omitted from a scripts-only install, and config may
+    // not exist yet. Resolve existing ancestors without creating either path.
+    let cursor=resolve(path);const suffix=[];
     for(;;){
       try{lstatSync(cursor);}catch(error){
         if(error.code!=='ENOENT'||dirname(cursor)===cursor)throw error;
@@ -108,13 +109,17 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
     const workspaceRoot=realpathSync.native(workspace.root);
     // An unattended restart must never execute code modified through its own grant.
     // Use a separate source checkout to edit WebGPT, not the running installation.
-    for(const [protectedRoot,label] of [[realpathSync.native(dir),'private worker data'],[codeRoot,'running worker code']])
+    // The shipped service launchers live beside scripts, not beneath it. Check
+    // both their named location and current native target on every grant/use.
+    for(const [protectedRoot,label] of [[realpathSync.native(dir),'private worker data'],[codeRoot,'running worker code'],
+      [deploymentRoot,'worker deployment files'],[canonicalOperationalPath(deploymentRoot),'worker deployment files'],
+      [canonicalOperationalPath(resolve(deploymentRoot,'windows')),'worker deployment files']])
       for(const rel of [relative(workspaceRoot,protectedRoot),relative(protectedRoot,workspaceRoot)])
         if(rel===''||(!isAbsolute(rel)&&rel!=='..'&&!rel.startsWith('..'+sep)))
           throw Error('workspace overlaps '+label+'; use a separate project root');
     // Configuration is operational authority, including publicMcp and dataDir.
     // It may live outside runtime; protect both its named path and actual target.
-    for(const protectedFile of [resolve(configFile),canonicalConfigFile()]){
+    for(const protectedFile of [resolve(configFile),canonicalOperationalPath(configFile)]){
       const rel=relative(workspaceRoot,protectedFile);
       if(rel===''||(!isAbsolute(rel)&&rel!=='..'&&!rel.startsWith('..'+sep)))
         throw Error('workspace overlaps worker configuration; use a separate project root');
