@@ -372,6 +372,10 @@ For an authorized code update, complete these steps in order:
    those logs as a stopped snapshot. Preserve all evidence if backup verification fails.
 5. Replace only the stopped installation with the complete reviewed revision; verify
    files before restarting with the same intended identity, config, data and ports.
+   Include the complete `scripts/` directory and its shipped helpers, including
+   `installation.mjs`, which is required by both `worker.mjs` and `service.mjs`.
+   Do not assemble a partial update from selected entrypoints; use the matching
+   [installation file guidance](setup.md) and verify the candidate inventory.
    For a code-only update, keep the healthy existing tunnel and ChatGPT connection.
    Do not bundle account/ACL, credential, service, DNS or authentication changes into
    the replacement. In particular, restarting a Quick Tunnel changes its origin.

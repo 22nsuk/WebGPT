@@ -162,9 +162,16 @@ recovery guards stop startup for inspection. Never delete an unverified lock or 
 See [operations-windows.md](operations-windows.md) for the optional bounded service launcher,
 Windows deployment prerequisites, graceful stop and parent reconciliation.
 
-The updated installation includes `scripts/protocol.mjs`, `scripts/runtime.mjs` and
-`scripts/results.mjs`; do not copy only worker.mjs. Preserve and reconcile interrupted
-result candidates as described in [recovery-integrity.md](recovery-integrity.md).
+Update the complete `scripts/` directory from the same reviewed revision, including
+`worker.mjs`, `client.mjs`, `service.mjs`, `installation.mjs`, `protocol.mjs`,
+`runtime.mjs`, `results.mjs` and all other shipped helpers, including the Windows
+PowerShell helpers. This is not a minimal file list: do not copy only selected modules.
+Both `worker.mjs` and `service.mjs` import `installation.mjs` unconditionally; omitting
+it causes `ERR_MODULE_NOT_FOUND` before startup. Follow the stopped-installation
+[update procedure](operations-windows.md#parent-resume-transition-and-rollback)
+and verify the complete candidate file inventory before restarting.
+Preserve and reconcile interrupted result candidates as described in
+[recovery-integrity.md](recovery-integrity.md).
 In a local MCP probe, confirm server version `1.4.1-fork.4`, protocol negotiation and an empty
 `ping` result. Missing or unsupported protocol fields are not evidence of browser readiness.
 Refresh the connection after updating the identified idle service, and still run the real
