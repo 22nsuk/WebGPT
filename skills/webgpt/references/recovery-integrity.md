@@ -93,6 +93,23 @@ worker is running, `ready` and `reconcile` detect a remaining stage and report
 inspection remains available when committed state is intact. Unlike a per-task
 result conflict, the shared state stage can block persistence for every task.
 
+Before a new `write_file` or `delete_file`, the worker checks for an existing state
+stage. Any stage (including an empty file, directory or dangling link), or an error
+inspecting it, blocks the operation before project parent creation, backups, journals
+or file changes. The same storage-failure path interrupts waits and marks readiness
+unavailable. This is a shared persistence obstruction, so it blocks new file mutations
+for all tasks, not just the task associated with an interrupted transition. Task/input
+inspection and permitted file reads/listings remain available with valid committed state.
+
+This preflight does not delete, parse or promote the candidate, and does not disable
+the writer's explicit byte-identical controller retry. A caller may deliberately finish
+the original transition within the same live worker under the rules above. Result
+submission keeps its separate candidate-preservation/retry contract; it is not a new
+project mutation. Do not treat a candidate or a successful probe as permission to replay
+an edit. A storage failure first arising after this check can still leave an applied
+project change with an uncommitted receipt; existing backups and journals remain necessary.
+The preflight is not a cross-file transaction or a guarantee against concurrent OS changes.
+
 For offline recovery, stop new dispatch and the worker/restart owner, then preserve
 both state files, results and recovery records in the private backup. Compare the
 candidate with committed state and the retained task/collection evidence. Have the

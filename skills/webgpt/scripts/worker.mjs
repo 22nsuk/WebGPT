@@ -222,6 +222,10 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
       if(inspectPendingResults(t,dir).length)throw fault('RESULT_CONFLICT','uncommitted result: reconcile before further edits');
       flagUnrecordedChanges(t);
       if(t.recoveryRequired?.length)throw Error('interrupted mutation: supervisor recovery required before further edits');
+      // A pre-existing state candidate cannot record a new file receipt. Refuse
+      // before creating parents, backups or changing project bytes. Keep explicit
+      // same-byte controller/result retries available for their existing recovery.
+      try{assertNoStateStage(statePath);}catch(error){throw storageError(error);}
       try {
         const receipt=changeWorkspace(t.workspace,dir,t.id,args,name==='delete_file');
         updateTask(t,{changes:[...(t.changes??[]),receipt]});

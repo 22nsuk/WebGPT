@@ -1,4 +1,5 @@
 import { test } from 'node:test';
+import { withStateWriteFailure } from './test-fixtures/state-write-failure.mjs';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, readdirSync, existsSync, unlinkSync, renameSync } from 'node:fs';
 import { tmpdir, hostname } from 'node:os';
@@ -249,12 +250,13 @@ test('corrupt journal blocks the affected task without replay or stopping unrela
   assert.equal(snapshot.tasks.find(t => t.id === 'a').attention, 'inspect_recovery');
 }));
 
-test('an applied but unrecorded mutation is restored from its receipt after restart without replaying project writes', () => fixture(async f => {
-  const a = await f.register('a', 'edit'); mkdirSync(join(f.dir, 'state.json.tmp'));
-  assert.equal((await f.call('write_file', { token: a.token, path: 'a.txt', text: 'first', expectedSha256: null })).isError, true);
+test('an applied but unrecorded mutation is restored from its receipt after restart without replaying project writes', t => fixture(async f => {
+  const a = await f.register('a', 'edit');
+  const changed = await withStateWriteFailure(t, f.dir, () => f.call('write_file', { token: a.token, path: 'a.txt', text: 'first', expectedSha256: null }));
+  assert.equal(changed.isError, true);
   assert.equal(readFileSync(join(f.root, 'a.txt'), 'utf8'), 'first');
   writeFileSync(join(f.root, 'a.txt'), 'later parent edit');
-  rmSync(join(f.dir, 'state.json.tmp'), { recursive: true }); await f.restart();
+  await f.restart();
   const task = (await f.call('get_task', { token: a.token })).structuredContent;
   assert.equal(task.changes.length, 1); assert.deepEqual(task.recoveryRequired, []);
   assert.equal(readFileSync(join(f.root, 'a.txt'), 'utf8'), 'later parent edit');
