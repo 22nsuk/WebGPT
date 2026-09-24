@@ -141,50 +141,65 @@ export async function collectTask(id, config = configuration(), { signal, resume
   const event = result.events.find(event => event.id === id);
   if (!event) throw Error('task has no uncollected result');
   verifyResult(event, config);
-  await request('ack', { id }, config, { signal });
+  const after = await acknowledgeCollection(id, event, config, { signal });
+  if (after.discarded)
+    throw Object.assign(Error('result was discarded during collection; inspect with collect --resume'), {
+      code: 'COLLECTION_DISCARDED',
+    });
   return { ...event, integrity: 'verified', collected: true };
 }
 
 // Resume only from controller state, never from filenames or parent bookkeeping.
 // A retained result is verified again even when its queue event was already retired.
 async function resumeCollection(id, config, { signal }) {
-  const inspect = async () => {
-    const snapshot = await reconcileTasks(config, { signal });
-    if (snapshot.health?.issues?.includes('STATE_INVALID'))
-      throw Object.assign(Error('controller state is invalid; preserve evidence and inspect'), { code: 'STATE_INVALID' });
-    const task = snapshot.tasks.find(task => task.id === id);
-    if (!task) throw Error('unknown task');
-    if (task.status === 'running')
-      throw Object.assign(Error('task has no uncollected result: task is still running'), { code: 'TASK_RUNNING' });
-    if (task.artifact || task.sha256) verifyResult(task, config);
-    else if (task.status !== 'cancelled' || !task.collected)
-      throw Error('task has no saved result');
-    return { ...task, health: snapshot.health, browserChecked: false };
-  };
   const finish = task => ({ ...task, disposition: task.discarded ? 'discarded'
     : !task.artifact ? 'cancelled_without_result' : 'already_collected' });
-  const before = await inspect();
+  const before = await inspectCollection(id, config, { signal });
   if (before.collected) return finish(before);
   if (['inspect_recovery', 'inspect_uncommitted_result'].includes(before.attention))
     throw Object.assign(Error('saved result requires recovery inspection before collection'), {
       code: 'COLLECTION_RECOVERY_REQUIRED', attention: before.attention, reconciliation: before,
     });
+  const after = await acknowledgeCollection(id, before, config, { signal });
+  const result = finish(after);
+  return { ...result, disposition: after.discarded ? 'discarded' : 'collected' };
+}
+
+// Both collection paths use the same authoritative post-ack observation. A
+// successful HTTP reply alone cannot establish retirement or its disposition.
+async function inspectCollection(id, config, { signal }) {
+  const snapshot = await reconcileTasks(config, { signal });
+  if (snapshot.health?.issues?.includes('STATE_INVALID'))
+    throw Object.assign(Error('controller state is invalid; preserve evidence and inspect'), { code: 'STATE_INVALID' });
+  const task = snapshot.tasks.find(task => task.id === id);
+  if (!task) throw Error('unknown task');
+  if (task.status === 'running')
+    throw Object.assign(Error('task has no uncollected result: task is still running'), { code: 'TASK_RUNNING' });
+  if (task.artifact || task.sha256) verifyResult(task, config);
+  else if (task.status !== 'cancelled' || !task.collected)
+    throw Error('task has no saved result');
+  return { ...task, health: snapshot.health, browserChecked: false };
+}
+
+async function acknowledgeCollection(id, before, config, { signal }) {
   let ackError;
   try { await request('ack', { id }, config, { signal }); }
   catch (error) {
     // A lost transport response may follow a committed acknowledgment. Observe
-    // once; never retry the write here. Other failures keep their existing contract.
-    if (!retryableControllerError(error) || signal?.aborted) throw error;
+    // once; never retry the write here. Explicit HTTP rejections, including the
+    // wait-retryable SHUTTING_DOWN response, are not ambiguous transport failures.
+    if (error.statusCode !== undefined || !retryableControllerError(error) || signal?.aborted) throw error;
     ackError = error;
   }
   let after;
-  try { after = await inspect(); }
+  try { after = await inspectCollection(id, config, { signal }); }
   catch (error) {
+    if (signal?.aborted) throw error;
     throw Object.assign(Error('collection outcome requires reconciliation; resume after inspecting controller state', { cause: error }), {
       code: 'COLLECTION_UNCONFIRMED', acknowledgment: ackError ? 'unknown' : 'accepted',
     });
   }
-  if (!after.collected) {
+  if (after.collected !== true) {
     throw Object.assign(Error('controller did not confirm collection; preserve evidence and reconcile', { cause: ackError }), {
       code: 'COLLECTION_UNCONFIRMED', acknowledgment: ackError ? 'unknown' : 'accepted',
     });
@@ -193,8 +208,7 @@ async function resumeCollection(id, config, { signal }) {
     throw Object.assign(Error('saved result changed during collection; preserve evidence and reconcile'), {
       code: 'COLLECTION_UNCONFIRMED', acknowledgment: ackError ? 'unknown' : 'accepted',
     });
-  const result = finish(after);
-  return { ...result, disposition: after.discarded ? 'discarded' : 'collected' };
+  return after;
 }
 
 // Read-only reconciliation. Never acknowledges, cancels, re-registers or opens a chat.
@@ -252,9 +266,9 @@ if (process.argv[1] && process.argv[1] !== '-' && import.meta.url === pathToFile
     if (action === 'dispatch') {
       const { dispatchDiagnostic } = await import('./dispatch.mjs');
       console.error('WebGPT: ' + JSON.stringify(dispatchDiagnostic(error)));
-    } else if (action === 'collect' && args[0] === '--resume'
-        && ['COLLECTION_UNCONFIRMED', 'COLLECTION_RECOVERY_REQUIRED'].includes(error.code)) {
-      // Only new resume diagnostics are structured; never serialize raw causes or paths.
+    } else if (action === 'collect'
+        && ['COLLECTION_UNCONFIRMED', 'COLLECTION_RECOVERY_REQUIRED', 'COLLECTION_DISCARDED'].includes(error.code)) {
+      // Collection diagnostics never serialize raw causes, snapshots or paths.
       console.error('WebGPT: ' + JSON.stringify({ code: error.code, message: error.message,
         ...(['accepted', 'unknown'].includes(error.acknowledgment) ? { acknowledgment: error.acknowledgment } : {}),
         ...(['inspect_recovery', 'inspect_uncommitted_result'].includes(error.attention) ? { attention: error.attention } : {}),
