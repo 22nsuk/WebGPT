@@ -1,4 +1,5 @@
 import { test } from 'node:test';
+import { withStateWriteFailure } from './test-fixtures/state-write-failure.mjs';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, existsSync, rmdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -139,12 +140,10 @@ test('failed cancellation preserves registration and can be retried durably', ()
   assert.equal((await f.call('get_task', { token })).isError, true);
 }));
 
-test('an applied file change with unsaved task state blocks later edits until recovery', () => fixture(async f => {
+test('an applied file change with unsaved task state blocks later edits until recovery', t => fixture(async f => {
   const { token } = await f.register('edit', { workspace: { root: f.root, mode: 'edit' } });
-  f.blockState();
-  const changed = await f.call('write_file', { token, path: 'first.txt', text: 'preserve this', expectedSha256: null });
+  const changed = await withStateWriteFailure(t, f.dir, () => f.call('write_file', { token, path: 'first.txt', text: 'preserve this', expectedSha256: null }));
   assert.equal(changed.isError, true); assert.equal(readFileSync(join(f.root, 'first.txt'), 'utf8'), 'preserve this');
-  f.unblockState();
   const second = await f.call('write_file', { token, path: 'second.txt', text: 'must not apply', expectedSha256: null });
   assert.equal(second.isError, true); assert.equal(existsSync(join(f.root, 'second.txt')), false);
   assert.equal((await f.complete(token)).isError, true);
@@ -307,12 +306,12 @@ test('failed backup-check persistence does not move a live deadline', () => fixt
   assert.equal((await f.call('get_task', { token })).structuredContent.status, 'running');
 }));
 
-test('only the failing file task is blocked; unrelated tasks can still complete after storage recovers', () => fixture(async f => {
+test('only the failing file task is blocked; unrelated tasks can still complete after storage recovers', t => fixture(async f => {
   const editor = await f.register('editor', { workspace: { root: f.root, mode: 'edit' } });
   const other = await f.register('other');
-  f.blockState();
-  assert.equal((await f.call('write_file', { token: editor.token, path: 'saved.txt', text: 'keep', expectedSha256: null })).isError, true);
-  f.unblockState();
+  const changed = await withStateWriteFailure(t, f.dir, () => f.call('write_file', { token: editor.token, path: 'saved.txt', text: 'keep', expectedSha256: null }));
+  assert.equal(changed.isError, true);
+  assert.equal(readFileSync(join(f.root, 'saved.txt'), 'utf8'), 'keep');
   assert.equal((await f.complete(other.token)).isError, false);
   await collectTask('other', f.config);
   const state = await f.admin('status');

@@ -78,9 +78,13 @@ rejected; Windows still relies on the private runtime directory's configured ACL
 Within the same live worker, an explicit transition may reuse a regular single-link
 stage only when its bytes exactly match the proposed next state. The writer flushes
 those bytes again before replacement. A repeated API payload is not necessarily
-byte-identical state: registration can generate a new token/deadline, and another
-transition may change the inventory. Do not retry unrelated actions to clear a
-conflict. Failed state publication does not report success, retire tokens or publish
+byte-identical state: registration can generate a new token/deadline, `/checked`
+recomputes `nextCheck` from the current time, and another transition may change the
+inventory. After a failed `/checked` publication, a later retry normally conflicts
+with the retained candidate and requires the deliberate offline recovery below.
+An `/ack` retry can remain byte-identical when the inventory is otherwise unchanged.
+Do not retry unrelated actions to clear a conflict. Failed state publication does
+not report success, retire tokens or publish
 the proposed in-memory transition. Project edits and result bytes have separate
 journals/commits and may already exist; inspect those rather than repeating them.
 
@@ -92,6 +96,25 @@ worker is running, `ready` and `reconcile` detect a remaining stage and report
 `STORAGE_UNAVAILABLE` with `storage.code: STATE_STAGING_CONFLICT`. Read-only task
 inspection remains available when committed state is intact. Unlike a per-task
 result conflict, the shared state stage can block persistence for every task.
+
+Before a new `write_file` or `delete_file`, the worker checks for an existing state
+stage. Any stage (including an empty file, directory or dangling link), or an error
+inspecting it, blocks the operation before project parent creation, backups, journals
+or file changes. The same storage-failure path interrupts waits and marks readiness
+unavailable. This is a shared persistence obstruction, so it blocks new file mutations
+for all tasks, not just the task associated with an interrupted transition. Task/input
+inspection and permitted file reads/listings remain available with valid committed state.
+
+This preflight does not delete, parse or promote the candidate, and does not disable
+the writer's explicit byte-identical controller retry. A caller may deliberately finish
+the original transition within the same live worker only when the next state still
+matches the candidate exactly; repeating a time-dependent `/checked` payload does
+not guarantee that. Otherwise preserve the obstruction for offline recovery. Result
+submission keeps its separate candidate-preservation/retry contract; it is not a new
+project mutation. Do not treat a candidate or a successful probe as permission to replay
+an edit. A storage failure first arising after this check can still leave an applied
+project change with an uncommitted receipt; existing backups and journals remain necessary.
+The preflight is not a cross-file transaction or a guarantee against concurrent OS changes.
 
 For offline recovery, stop new dispatch and the worker/restart owner, then preserve
 both state files, results and recovery records in the private backup. Compare the
