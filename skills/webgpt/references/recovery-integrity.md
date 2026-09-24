@@ -153,7 +153,7 @@ Stop new dispatch, inventory and preserve owned unfinished work with the install
 revision's supported commands, then stop the worker and its restart owner before
 swapping code. Follow the [transition and rollback procedure](operations-windows.md#parent-resume-transition-and-rollback)
 for verified process exit, a consistent private backup and legacy command limitations.
-Run the repository's full `node --test` workflow and
+Run the repository's full `node tests/run.mjs` workflow and
 platform-specific service probes before production deployment. The focused regression
 file is `scripts/recoveryIntegrity.test.mjs`; it tests only disposable temporary data
 and owned local child processes, without ChatGPT, DNS or service installation.

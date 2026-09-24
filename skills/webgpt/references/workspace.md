@@ -323,4 +323,4 @@ an unconfirmed Windows preparation also retains any stage because its creation w
 Do not retry or delete that evidence automatically. Windows edits use two short helper
 processes; the helper checks the content revision again before replacement.
 
-Test locally: `node --test --test-reporter=tap` from the installed skill directory; Node discovers the test files without shell glob expansion.
+Test locally: `node --test --test-concurrency=2 --test-reporter=tap` from the installed skill directory; Node discovers the test files without shell glob expansion.

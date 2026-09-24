@@ -30,7 +30,7 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
           package-manager-cache: false
-      # Node discovers *.test.mjs itself, without shell-dependent glob expansion.
-      # These tests use temporary files and local HTTP; no ChatGPT login is needed.
+      # Run repository and standalone installation suites in separate phases.
+      # Each phase limits test-file processes; assertions and deadlines stay intact.
       - name: Run tests
-        run: node --test --test-reporter=tap
+        run: node tests/run.mjs

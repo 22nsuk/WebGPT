@@ -40,6 +40,13 @@ test('CI preserves its least-privilege, uncached test-only configuration', () =>
   assert.match(workflow, /^          package-manager-cache: false\s*$/m);
   assert.match(workflow, /^    timeout-minutes: 10\s*$/m);
   assert.match(workflow, /^  cancel-in-progress: true\s*$/m);
-  assert.match(workflow, /^        run: node --test --test-reporter=tap\s*$/m);
+  assert.match(workflow, /^        run: node tests\/run\.mjs\s*$/m);
   assert.doesNotMatch(workflow, /pull_request_target:|workflow_run:|write-all|id-token:|secrets\.|self-hosted/);
+});
+
+test('both test layouts retain the explicit test-file concurrency budget', () => {
+  for (const name of ['run.mjs', 'installation.test.mjs']) {
+    const source = readFileSync(new URL(name, import.meta.url), 'utf8');
+    assert.match(source, /'--test', '--test-concurrency=2', '--test-reporter=tap'/);
+  }
 });

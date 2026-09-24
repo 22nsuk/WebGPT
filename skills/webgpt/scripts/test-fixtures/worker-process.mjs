@@ -24,6 +24,7 @@ if (new URL(import.meta.url).search === '?ephemeral') {
 export function observeChild(child, onListening = () => {}) {
   let stdout = '', stderr = '', pending = '';
   const observed = { child, listening: null, exit: once(child, 'exit'),
+    closed: new Promise(resolve => child.once('close', (code, signal) => resolve([code, signal]))),
     diagnostic: () => JSON.stringify({ pid: child.pid, exitCode: child.exitCode,
       signalCode: child.signalCode, stdout, stderr }),
   };

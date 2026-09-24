@@ -157,5 +157,10 @@ ACLs, fixed tunnel addresses and browser/Codex resumption are separate deploymen
 
 ## CI maintenance
 
+Run `node tests/run.mjs` from the repository to test the checkout and then a complete
+standalone skill copy. Each phase runs at most two test files concurrently; real
+worker/process concurrency inside individual tests remains enabled. The phases do
+not compete with each other for CPU, filesystem or process startup resources.
+
 See [CI dependency maintenance](.github/ci-maintenance.md) for GitHub Actions version
 updates, pinned action revisions and test-workflow safeguards.
