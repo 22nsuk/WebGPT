@@ -29,7 +29,7 @@ test('installed skill tests do not depend on surrounding repository files', asyn
     // Exercise the documented installed-skill command so every shipped test must be self-contained.
     let stdout;
     try {
-      ({ stdout } = await execute(process.execPath, ['--test', '--test-reporter=tap'], {
+      ({ stdout } = await execute(process.execPath, ['--test', '--test-concurrency=2', '--test-reporter=tap'], {
         // This runs the entire shipped suite (500+ tests), including native process
         // fixtures. Successful hosted Windows runs already take about 50 seconds;
         // allow runner variance without changing individual test deadlines.
@@ -46,5 +46,6 @@ test('installed skill tests do not depend on surrounding repository files', asyn
     assert.match(stdout, /# tests [1-9]\d*\b/);
     assert.match(stdout, /# pass [1-9]\d*\b/);
     assert.match(stdout, /# fail 0\b/);
+    t.diagnostic('Installed suite: ' + stdout.match(/^# (?:tests|pass|fail|cancelled|skipped) \d+$/gm).join('; '));
   } finally { rmSync(base, { recursive: true, force: true }); }
 });

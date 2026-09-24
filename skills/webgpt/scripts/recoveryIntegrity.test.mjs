@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync, unlinkSync, existsSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -244,7 +245,7 @@ for (const value of ['invalid', [{ id: 'outside-scope' }]]) test(`new result rec
   } finally { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('actual supervisor death permits verified drain or dead-owner recovery and resumes saved tasks', async () => {
+test('actual supervisor death permits verified drain or dead-owner recovery and resumes saved tasks', async t => {
   const { requestServiceStop } = await import('./service.mjs');
   const base = mkdtempSync(join(tmpdir(), 'webgpt-owner-death-')), dir = join(base, 'runtime'), configPath = join(base, 'config.json');
   const config = { dataDir: dir, mcpPort: 12340, controlPort: 12341 };
@@ -268,13 +269,14 @@ test('actual supervisor death permits verified drain or dead-owner recovery and 
       if (value.ports) { item.ports = value.ports; config.mcpPort = value.ports.mcpPort; config.controlPort = value.ports.controlPort; }
     }); launches.push(item); return item;
   };
-  const until = (predicate, owner) => untilFixture(predicate, { timeoutMs: 4000, label: 'supervisor',
+  const until = (predicate, owner, label) => untilFixture(predicate, { timeoutMs: 4000, label,
     diagnostic: () => launches.map(item => item.diagnostic()).join('\n'),
     stopped: () => owner && (owner.parent.exitCode !== null || owner.parent.signalCode !== null),
   });
   const ready = owner => async () => owner.ports && (await request('ready', undefined, config, { timeoutMs: 250 })).ok;
+  let failed = false;
   try {
-    const first = launch(); await until(ready(first), first);
+    const first = launch(); await until(ready(first), first, 'initial supervisor readiness');
     const task = await request('register', { id: 'retained', instructions: '', inputs: {} }, config);
     assert.ok(Number.isSafeInteger(first.workerPid));
     first.parent.kill('SIGKILL'); await first.exit;
@@ -282,13 +284,13 @@ test('actual supervisor death permits verified drain or dead-owner recovery and 
     // A surviving child must drain through IPC; a killed child leaves ownership
     // evidence that the replacement must verify and archive before starting.
     const workerLock = join(dir, 'worker.lock');
-    await until(() => !existsSync(workerLock) || processState(first.workerPid) === 'dead');
+    await until(() => !existsSync(workerLock) || processState(first.workerPid) === 'dead', undefined, 'orphan worker drain');
     const needsRecovery = existsSync(workerLock);
     if (needsRecovery) {
       assert.equal(processState(first.workerPid), 'dead');
       assert.equal(JSON.parse(readFileSync(join(workerLock, 'owner.json'))).pid, first.workerPid);
     }
-    const second = launch(); await until(ready(second), second);
+    const second = launch(); await until(ready(second), second, 'replacement supervisor readiness');
     assert.notEqual(second.workerPid, first.workerPid);
     if (needsRecovery) {
       const archives = readdirSync(dir).filter(name => name.startsWith('worker.lock.stale-'));
@@ -302,17 +304,31 @@ test('actual supervisor death permits verified drain or dead-owner recovery and 
     requestServiceStop(env); await second.exit;
     assert.equal(existsSync(join(dir, 'worker.lock')), false);
     assert.equal(existsSync(join(dir, 'service.lock')), false);
+  } catch (error) {
+    failed = true; throw error;
   } finally {
     // Only descendants created by this fixture may be killed; never a service
     // discovered by a port or a PID taken from unrelated runtime data.
-    for (const item of launches) {
-      if (item.parent.exitCode === null && item.parent.signalCode === null) { item.parent.kill('SIGKILL'); await item.exit; }
-      if (item.workerPid && existsSync(join(dir, 'worker.lock', 'owner.json'))) {
-        const owner = JSON.parse(readFileSync(join(dir, 'worker.lock', 'owner.json'), 'utf8'));
-        if (owner.pid === item.workerPid) { try { process.kill(item.workerPid, 'SIGKILL'); } catch (e) { if (e.code !== 'ESRCH') throw e; } }
+    try {
+      for (const item of launches) {
+        if (item.parent.exitCode === null && item.parent.signalCode === null) item.parent.kill('SIGKILL');
+        await item.closed;
+        if (item.workerPid && existsSync(join(dir, 'worker.lock', 'owner.json'))) {
+          const owner = JSON.parse(readFileSync(join(dir, 'worker.lock', 'owner.json'), 'utf8'));
+          if (owner.pid === item.workerPid) { try { process.kill(item.workerPid, 'SIGKILL'); } catch (e) { if (e.code !== 'ESRCH') throw e; } }
+        }
+        // Lock release can precede process exit. Do not remove its working
+        // directory while a known descendant is still alive or unverifiable.
+        if (item.workerPid) await until(() => processState(item.workerPid) === 'dead', undefined, 'descendant termination');
       }
+      // Windows can report ESRCH before termination releases the cwd handle.
+      // Retry only filesystem cleanup, with a finite teardown allowance.
+      await rm(base, { recursive: true, force: true,
+        maxRetries: process.platform === 'win32' ? 5 : 0, retryDelay: 25 });
+    } catch (error) {
+      if (!failed) throw error;
+      t.diagnostic('supervisor fixture cleanup also failed: ' + (error.stack ?? error));
     }
-    rmSync(base, { recursive: true, force: true });
   }
 });
 

@@ -1,5 +1,24 @@
 # CI dependency maintenance
 
+## Test execution budget
+
+CI and local repository validation use `node tests/run.mjs`. The runner discovers
+all shipped and repository `*.test.mjs` files without shell globs, runs repository
+tests first, then the standalone installation test. The installation test still
+copies the complete skill and runs every shipped test with no surrounding repo.
+Both test commands use `--test-concurrency=2`: at most two active test files, plus
+their real worker/supervisor/PowerShell children. The installed-suite wrapper only
+waits while its child runner executes. This avoids overlapping whole-suite runs
+and host-CPU-dependent fan-out; it does not serialize concurrency scenarios inside
+tests, retry failed tests, skip checks or extend request/test/job deadlines.
+
+For an installed skill alone, run
+`node --test --test-concurrency=2 --test-reporter=tap` from its directory.
+Bare `node --test` uses Node's CPU-dependent concurrency and can overlap the
+repository's installation test with other files; use the runner above for CI parity.
+
+## Action dependencies
+
 The test workflow pins executable actions to full 40-character commit SHAs.
 Keep a release-version comment on the same line so reviews and Dependabot can
 identify the release. Major and patch version tags alone are not fixed revisions.

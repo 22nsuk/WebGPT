@@ -250,7 +250,7 @@ do not claim direct editing works or apply WebGPT's patches as a substitute.
 
 ## 4. Verify the installed path
 
-Run `node --test --test-reporter=tap` from the installed skill directory (no shell glob needed).
+Run `node --test --test-concurrency=2 --test-reporter=tap` from the installed skill directory (no shell glob needed).
 Before controller registration, run `node <skill>/scripts/client.mjs dispatch preflight` in ordinary
 Node. Keep ledger/lock/controller work in Node and browser actions in documented browser tools.
 Initialize the actual browser tool before creating a task or entering a prompt. If initialization
