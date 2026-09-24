@@ -274,6 +274,20 @@ test('actual supervisor death permits verified drain or dead-owner recovery and 
     stopped: () => owner && (owner.parent.exitCode !== null || owner.parent.signalCode !== null),
   });
   const ready = owner => async () => owner.ports && (await request('ready', undefined, config, { timeoutMs: 250 })).ok;
+  const terminated = pid => {
+    if (processState(pid) === 'dead') return true;
+    if (process.platform !== 'linux') return false;
+    // An orphan can remain a zombie under a container init that has not reaped
+    // it. It holds no cwd/files, though kill(pid, 0) still succeeds. This is only
+    // fixture teardown evidence, never authority to recover a production lock.
+    try {
+      const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+      return stat.slice(stat.lastIndexOf(')') + 2).startsWith('Z ');
+    } catch (error) {
+      if (error.code === 'ENOENT') return processState(pid) === 'dead';
+      throw error;
+    }
+  };
   let failed = false;
   try {
     const first = launch(); await until(ready(first), first, 'initial supervisor readiness');
@@ -319,7 +333,7 @@ test('actual supervisor death permits verified drain or dead-owner recovery and 
         }
         // Lock release can precede process exit. Do not remove its working
         // directory while a known descendant is still alive or unverifiable.
-        if (item.workerPid) await until(() => processState(item.workerPid) === 'dead', undefined, 'descendant termination');
+        if (item.workerPid) await until(() => terminated(item.workerPid), undefined, 'descendant termination');
       }
       // Windows can report ESRCH before termination releases the cwd handle.
       // Retry only filesystem cleanup, with a finite teardown allowance.
