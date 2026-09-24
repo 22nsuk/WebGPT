@@ -14,10 +14,42 @@ client, runtime helper and trusted service launcher on the same reviewed revisio
 The optional `scripts/service.mjs run` launcher starts only its sibling `worker.mjs`
 with the current absolute Node executable and no shell. It is a local parent
 facility, not a general command runner or an MCP capability. Workspace grants
-cannot contain or sit inside the running scripts directory, so delegated edits
-cannot self-update code that an unattended restart would execute. To develop WebGPT,
-use a separate source checkout and install reviewed updates while idle. It never starts a
-browser, Codex, Git, cloudflared or arbitrary user-supplied commands.
+cannot contain or sit inside the running `scripts/` directory or its sibling
+`deploy/` tree, which contains the shipped Windows launchers and service templates.
+Both read and edit grants are rejected. The named deployment tree and native targets
+of `deploy/`, `deploy/windows/`, and the shipped `run-worker-task.ps1`,
+`register-worker-task.ps1`, and `worker.xml.example` files are checked at registration
+and each file-tool use, including directory aliases/junctions and individual file
+symlinks. A scripts-only installation can omit deployment
+files; checking the boundary does not create directories. To develop WebGPT, use a
+separate source checkout and install reviewed updates while idle. The service never
+starts a browser, Codex, Git, cloudflared or arbitrary user-supplied commands.
+
+The worker and service CLI retain the original absolute entrypoint path as well as
+the native module path. When `scripts/` is a directory alias/junction, both scripts
+locations and their sibling deployment trees remain protected. The supervisor
+preserves that entry path on every restart and verifies that its fixed `worker.mjs`
+sibling still resolves to the reviewed native worker before launching it. A changed
+or mismatching entry path fails with `CONFIG_INVALID` rather than selecting other code.
+
+Programmatic hosts that import through an alias must pass that original absolute
+module filename as `entryPath` to `start({ ..., entryPath })` or
+`runService(env, { entryPath })`. It must resolve to the imported module itself.
+When omitted, the native module location is used; an unrelated embedding host's
+command-line path is never treated as an installation. Node resolves import aliases
+before exposing the module URL, so an omitted alias cannot be discovered afterward.
+No controller request, workspace grant, environment variable or saved-state field
+can set this option.
+
+A previously stored overlapping deployment grant is retained, not silently migrated
+or removed. Its file tools fail and readiness lists its workspace as unavailable;
+`get_task`, supplied inputs, retained evidence and explicit cancellation remain
+available. Independent tasks and separate source copies (including their own `deploy/`
+directories) remain usable. Normal task state, result collection and dispatch are
+unchanged. This protects the known installation layout, not every executable the OS
+could run: externally copied/custom wrappers, service definitions and their aliases
+must remain outside grants under the operator's existing ACL/maintenance policy.
+Do not treat this check as permission to install, restart, relink or update a service.
 
 The worker and its controller still bind exclusively to `127.0.0.1`. A tunnel may
 forward only the MCP listener. Never route the controller, readiness, reconciliation
@@ -342,6 +374,10 @@ For an authorized code update, complete these steps in order:
    those logs as a stopped snapshot. Preserve all evidence if backup verification fails.
 5. Replace only the stopped installation with the complete reviewed revision; verify
    files before restarting with the same intended identity, config, data and ports.
+   Include the complete `scripts/` directory and its shipped helpers, including
+   `installation.mjs`, which is required by both `worker.mjs` and `service.mjs`.
+   Do not assemble a partial update from selected entrypoints; use the matching
+   [installation file guidance](setup.md) and verify the candidate inventory.
    For a code-only update, keep the healthy existing tunnel and ChatGPT connection.
    Do not bundle account/ACL, credential, service, DNS or authentication changes into
    the replacement. In particular, restarting a Quick Tunnel changes its origin.

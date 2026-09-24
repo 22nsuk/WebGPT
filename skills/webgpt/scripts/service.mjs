@@ -3,11 +3,12 @@
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { lstatSync, mkdirSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs';
-import { resolve, isAbsolute } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { resolve, isAbsolute, dirname } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { configuration } from './client.mjs';
 import { acquireRuntimeLock, startupExitCode, fault } from './runtime.mjs';
+import { validatedEntryPath } from './installation.mjs';
 
 const backoff = [1000, 5000, 15000];
 const report = entry => console.error(JSON.stringify(entry));
@@ -49,7 +50,8 @@ export function requestServiceStop(env = process.env) {
   return { accepted: true }; // No PID kill, secrets, SCM changes or installation.
 }
 
-export async function runService(env = process.env, { spawnWorker = spawn, pause = delay, record = report } = {}) {
+export async function runService(env = process.env, { spawnWorker = spawn, pause = delay, record = report, entryPath } = {}) {
+  const entryRoot = dirname(validatedEntryPath(import.meta.url, entryPath));
   const config = serviceConfig(env);
   mkdirSync(config.dataDir, { recursive: true, mode: 0o700 });
   const ownership = acquireRuntimeLock(config.dataDir, { name: 'service' });
@@ -82,7 +84,10 @@ export async function runService(env = process.env, { spawnWorker = spawn, pause
   try {
     log('service_started', { restartBudget: backoff.length });
     for (let attempt = 0; !stopping; attempt++) {
-      child = spawnWorker(process.execPath, [fileURLToPath(new URL('./worker.mjs', import.meta.url))], {
+      // Preserve the installation spelling through each restart, while allowing
+      // only this supervisor's actual sibling worker as the executable module.
+      const workerEntry = validatedEntryPath(new URL('./worker.mjs', import.meta.url), resolve(entryRoot, 'worker.mjs'));
+      child = spawnWorker(process.execPath, [workerEntry], {
         env: { ...env }, cwd: config.dataDir, shell: false, windowsHide: true,
         stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
       });
@@ -126,7 +131,7 @@ if (process.argv[1] && process.argv[1] !== '-' && import.meta.url === pathToFile
   try {
     if (process.argv.length !== 3 || !['run', 'stop'].includes(process.argv[2])) throw fault('CONFIG_INVALID', 'usage: service.mjs run|stop');
     if (process.argv[2] === 'stop') console.log(JSON.stringify(requestServiceStop()));
-    else process.exitCode = await runService();
+    else process.exitCode = await runService(process.env, { entryPath: resolve(process.argv[1]) });
   } catch (error) {
     report({ time: new Date().toISOString(), event: 'service_failed', supervisorPid: process.pid,
       parentPid: process.ppid, code: error.code ?? 'UNEXPECTED', exitCode: startupExitCode(error) });
