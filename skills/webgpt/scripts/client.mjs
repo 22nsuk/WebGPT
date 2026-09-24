@@ -56,7 +56,7 @@ function taskIds(ids) {
 export async function request(action, payload, config = configuration(), { signal, timeoutMs = action === 'wait' ? 60000 : 5000 } = {}) {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60000) throw Error('invalid controller timeout');
   const read = ['wait', 'status', 'tasks', 'ready', 'reconcile'].includes(action);
-  if (!read && !['register', 'ack', 'checked', 'cancel', 'shutdown'].includes(action)) throw Error('unknown controller action');
+  if (!read && !['register', 'ack', 'collect', 'checked', 'cancel', 'shutdown'].includes(action)) throw Error('unknown controller action');
   let ids;
   if (read && payload !== undefined) {
     if (action !== 'wait' || !payload || Array.isArray(payload) || Object.keys(payload).some(key => key !== 'ids'))
@@ -140,15 +140,10 @@ export async function collectTask(id, config = configuration(), { signal, resume
   const result = await request('wait', { ids: [id] }, config, { signal });
   const event = result.events.find(event => event.id === id);
   if (!event) throw Error('task has no uncollected result');
-  // Wait events omit terminal recovery warnings. Inspect the selected task
-  // before retiring its inputs/token, using the same guard as explicit resume.
-  const before = await inspectCollection(id, config, { signal });
-  if (before.status !== event.status || before.artifact !== event.artifact || before.sha256 !== event.sha256)
-    throw Object.assign(Error('saved result changed before collection; preserve evidence and reconcile'), {
-      code: 'COLLECTION_UNCONFIRMED',
-    });
-  assertCollectionReady(before);
-  const after = await acknowledgeCollection(id, before, config, { signal });
+  // The controller rechecks result identity/bytes and recovery evidence inside
+  // conditional collection, immediately before it commits input/token retirement.
+  verifyResult(event, config);
+  const after = await acknowledgeCollection(id, event, config, { signal });
   if (after.discarded)
     throw Object.assign(Error('result was discarded during collection; inspect with collect --resume'), {
       code: 'COLLECTION_DISCARDED',
@@ -198,8 +193,17 @@ async function inspectCollection(id, config, { signal }) {
 
 async function acknowledgeCollection(id, before, config, { signal }) {
   let ackError;
-  try { await request('ack', { id }, config, { signal }); }
+  try { await request('collect', { id, expectedStatus: before.status, expectedSha256: before.sha256 }, config, { signal }); }
   catch (error) {
+    // An older worker must fail closed, never downgrade to its unchecked /ack.
+    if (error.statusCode === 404)
+      throw Object.assign(Error('conditional collection is unavailable; check controller routing and update the idle worker and client together'), {
+        code: 'COLLECTION_UNSUPPORTED',
+      });
+    if (error.code === 'COLLECTION_RECOVERY_REQUIRED') {
+      error.attention = error.details?.attention;
+      error.reconciliation = error.details?.reconciliation;
+    }
     // A lost transport response may follow a committed acknowledgment. Observe
     // once; never retry the write here. Explicit HTTP rejections, including the
     // wait-retryable SHUTTING_DOWN response, are not ambiguous transport failures.
@@ -294,7 +298,7 @@ if (process.argv[1] && process.argv[1] !== '-' && import.meta.url === pathToFile
       const { dispatchDiagnostic } = await import('./dispatch.mjs');
       console.error('WebGPT: ' + JSON.stringify(dispatchDiagnostic(error)));
     } else if (action === 'collect'
-        && ['COLLECTION_UNCONFIRMED', 'COLLECTION_RECOVERY_REQUIRED', 'COLLECTION_DISCARDED'].includes(error.code)) {
+        && ['COLLECTION_UNCONFIRMED', 'COLLECTION_RECOVERY_REQUIRED', 'COLLECTION_DISCARDED', 'COLLECTION_UNSUPPORTED'].includes(error.code)) {
       // Collection diagnostics never serialize raw causes, snapshots or paths.
       console.error('WebGPT: ' + JSON.stringify({ code: error.code, message: error.message,
         ...(['accepted', 'unknown'].includes(error.acknowledgment) ? { acknowledgment: error.acknowledgment } : {}),

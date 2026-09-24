@@ -71,7 +71,8 @@ async function fixture(t, { status = 'completed', intercept = async () => false,
   await new Promise(resolve => proxy.listen(0, '127.0.0.1', resolve));
   return { ...f, config: { ...direct, controlPort: proxy.address().port } };
 }
-const initial = resume => resume ? ['/reconcile'] : ['/wait?id=owned', '/reconcile'];
+const initial = resume => resume ? ['/reconcile'] : ['/wait?id=owned'];
+const refused = resume => resume ? initial(true) : [...initial(false), '/collect'];
 function recoveryError(kind) {
   return error => {
     assert.equal(error.code, 'COLLECTION_RECOVERY_REQUIRED');
@@ -86,7 +87,7 @@ function unchanged(f, before, candidate) {
   assert.equal(fs.readFileSync(join(f.root, 'notes.txt'), 'utf8'), 'reviewed edit');
   assert.equal(JSON.parse(before)[0].token, f.task.token);
   if (candidate) assert.equal(fs.existsSync(candidate), true);
-  assert.equal(f.actions.includes('/ack'), false);
+  assert.equal(f.actions.includes('/ack'), false, 'no unchecked acknowledgment');
 }
 
 for (const kind of ['pending-result', 'unresolved-journal', 'missing-backup']) {
@@ -96,7 +97,7 @@ for (const kind of ['pending-result', 'unresolved-journal', 'missing-backup']) {
       const bytes = candidate ? fs.readFileSync(candidate) : null;
       await assert.rejects(collectTask('owned', f.config, { resume }), recoveryError(kind));
       unchanged(f, before, candidate);
-      assert.deepEqual(f.actions, initial(resume));
+      assert.deepEqual(f.actions, refused(resume));
       if (candidate) assert.deepEqual(fs.readFileSync(candidate), bytes);
       assert.equal((await f.call('get_task', { token: f.task.token })).isError, false);
       assert.equal((await f.call('read_input', { token: f.task.token, name: 'sample' })).structuredContent.text, text);
@@ -105,7 +106,7 @@ for (const kind of ['pending-result', 'unresolved-journal', 'missing-backup']) {
   for (const resume of [false, true]) test(`${resume ? 'resume' : 'ordinary'} collection cannot confirm ${kind} appearing after ack`, async t => {
     let candidate;
     const f = await fixture(t, { intercept: async ({ req, phase, evidence }) => {
-      if (req.url === '/ack' && phase === 'after') candidate = evidence(kind);
+      if (req.url === '/collect' && phase === 'after') candidate = evidence(kind);
     } });
     await assert.rejects(collectTask('owned', f.config, { resume }), error => {
       assert.equal(error.code, 'COLLECTION_UNCONFIRMED');
@@ -113,7 +114,7 @@ for (const kind of ['pending-result', 'unresolved-journal', 'missing-backup']) {
       assert.equal(error.cause.code, 'COLLECTION_RECOVERY_REQUIRED');
       return true;
     });
-    assert.deepEqual(f.actions, [...initial(resume), '/ack', '/reconcile']);
+    assert.deepEqual(f.actions, [...initial(resume), '/collect', '/reconcile']);
     const stored = JSON.parse(fs.readFileSync(f.state))[0];
     assert.equal(stored.collected, true); assert.equal(stored.token, undefined);
     assert.equal(fs.readFileSync(f.artifact, 'utf8'), text);
@@ -122,7 +123,7 @@ for (const kind of ['pending-result', 'unresolved-journal', 'missing-backup']) {
     const result = await collectTask('owned', f.config, { resume: true });
     assert.equal(result.disposition, 'already_collected');
     assert.equal(result.attention, kind === 'pending-result' ? 'inspect_uncommitted_result' : 'inspect_recovery');
-    assert.equal(f.actions.filter(path => path === '/ack').length, 1);
+    assert.equal(f.actions.filter(path => path === '/collect').length, 1);
   });
 }
 
@@ -130,20 +131,22 @@ for (const kind of ['pending-result', 'unresolved-journal']) test(`unrelated ${k
   const f = await fixture(t), other = await f.register('other'); await f.complete(other);
   const candidate = f.evidence(kind, 'other'), bytes = fs.readFileSync(candidate);
   assert.equal((await collectTask('owned', f.config)).collected, true);
-  assert.deepEqual(f.actions, [...initial(false), '/ack', '/reconcile']);
+  assert.deepEqual(f.actions, [...initial(false), '/collect', '/reconcile']);
   assert.deepEqual(fs.readFileSync(candidate), bytes);
   const snapshot = await reconcileTasks(f.direct);
   assert.equal(snapshot.tasks.find(task => task.id === 'other').attention,
     kind === 'pending-result' ? 'inspect_uncommitted_result' : 'inspect_recovery');
 });
 
-for (const issue of ['unavailable', 'changed-identity', 'aborted']) test(`ordinary collection rejects ${issue} preflight before ack`, async t => {
+for (const issue of ['unavailable', 'changed-identity', 'aborted']) test(`ordinary collection rejects ${issue} before guarded retirement`, async t => {
   const controller = new AbortController(), reason = Error('explicit fixture abort');
   const f = await fixture(t, { intercept: async ({ req, res, phase, data }) => {
-    if (req.url !== '/reconcile') return;
-    if (issue === 'aborted' && phase === 'before') { controller.abort(reason); res.destroy(); return true; }
-    if (issue === 'unavailable' && phase === 'before') { reply(res, { error: 'fixture unavailable' }, 503); return true; }
-    if (issue === 'changed-identity' && phase === 'after') { data.tasks[0].status = 'failed'; reply(res, data); return true; }
+    if (issue === 'changed-identity' && req.url.startsWith('/wait?') && phase === 'after') {
+      data.events[0].status = 'failed'; reply(res, data); return true;
+    }
+    if (req.url !== '/collect' || phase !== 'before') return;
+    if (issue === 'aborted') { controller.abort(reason); res.destroy(); return true; }
+    if (issue === 'unavailable') { reply(res, { error: 'fixture unavailable' }, 503); return true; }
   } });
   const before = fs.readFileSync(f.state);
   await assert.rejects(collectTask('owned', f.config, { signal: controller.signal }), error => {
@@ -152,7 +155,7 @@ for (const issue of ['unavailable', 'changed-identity', 'aborted']) test(`ordina
     else { assert.equal(error.code, 'COLLECTION_UNCONFIRMED'); assert.equal(error.acknowledgment, undefined); }
     return true;
   });
-  unchanged(f, before); assert.deepEqual(f.actions, initial(false));
+  unchanged(f, before); assert.deepEqual(f.actions, refused(false));
 });
 
 test('ordinary CLI recovery error exposes only existing safe fields and preserves private inputs', async t => {
@@ -168,7 +171,7 @@ test('ordinary CLI recovery error exposes only existing safe fields and preserve
     for (const secret of [f.base, f.task.token, text, 'PRIVATE_RECOVERY_FIXTURE']) assert.ok(!error.stderr.includes(secret));
     return true;
   });
-  unchanged(f, before, candidate); assert.deepEqual(f.actions, initial(false));
+  unchanged(f, before, candidate); assert.deepEqual(f.actions, refused(false));
 });
 
 for (const resume of [false, true]) test(`${resume ? 'resume' : 'ordinary'} collection retains failed partial work after an actual receipt-write failure`, async t => {
@@ -180,5 +183,5 @@ for (const resume of [false, true]) test(`${resume ? 'resume' : 'ordinary'} coll
   await assert.rejects(collectTask('owned', f.config, { resume }), recoveryError('unresolved-journal'));
   unchanged(f, before, journal);
   assert.deepEqual(fs.readFileSync(journal), journalBytes); assert.deepEqual(fs.readFileSync(backup), backupBytes);
-  assert.deepEqual(f.actions, initial(resume));
+  assert.deepEqual(f.actions, refused(resume));
 });

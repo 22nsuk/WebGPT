@@ -277,7 +277,7 @@ test('explicit collection resume verifies retired results without repeating ackn
       assert.equal(first.disposition, 'collected'); assert.equal(first.status, status);
       assert.equal(first.integrity, 'verified'); assert.equal(first.browserChecked, false);
     }
-    assert.equal(actions.filter(action => action === '/ack').length, 3);
+    assert.equal(actions.filter(action => action === '/collect').length, 3);
     await f.restart();
     const before = retainedEvidence(f.dir);
     for (const status of ['completed', 'failed', 'cancelled']) {
@@ -285,7 +285,7 @@ test('explicit collection resume verifies retired results without repeating ackn
       assert.equal(resumed.disposition, 'already_collected'); assert.equal(resumed.status, status);
       assert.equal(resumed.integrity, 'verified');
     }
-    assert.equal(actions.filter(action => action === '/ack').length, 3);
+    assert.equal(actions.filter(action => action === '/collect').length, 3);
     assert.deepEqual(retainedEvidence(f.dir), before);
   });
 }));
@@ -309,7 +309,7 @@ test('resume CLI distinguishes discarded results, cancelled tasks without a resu
       assert.equal(cancelled.disposition, 'cancelled_without_result'); assert.equal(cancelled.integrity, 'not_expected');
       await assert.rejects(run('active'), error => { assert.match(error.stderr, /still running/); return true; });
     }
-    assert.equal(actions.filter(action => action === '/ack').length, 0);
+    assert.equal(actions.filter(action => action === '/collect').length, 0);
     assert.deepEqual(retainedEvidence(f.dir), before);
     assert.equal((await invoke(f.service, 'get_task', { token: active.token })).structuredContent.status, 'running');
   });
@@ -325,7 +325,7 @@ test('resume rechecks retained hashes and preserves integrity/recovery warnings 
   await controllerProxy(f, async ({ config, actions }) => {
     const before = retainedEvidence(f.dir);
     await assert.rejects(collectTask('retired', config, { resume: true }), /integrity mismatch/);
-    assert.equal(actions.filter(action => action === '/ack').length, 0);
+    assert.equal(actions.filter(action => action === '/collect').length, 0);
     const raw = await request('reconcile', undefined, config);
     assert.equal(raw.tasks.find(task => task.id === 'retired').integrity, undefined);
     const verified = await reconcileTasks(config);
@@ -337,13 +337,13 @@ test('resume rechecks retained hashes and preserves integrity/recovery warnings 
       assert.equal(error.reconciliation.journalIssues.length, 1); assert.equal(error.reconciliation.pendingResults.length, 1);
       return true;
     });
-    assert.equal(actions.filter(action => action === '/ack').length, 0);
+    assert.equal(actions.filter(action => action === '/collect').length, 0);
     assert.deepEqual(retainedEvidence(f.dir), before);
     await f.admin('cancel', { id: 'pending' });
     const result = await collectTask('pending', config, { resume: true });
     assert.equal(result.disposition, 'discarded'); assert.equal(result.attention, 'inspect_recovery');
     assert.equal(result.journalIssues.length, 1); assert.equal(result.pendingResults.length, 1);
-    assert.equal(actions.filter(action => action === '/ack').length, 0);
+    assert.equal(actions.filter(action => action === '/collect').length, 0);
   });
 }));
 
@@ -353,23 +353,25 @@ test('resume recovers a lost acknowledgment response by observing once without r
     const collected = await collectTask('lost', config, { resume: true });
     assert.equal(collected.collected, true); assert.equal(collected.integrity, 'verified');
     assert.equal((await collectTask('lost', config, { resume: true })).disposition, 'already_collected');
-    assert.equal(actions.filter(action => action === '/ack').length, 1);
-  }, async ({ req, res }) => { if (req.url !== '/ack') return false; res.destroy(); return true; });
+    assert.equal(actions.filter(action => action === '/collect').length, 1);
+  }, async ({ req, res }) => { if (req.url !== '/collect') return false; res.destroy(); return true; });
 }));
 
 test('resume preserves a concurrent discard and reports unverifiable post-ack results as unconfirmed', () => fixture(async f => {
   await completedTask(f, 'discard'); await completedTask(f, 'changed');
   await controllerProxy(f, async ({ config, actions }) => {
+    // The guarded command now rejects the raced discard before any new write.
+    await assert.rejects(collectTask('discard', config, { resume: true }), { code: 'COLLECTION_DISCARDED', statusCode: 409 });
     const discarded = await collectTask('discard', config, { resume: true });
     assert.equal(discarded.disposition, 'discarded'); assert.equal(discarded.discarded, true);
     await assert.rejects(collectTask('changed', config, { resume: true }), error => {
       assert.equal(error.code, 'COLLECTION_UNCONFIRMED'); assert.equal(error.acknowledgment, 'accepted');
       assert.match(error.cause.message, /integrity mismatch/); return true;
     });
-    assert.equal(actions.filter(action => action === '/ack').length, 2);
+    assert.equal(actions.filter(action => action === '/collect').length, 2);
   }, async ({ req, actions }) => {
     if (req.url === '/reconcile' && actions.length === 1) await f.admin('cancel', { id: 'discard' });
-    if (req.url === '/ack' && actions.filter(action => action === '/ack').length === 2)
+    if (req.url === '/collect' && actions.filter(action => action === '/collect').length === 2)
       writeFileSync(join(f.dir, 'changed.result.txt'), 'tampered after acknowledgment');
     return false;
   });
@@ -381,7 +383,7 @@ test('resume does not trust diagnostic task snapshots after controller state cor
   writeFileSync(join(f.dir, 'state.json'), '[]');
   await controllerProxy(f, async ({ config, actions }) => {
     await assert.rejects(collectTask('retired', config, { resume: true }), { code: 'STATE_INVALID' });
-    assert.equal(actions.filter(action => action === '/ack').length, 0);
+    assert.equal(actions.filter(action => action === '/collect').length, 0);
     assert.equal(readFileSync(join(f.dir, 'state.json'), 'utf8'), '[]');
   });
 }));
@@ -393,12 +395,12 @@ test('resume keeps known acknowledgment storage errors and leaves work uncollect
     await assert.rejects(collectTask('blocked', config, { resume: true }), error => {
       assert.equal(error.statusCode, 503); assert.notEqual(error.code, 'COLLECTION_UNCONFIRMED'); return true;
     });
-    assert.equal(actions.filter(action => action === '/ack').length, 1);
+    assert.equal(actions.filter(action => action === '/collect').length, 1);
     assert.equal((await invoke(f.service, 'get_task', { token: task.token })).isError, false);
     assert.equal((await f.admin('status')).events[0].id, 'blocked');
     rmSync(join(f.dir, 'state.json.tmp'), { recursive: true });
     assert.equal((await collectTask('blocked', config, { resume: true })).disposition, 'collected');
-    assert.equal(actions.filter(action => action === '/ack').length, 2);
+    assert.equal(actions.filter(action => action === '/collect').length, 2);
   });
 }));
 
@@ -416,16 +418,16 @@ test('resume CLI reports pending recovery and uncertain acknowledgment with safe
       assert.equal(diagnostic.code, 'COLLECTION_RECOVERY_REQUIRED'); assert.equal(diagnostic.attention, 'inspect_uncommitted_result');
       assert.equal(error.stderr.includes(f.dir), false); return true;
     });
-    assert.equal(actions.filter(action => action === '/ack').length, 0);
+    assert.equal(actions.filter(action => action === '/collect').length, 0);
     await assert.rejects(run('uncertain'), error => {
       assert.equal(error.stdout, '');
       const diagnostic = JSON.parse(error.stderr.slice('WebGPT: '.length));
       assert.equal(diagnostic.code, 'COLLECTION_UNCONFIRMED'); assert.equal(diagnostic.acknowledgment, 'unknown');
       assert.equal(error.stderr.includes(f.dir), false); assert.equal(error.stderr.includes('cause'), false); return true;
     });
-    assert.equal(actions.filter(action => action === '/ack').length, 1);
+    assert.equal(actions.filter(action => action === '/collect').length, 1);
   }, async ({ req, res }) => {
-    if (req.url !== '/ack') return false;
+    if (req.url !== '/collect') return false;
     writeFileSync(join(f.dir, 'uncertain.result.txt'), 'tampered after commit');
     res.destroy(); return true;
   });
