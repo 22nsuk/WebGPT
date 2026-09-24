@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { closeSync, constants, fchmodSync, fchownSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
-import { basename, dirname, isAbsolute, parse, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, parse, resolve, sep } from 'node:path';
 import { homedir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -26,11 +26,22 @@ function relativeFile(path) {
       || path.split('/').some(p => !p.replace(/[ .]+$/, '') || isGitMetadataName(p))) throw Error('invalid path or Git metadata');
   return path;
 }
+// Relative paths alone cannot protect metadata when the grant itself starts
+// inside .git. Check named and native ancestors, including aliases, on each use.
+function gitSafeRoot(root) {
+  const check = path => {
+    if (resolve(path).split(sep).some(isGitMetadataName)) throw Error('invalid workspace root or Git metadata');
+  };
+  check(root);
+  const canonical = realpathSync.native(root);
+  check(canonical);
+  return canonical;
+}
 export function grantWorkspace(input) {
   if (input == null) return null;
   if (!input || typeof input.root !== 'string' || !isAbsolute(input.root)
       || !['read','edit'].includes(input.mode) || 'read' in input || 'write' in input) throw Error('use workspace root and mode only');
-  const root = realpathSync.native(input.root), stat = lstatSync(root);
+  const root = gitSafeRoot(input.root), stat = lstatSync(root);
   if (!stat.isDirectory() || root === parse(root).root || root === realpathSync.native(homedir())) throw Error('project root required');
   return {root, device:stat.dev, inode:stat.ino, mode:input.mode};
 }
@@ -40,6 +51,7 @@ function target(grant,path,writing=false,createParents=false,directory=false) {
   if ('read' in grant || 'write' in grant) throw Error('legacy file grant; register a project workspace');
   const rootStat = lstatSync(grant.root);
   if (rootStat.isSymbolicLink() || rootStat.dev!==grant.device || rootStat.ino!==grant.inode) throw Error('workspace root changed');
+  gitSafeRoot(grant.root); // Recheck retained grants and redirected ancestors before any file access.
   if(directory && path === '.') return grant.root;
   let cursor=grant.root;
   const parts=path.split('/');
