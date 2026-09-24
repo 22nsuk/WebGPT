@@ -52,7 +52,8 @@ async function fixture(t, intercept = async () => false, status = 'completed') {
   await new Promise(resolve => proxy.listen(0, '127.0.0.1', resolve));
   return { ...f, config: { ...direct, controlPort: proxy.address().port } };
 }
-const expectedCalls = ['/wait?id=owned', '/ack', '/reconcile'];
+const collectionStart = resume => resume ? ['/reconcile'] : ['/wait?id=owned', '/reconcile'];
+const expectedCalls = [...collectionStart(false), '/ack', '/reconcile'];
 function unconfirmed(error) {
   assert.equal(error.code, 'COLLECTION_UNCONFIRMED');
   assert.equal(retryableControllerError(error), false);
@@ -121,9 +122,12 @@ for (const change of ['missing', 'corrupt']) test(`result bytes ${change} after 
 
 for (const issue of ['unavailable', 'missing-task', 'wrong-status', 'wrong-hash', 'nonboolean-collected', 'invalid-state']) {
   test(`post-ack ${issue} leaves collection unconfirmed without a second ack`, async t => {
+    let acknowledged = false;
     const f = await fixture(t, async ({ req, res, phase, data, stateFile }) => {
+      if (req.url === '/ack' && phase === 'after') acknowledged = true;
       if (issue === 'invalid-state' && phase === 'after' && req.url === '/ack') writeFileSync(stateFile, '[]');
-      if (req.url !== '/reconcile') return;
+      // Exercise the post-ack observation, not the new pre-ack recovery check.
+      if (req.url !== '/reconcile' || !acknowledged) return;
       if (issue === 'unavailable' && phase === 'before') { reply(res, { error: 'fixture unavailable' }, 503); return true; }
       if (phase !== 'after') return;
       if (issue === 'missing-task') data.tasks = [];
@@ -142,7 +146,7 @@ test('known ack storage failures remain direct errors and do not trigger outcome
   const f = await fixture(t); mkdirSync(join(f.dir, 'state.json.tmp'));
   const before = readFileSync(f.stateFile);
   await assert.rejects(collectTask('owned', f.config), { statusCode: 503, code: 'STATE_STAGING_CONFLICT' });
-  assert.deepEqual(f.actions, ['/wait?id=owned', '/ack']);
+  assert.deepEqual(f.actions, [...collectionStart(false), '/ack']);
   assert.deepEqual(readFileSync(f.stateFile), before); assert.equal(f.state().token, f.task.token);
 });
 
@@ -158,7 +162,7 @@ for (const resume of [false, true]) test(`${resume ? 'resumed' : 'ordinary'} col
     assert.equal(error.retryable, true); assert.equal(retryableControllerError(error), true);
     return true;
   });
-  assert.deepEqual(f.actions, [resume ? '/reconcile' : '/wait?id=owned', '/ack']);
+  assert.deepEqual(f.actions, [...collectionStart(resume), '/ack']);
   assert.deepEqual(readFileSync(f.stateFile), before);
   assert.equal(f.state().collected, false); assert.equal(f.state().token, f.task.token);
   assert.equal(readFileSync(f.artifact, 'utf8'), resultText);
@@ -170,7 +174,7 @@ test('an explicit abort during ack stops collection without another HTTP request
     if (phase === 'before' && req.url === '/ack') { controller.abort(); res.destroy(); return true; }
   });
   await assert.rejects(collectTask('owned', f.config, { signal: controller.signal }), { name: 'AbortError' });
-  assert.deepEqual(f.actions, ['/wait?id=owned', '/ack']); assert.equal(f.state().collected, false);
+  assert.deepEqual(f.actions, [...collectionStart(false), '/ack']); assert.equal(f.state().collected, false);
 });
 
 for (const resume of [false, true]) for (const custom of [false, true]) {
@@ -186,7 +190,7 @@ for (const resume of [false, true]) for (const custom of [false, true]) {
     });
     await assert.rejects(collectTask('owned', f.config, { resume, signal: controller.signal }),
       error => error === controller.signal.reason);
-    assert.deepEqual(f.actions, [resume ? '/reconcile' : '/wait?id=owned', '/ack', '/reconcile']);
+    assert.deepEqual(f.actions, [...collectionStart(resume), '/ack', '/reconcile']);
     assert.deepEqual(readFileSync(f.stateFile), committedState);
     assert.equal(f.state().collected, true); assert.equal(f.state().token, undefined);
     assert.equal(readFileSync(f.artifact, 'utf8'), resultText);
@@ -194,7 +198,7 @@ for (const resume of [false, true]) for (const custom of [false, true]) {
     // verifies the retained result without another write.
     const recovered = await collectTask('owned', f.config, { resume: true });
     assert.equal(recovered.disposition, 'already_collected'); assert.equal(recovered.integrity, 'verified');
-    assert.deepEqual(f.actions, [resume ? '/reconcile' : '/wait?id=owned', '/ack', '/reconcile', '/reconcile']);
+    assert.deepEqual(f.actions, [...collectionStart(resume), '/ack', '/reconcile', '/reconcile']);
     assert.deepEqual(readFileSync(f.stateFile), committedState);
   });
 }

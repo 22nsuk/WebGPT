@@ -140,8 +140,15 @@ export async function collectTask(id, config = configuration(), { signal, resume
   const result = await request('wait', { ids: [id] }, config, { signal });
   const event = result.events.find(event => event.id === id);
   if (!event) throw Error('task has no uncollected result');
-  verifyResult(event, config);
-  const after = await acknowledgeCollection(id, event, config, { signal });
+  // Wait events omit terminal recovery warnings. Inspect the selected task
+  // before retiring its inputs/token, using the same guard as explicit resume.
+  const before = await inspectCollection(id, config, { signal });
+  if (before.status !== event.status || before.artifact !== event.artifact || before.sha256 !== event.sha256)
+    throw Object.assign(Error('saved result changed before collection; preserve evidence and reconcile'), {
+      code: 'COLLECTION_UNCONFIRMED',
+    });
+  assertCollectionReady(before);
+  const after = await acknowledgeCollection(id, before, config, { signal });
   if (after.discarded)
     throw Object.assign(Error('result was discarded during collection; inspect with collect --resume'), {
       code: 'COLLECTION_DISCARDED',
@@ -156,13 +163,18 @@ async function resumeCollection(id, config, { signal }) {
     : !task.artifact ? 'cancelled_without_result' : 'already_collected' });
   const before = await inspectCollection(id, config, { signal });
   if (before.collected) return finish(before);
-  if (['inspect_recovery', 'inspect_uncommitted_result'].includes(before.attention))
-    throw Object.assign(Error('saved result requires recovery inspection before collection'), {
-      code: 'COLLECTION_RECOVERY_REQUIRED', attention: before.attention, reconciliation: before,
-    });
+  assertCollectionReady(before);
   const after = await acknowledgeCollection(id, before, config, { signal });
   const result = finish(after);
   return { ...result, disposition: after.discarded ? 'discarded' : 'collected' };
+}
+
+// A verified result file alone does not resolve its task's recovery evidence.
+function assertCollectionReady(task) {
+  if (['inspect_recovery', 'inspect_uncommitted_result'].includes(task.attention))
+    throw Object.assign(Error('saved result requires recovery inspection before collection'), {
+      code: 'COLLECTION_RECOVERY_REQUIRED', attention: task.attention, reconciliation: task,
+    });
 }
 
 // Both collection paths use the same authoritative post-ack observation. A
@@ -195,7 +207,10 @@ async function acknowledgeCollection(id, before, config, { signal }) {
     ackError = error;
   }
   let after;
-  try { after = await inspectCollection(id, config, { signal }); }
+  try {
+    after = await inspectCollection(id, config, { signal });
+    assertCollectionReady(after);
+  }
   catch (error) {
     if (signal?.aborted) throw error;
     throw Object.assign(Error('collection outcome requires reconciliation; resume after inspecting controller state', { cause: error }), {
