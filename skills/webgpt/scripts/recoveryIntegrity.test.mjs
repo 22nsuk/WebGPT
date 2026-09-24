@@ -245,6 +245,45 @@ for (const value of ['invalid', [{ id: 'outside-scope' }]]) test(`new result rec
   } finally { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); rmSync(dir, { recursive: true, force: true }); }
 });
 
+function fixtureProcessTerminated(pid) {
+  if (processState(pid) === 'dead') return true;
+  if (process.platform !== 'linux') return false;
+  // An orphan can remain a zombie under a container init that has not reaped
+  // it. It holds no cwd/files, though kill(pid, 0) still succeeds. This is only
+  // fixture teardown evidence, never authority to recover a production lock.
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+    return stat.slice(stat.lastIndexOf(')') + 2).startsWith('Z ');
+  } catch (error) {
+    if (error.code === 'ENOENT') return processState(pid) === 'dead';
+    throw error;
+  }
+}
+
+test('fixture teardown recognizes an unreaped Linux child without weakening lock liveness', {
+  skip: process.platform !== 'linux' && 'requires Linux /proc zombie state',
+}, async () => {
+  const child = spawn(process.execPath, ['-e', ''], { stdio: ['ignore', 'pipe', 'pipe'] });
+  const observed = observeChild(child);
+  try {
+    // Keep this event loop from reaping the child until the kernel marks it Z.
+    // The child itself runs normally; this requires no special PID 1 or tools.
+    const deadline = Date.now() + 4000, pause = new Int32Array(new SharedArrayBuffer(4));
+    let zombie = false;
+    while (Date.now() < deadline) {
+      const stat = readFileSync(`/proc/${child.pid}/stat`, 'utf8');
+      if (stat.slice(stat.lastIndexOf(')') + 2).startsWith('Z ')) { zombie = true; break; }
+      Atomics.wait(pause, 0, 0, 10);
+    }
+    assert.equal(zombie, true, 'fixture child reached an unreaped exit');
+    assert.equal(processState(child.pid), 'alive');
+    assert.equal(fixtureProcessTerminated(child.pid), true);
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    await observed.closed;
+  }
+});
+
 test('actual supervisor death permits verified drain or dead-owner recovery and resumes saved tasks', async t => {
   const { requestServiceStop } = await import('./service.mjs');
   const base = mkdtempSync(join(tmpdir(), 'webgpt-owner-death-')), dir = join(base, 'runtime'), configPath = join(base, 'config.json');
@@ -274,20 +313,6 @@ test('actual supervisor death permits verified drain or dead-owner recovery and 
     stopped: () => owner && (owner.parent.exitCode !== null || owner.parent.signalCode !== null),
   });
   const ready = owner => async () => owner.ports && (await request('ready', undefined, config, { timeoutMs: 250 })).ok;
-  const terminated = pid => {
-    if (processState(pid) === 'dead') return true;
-    if (process.platform !== 'linux') return false;
-    // An orphan can remain a zombie under a container init that has not reaped
-    // it. It holds no cwd/files, though kill(pid, 0) still succeeds. This is only
-    // fixture teardown evidence, never authority to recover a production lock.
-    try {
-      const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
-      return stat.slice(stat.lastIndexOf(')') + 2).startsWith('Z ');
-    } catch (error) {
-      if (error.code === 'ENOENT') return processState(pid) === 'dead';
-      throw error;
-    }
-  };
   let failed = false;
   try {
     const first = launch(); await until(ready(first), first, 'initial supervisor readiness');
@@ -333,7 +358,7 @@ test('actual supervisor death permits verified drain or dead-owner recovery and 
         }
         // Lock release can precede process exit. Do not remove its working
         // directory while a known descendant is still alive or unverifiable.
-        if (item.workerPid) await until(() => terminated(item.workerPid), undefined, 'descendant termination');
+        if (item.workerPid) await until(() => fixtureProcessTerminated(item.workerPid), undefined, 'descendant termination');
       }
       // Windows can report ESRCH before termination releases the cwd handle.
       // Retry only filesystem cleanup, with a finite teardown allowance.
