@@ -194,6 +194,7 @@ async function acknowledgeCollection(id, before, config, { signal }) {
   let after;
   try { after = await inspectCollection(id, config, { signal }); }
   catch (error) {
+    if (signal?.aborted) throw error;
     throw Object.assign(Error('collection outcome requires reconciliation; resume after inspecting controller state', { cause: error }), {
       code: 'COLLECTION_UNCONFIRMED', acknowledgment: ackError ? 'unknown' : 'accepted',
     });

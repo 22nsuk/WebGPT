@@ -173,6 +173,32 @@ test('an explicit abort during ack stops collection without another HTTP request
   assert.deepEqual(f.actions, ['/wait?id=owned', '/ack']); assert.equal(f.state().collected, false);
 });
 
+for (const resume of [false, true]) for (const custom of [false, true]) {
+  test(`${resume ? 'resumed' : 'ordinary'} collection preserves ${custom ? 'custom' : 'default'} aborts during post-ack reconciliation`, async t => {
+    const controller = new AbortController();
+    const reason = custom ? Error('explicit fixture cancellation') : undefined;
+    let committedState;
+    const f = await fixture(t, async ({ req, res, phase, stateFile }) => {
+      if (phase === 'after' && req.url === '/ack') committedState = readFileSync(stateFile);
+      if (phase === 'before' && req.url === '/reconcile' && committedState && !controller.signal.aborted) {
+        controller.abort(reason); res.destroy(); return true;
+      }
+    });
+    await assert.rejects(collectTask('owned', f.config, { resume, signal: controller.signal }),
+      error => error === controller.signal.reason);
+    assert.deepEqual(f.actions, [resume ? '/reconcile' : '/wait?id=owned', '/ack', '/reconcile']);
+    assert.deepEqual(readFileSync(f.stateFile), committedState);
+    assert.equal(f.state().collected, true); assert.equal(f.state().token, undefined);
+    assert.equal(readFileSync(f.artifact, 'utf8'), resultText);
+    // Aborting observation does not undo acknowledgment; a later explicit resume
+    // verifies the retained result without another write.
+    const recovered = await collectTask('owned', f.config, { resume: true });
+    assert.equal(recovered.disposition, 'already_collected'); assert.equal(recovered.integrity, 'verified');
+    assert.deepEqual(f.actions, [resume ? '/reconcile' : '/wait?id=owned', '/ack', '/reconcile', '/reconcile']);
+    assert.deepEqual(readFileSync(f.stateFile), committedState);
+  });
+}
+
 test('ordinary collection remains strict on already retired results while explicit resume is read-only', async t => {
   const f = await fixture(t); await f.admin('ack', { id: 'owned' });
   const before = readFileSync(f.stateFile);
