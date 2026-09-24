@@ -78,9 +78,13 @@ rejected; Windows still relies on the private runtime directory's configured ACL
 Within the same live worker, an explicit transition may reuse a regular single-link
 stage only when its bytes exactly match the proposed next state. The writer flushes
 those bytes again before replacement. A repeated API payload is not necessarily
-byte-identical state: registration can generate a new token/deadline, and another
-transition may change the inventory. Do not retry unrelated actions to clear a
-conflict. Failed state publication does not report success, retire tokens or publish
+byte-identical state: registration can generate a new token/deadline, `/checked`
+recomputes `nextCheck` from the current time, and another transition may change the
+inventory. After a failed `/checked` publication, a later retry normally conflicts
+with the retained candidate and requires the deliberate offline recovery below.
+An `/ack` retry can remain byte-identical when the inventory is otherwise unchanged.
+Do not retry unrelated actions to clear a conflict. Failed state publication does
+not report success, retire tokens or publish
 the proposed in-memory transition. Project edits and result bytes have separate
 journals/commits and may already exist; inspect those rather than repeating them.
 
@@ -103,7 +107,9 @@ inspection and permitted file reads/listings remain available with valid committ
 
 This preflight does not delete, parse or promote the candidate, and does not disable
 the writer's explicit byte-identical controller retry. A caller may deliberately finish
-the original transition within the same live worker under the rules above. Result
+the original transition within the same live worker only when the next state still
+matches the candidate exactly; repeating a time-dependent `/checked` payload does
+not guarantee that. Otherwise preserve the obstruction for offline recovery. Result
 submission keeps its separate candidate-preservation/retry contract; it is not a new
 project mutation. Do not treat a candidate or a successful probe as permission to replay
 an edit. A storage failure first arising after this check can still leave an applied

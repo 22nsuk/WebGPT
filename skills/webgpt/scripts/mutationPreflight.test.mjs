@@ -19,8 +19,12 @@ async function fixture(t) {
   fs.mkdirSync(root); fs.writeFileSync(join(root, 'original.txt'), original);
   let worker, clock = 1000;
   t.after(async () => { await worker?.close(); fs.rmSync(base, { recursive: true, force: true }); });
-  worker = await start({ dir, port: 0, controlPort: 0, waitMs: 20, now: () => clock, configFile: join(base, 'config.json') });
-  const config = { dataDir: dir, controlPort: worker.controlPort };
+  const config = { dataDir: dir };
+  const boot = async () => {
+    worker = await start({ dir, port: 0, controlPort: 0, waitMs: 20, now: () => clock++, configFile: join(base, 'config.json') });
+    config.controlPort = worker.controlPort;
+  };
+  await boot();
   const admin = (action, payload) => request(action, payload, config);
   const register = id => admin('register', { id, instructions: 'Fixture', inputs: { sample: 'supplied' }, workspace: { root, mode: 'edit' } });
   const call = async (name, args) => {
@@ -37,7 +41,7 @@ async function fixture(t) {
     ...(operation !== 'delete' ? { text: 'replacement' } : {}),
   });
   return { base, root, dir, config, admin, register, call, token, complete, mutate,
-    state: join(dir, 'state.json'), stage: join(dir, 'state.json.tmp'), tick: () => clock++ };
+    state: join(dir, 'state.json'), stage: join(dir, 'state.json.tmp'), boot, close: () => worker.close() };
 }
 async function patched(t, name, replacement, run) {
   t.mock.method(fs, name, replacement); syncBuiltinESMExports();
@@ -56,11 +60,10 @@ function rejected(reply, f) {
 }
 
 for (const previous of ['checked-owned', 'checked-other', 'ack-other']) for (const operation of ['create', 'edit', 'delete']) {
-  test(`${operation} stops before mutation after a failed ${previous} publication; identical state retry still works`, async t => {
+  test(`${operation} stops after failed ${previous}; ${previous.startsWith('checked') ? 'advancing-clock retry requires offline recovery' : 'identical ack retry still works'}`, async t => {
     const f = await fixture(t);
     const other = await f.register('other');
     if (previous === 'ack-other') assert.equal((await f.complete(other.token)).isError, false);
-    f.tick();
     const action = previous.startsWith('checked') ? 'checked' : 'ack';
     const payload = { id: previous.endsWith('owned') ? 'owned' : 'other' };
     const committed = fs.readFileSync(f.state), rename = fs.renameSync;
@@ -78,7 +81,30 @@ for (const previous of ['checked-owned', 'checked-other', 'ack-other']) for (con
     assert.equal((await waitForTasks(['owned'], f.config)).interrupted, true);
     await assert.rejects(f.admin('ready'), e => e.details.storage.code === 'STATE_STAGING_CONFLICT'
       && e.details.automaticRestartRecommended === false);
-    // Explicit same-byte controller retry, not candidate deletion/promotion or replay of a file edit.
+    if (action === 'checked') {
+      // Each now() advances: repeating the same payload proposes a later deadline,
+      // not the bytes retained by the failed publication. No online recovery claim.
+      const deadline = bytes => JSON.parse(bytes).find(task => task.id === payload.id).nextCheck;
+      assert.ok(deadline(candidate) > deadline(committed));
+      for (let attempt = 0; attempt < 2; attempt++) {
+        await assert.rejects(f.admin(action, payload), { statusCode: 503, code: 'STATE_STAGING_CONFLICT' });
+        rejected(await f.mutate(operation), f);
+        unchanged(f, committed);
+        assert.deepEqual(fs.readFileSync(f.stage), candidate);
+        assert.equal((await f.call('get_task', { token: f.token })).structuredContent.status, 'running');
+        await assert.rejects(f.admin('ready'), e => e.details.storage.code === 'STATE_STAGING_CONFLICT');
+      }
+      // Restart cannot resolve the failed transition either. Preserve both files
+      // for the documented, deliberate offline disposition by the supervisor.
+      await f.close();
+      await assert.rejects(f.boot(), { code: 'STATE_STAGING_CONFLICT' });
+      unchanged(f, committed);
+      assert.deepEqual(fs.readFileSync(f.stage), candidate);
+      assert.equal(fs.existsSync(join(f.dir, 'worker.lock')), false);
+      return;
+    }
+    // Ack has no fresh deadline; with unchanged task inventory its explicit retry
+    // remains byte-identical even while the clock advances.
     assert.equal((await f.admin(action, payload)).ok, true);
     assert.equal(fs.existsSync(f.stage), false);
     assert.equal((await f.admin('ready')).ok, true);
