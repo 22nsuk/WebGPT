@@ -2,26 +2,24 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { syncBuiltinESMExports } from 'node:module';
 import { start } from './worker.mjs';
 import { request, collectTask } from './client.mjs';
+import { callTool, controllerProxy, replyJson as json } from './test-fixtures/worker-http.mjs';
 
 const text = 'Guarded result 한국어 🧪\r\nPRIVATE_GUARD_FIXTURE';
 const hash = createHash('sha256').update(text).digest('hex');
-const json = (res, value, status = 200) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(value)); };
 async function fixture(t, { status = 'completed', intercept = async () => false } = {}) {
   const base = fs.realpathSync.native(fs.mkdtempSync(join(tmpdir(), 'webgpt guarded collection ')));
   const dir = join(base, 'runtime'), root = join(base, 'project'); fs.mkdirSync(root);
   let worker, proxy;
-  const failures = [], actions = [];
   t.after(async () => {
-    if (proxy) { proxy.closeAllConnections(); await new Promise(resolve => proxy.close(resolve)); }
+    await proxy?.close();
     await worker?.close(); fs.rmSync(base, { recursive: true, force: true });
-    assert.deepEqual(failures, []);
+    assert.deepEqual(proxy?.failures ?? [], []);
   });
   const direct = { dataDir: dir };
   const boot = async () => {
@@ -31,9 +29,7 @@ async function fixture(t, { status = 'completed', intercept = async () => false 
   await boot();
   const admin = (action, payload) => request(action, payload, direct);
   const task = await admin('register', { id: 'owned', instructions: 'Retain instructions', inputs: { sample: text }, workspace: { root, mode: 'edit' } });
-  const call = async (name, args) => (await (await fetch(`http://127.0.0.1:${worker.mcpPort}/mcp`, {
-    method: 'POST', body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
-  })).json()).result;
+  const call = (name, args) => callTool(worker, name, args);
   if (status !== 'running') assert.equal((await call('submit_result', { token: task.token, status, summary: 'done', result: text })).isError, false);
   const stateFile = join(dir, 'state.json'), artifact = join(dir, 'owned.result.txt');
   const state = () => JSON.parse(fs.readFileSync(stateFile)).find(t => t.id === 'owned');
@@ -44,23 +40,10 @@ async function fixture(t, { status = 'completed', intercept = async () => false 
     });
     return { status: response.status, data: await response.json() };
   };
-  const f = { base, dir, root, direct, admin, task, call, stateFile, artifact, state, payload, post, actions,
+  const f = { base, dir, root, direct, admin, task, call, stateFile, artifact, state, payload, post,
     restart: async () => { await worker.close(); await boot(); } };
-  proxy = createServer((req, res) => {
-    Promise.resolve().then(async () => {
-      const chunks = []; for await (const chunk of req) chunks.push(chunk);
-      actions.push(req.url);
-      if (await intercept({ ...f, req, res, phase: 'before' })) return;
-      const response = await fetch(`http://127.0.0.1:${worker.controlPort}${req.url}`, {
-        method: req.method, headers: { authorization: req.headers.authorization, 'content-type': 'application/json' },
-        ...(req.method === 'POST' ? { body: Buffer.concat(chunks) } : {}), redirect: 'error',
-      });
-      const data = await response.json();
-      if (!await intercept({ ...f, req, res, phase: 'after', data })) json(res, data, response.status);
-    }).catch(error => { failures.push(error.message); res.destroy(); });
-  });
-  await new Promise(resolve => proxy.listen(0, '127.0.0.1', resolve));
-  return { ...f, config: { ...direct, controlPort: proxy.address().port } };
+  proxy = await controllerProxy(direct, event => intercept({ ...f, ...event }));
+  return { ...f, actions: proxy.actions, config: { ...direct, controlPort: proxy.port } };
 }
 function inject(f, kind) {
   if (kind === 'result-changed') fs.writeFileSync(f.artifact, 'changed after client verification');
@@ -157,7 +140,7 @@ test('cancel racing collection has an ordered outcome and cannot relabel a colle
   const [collected] = await Promise.all([f.post(), f.admin('cancel', { id: 'owned' })]);
   assert.equal(f.state().collected, true);
   if (collected.status === 200) assert.equal(f.state().discarded ?? false, false);
-  else { assert.equal(collected.data.code, 'COLLECTION_DISCARDED'); assert.equal(f.state().discarded, true); }
+  else { assert.equal(collected.data.code, 'COLLECTION_DISCARDED'); assert.equal(f.state().discarded ?? false, true); }
 });
 
 test('failed state publication preserves inputs and candidate; an explicit same-byte conditional retry succeeds', async t => {
@@ -200,7 +183,7 @@ test('external evidence introduced inside filesystem publication is outside the 
   assert.equal(f.state().collected, true); assert.equal(f.state().token, undefined);
   assert.equal(fs.readFileSync(f.artifact + '.tmp', 'utf8'), text);
   assert.deepEqual(f.actions, ['/wait?id=owned', '/collect', '/reconcile?id=owned']);
-  assert.equal((await collectTask('owned', f.direct, { resume: true })).attention, 'inspect_uncommitted_result');
+  assert.equal((await collectTask('owned', f.config, { resume: true })).attention, 'inspect_uncommitted_result');
 });
 
 test('the guard does not yield to an event-loop continuation before committed retirement', async t => {

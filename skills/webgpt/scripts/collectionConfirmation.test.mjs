@@ -1,7 +1,6 @@
 // Actual loopback controller responses and disposable result files; no live account.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createServer } from 'node:http';
 import { mkdtempSync, realpathSync, readFileSync, writeFileSync, unlinkSync, rmSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -10,47 +9,29 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { request, collectTask, retryableControllerError } from './client.mjs';
 import { start } from './worker.mjs';
+import { callTool, controllerProxy, replyJson as reply } from './test-fixtures/worker-http.mjs';
 
 const execute = promisify(execFile);
 const resultText = 'Retained result 한국어 🧪\r\nPRIVATE_COLLECTION_FIXTURE';
-const reply = (res, data, code = 200) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(data)); };
 async function fixture(t, intercept = async () => false, status = 'completed') {
   const dir = realpathSync.native(mkdtempSync(join(tmpdir(), 'webgpt-collection-confirm-')));
   let worker, proxy;
-  const failures = [], actions = [];
   t.after(async () => {
-    if (proxy) { proxy.closeAllConnections(); await new Promise(resolve => proxy.close(resolve)); }
+    await proxy?.close();
     await worker?.close(); rmSync(dir, { recursive: true, force: true });
-    assert.deepEqual(failures, []);
+    assert.deepEqual(proxy?.failures ?? [], []);
   });
   worker = await start({ dir, port: 0, controlPort: 0, waitMs: 20 });
   const direct = { dataDir: dir, controlPort: worker.controlPort };
   const admin = (action, payload) => request(action, payload, direct);
   const task = await admin('register', { id: 'owned', instructions: 'fixture', inputs: {} });
-  const call = async (name, args) => (await (await fetch(`http://127.0.0.1:${worker.mcpPort}/mcp`, {
-    method: 'POST', body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
-  })).json()).result;
+  const call = (name, args) => callTool(worker, name, args);
   assert.equal((await call('submit_result', { token: task.token, status, summary: 'done', result: resultText })).isError, false);
   const stateFile = join(dir, 'state.json'), artifact = join(dir, 'owned.result.txt');
   const state = () => JSON.parse(readFileSync(stateFile)).find(t => t.id === 'owned');
-  const f = { dir, direct, admin, task, call, stateFile, artifact, state, actions };
-  proxy = createServer((req, res) => {
-    Promise.resolve().then(async () => {
-      const chunks = []; for await (const chunk of req) chunks.push(chunk);
-      actions.push(req.url);
-      if (await intercept({ ...f, req, res, phase: 'before' })) return;
-      // The only upstream is this fixture's real worker, never an arbitrary URL.
-      const response = await fetch(`http://127.0.0.1:${worker.controlPort}${req.url}`, {
-        method: req.method, headers: { authorization: req.headers.authorization, 'content-type': 'application/json' },
-        ...(req.method === 'POST' ? { body: Buffer.concat(chunks) } : {}), redirect: 'error',
-      });
-      const data = await response.json();
-      if (await intercept({ ...f, req, res, phase: 'after', data })) return;
-      reply(res, data, response.status);
-    }).catch(error => { failures.push(error.message); res.destroy(); });
-  });
-  await new Promise(resolve => proxy.listen(0, '127.0.0.1', resolve));
-  return { ...f, config: { ...direct, controlPort: proxy.address().port } };
+  const f = { dir, direct, admin, task, call, stateFile, artifact, state };
+  proxy = await controllerProxy(direct, event => intercept({ ...f, ...event }));
+  return { ...f, actions: proxy.actions, config: { ...direct, controlPort: proxy.port } };
 }
 const collectionStart = resume => resume ? ['/reconcile?id=owned'] : ['/wait?id=owned'];
 const expectedCalls = [...collectionStart(false), '/collect', '/reconcile?id=owned'];
