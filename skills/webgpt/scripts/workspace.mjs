@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { closeSync, constants, fchmodSync, fchownSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, constants, fchmodSync, fchownSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, opendirSync, readdirSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, parse, resolve, sep } from 'node:path';
 import { homedir } from 'node:os';
 import { spawnSync } from 'node:child_process';
@@ -110,6 +110,14 @@ export function readWorkspace(grant,path,options={}) {
   const partial=offset!==1||endLine<totalLines;
   return {...result,text:parts.join(''),partial,startLine:offset,endLine,totalLines,
     nextOffset:endLine<totalLines?endLine+1:null};
+}
+// Readiness needs directory access, not a sorted, revision-hashed listing.
+// Keep the same grant/identity/Git-root checks as listWorkspace. Read one entry
+// (or EOF for an empty directory), discard it and always close the handle.
+// This is not a recursive audit or a guarantee of future read/write access.
+export function probeWorkspace(grant) {
+  const directory=opendirSync(target(grant,'.',false,false,true),{bufferSize:1});
+  try {directory.readSync();} finally {directory.closeSync();}
 }
 export function listWorkspace(grant,path,{cursor,limit=500}={}) {
   if(!Number.isSafeInteger(limit)||limit<1||limit>500)throw Error('limit must be an integer between 1 and 500');
