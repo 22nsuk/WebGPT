@@ -11,16 +11,17 @@ import { acquireRuntimeLock, readStateBytes, readStateMarker, createStateMarker,
 import { protocolVersions, validateMessage, negotiateProtocol, validateArguments } from './protocol.mjs';
 import { auditFromEnvironment, createAuditWriter } from './audit.mjs';
 import { validatedEntryPath } from './installation.mjs';
+import { windowProperties, readWindowOptions, textWindow } from './text-window.mjs';
 
 const schema = properties => ({type:'object',properties,required:Object.keys(properties),additionalProperties:false});
 const str = {type:'string'};
 export const tools = [
   {name:'list_files',description:'List a local project directory, up to 500 entries per page. Use path . for the root. Pass nextCursor as cursor for the next page; restart without a cursor if the directory changes.',inputSchema:{...schema({token:str,path:str}),properties:{token:str,path:str,cursor:str,limit:{type:'integer',minimum:1,maximum:500}}},annotations:{readOnlyHint:true,openWorldHint:false}},
-  {name:'read_file',description:'Read a project text file and its whole-file SHA256 revision. Optional offset (1-based), limit (lines) or maxChars returns a bounded window with partial/range/nextOffset metadata. Missing file returns exists:false. Never replace a file with only an excerpt; read the whole file before editing.',inputSchema:{...schema({token:str,path:str}),properties:{token:str,path:str,offset:{type:'integer',minimum:1,maximum:Number.MAX_SAFE_INTEGER},limit:{type:'integer',minimum:1,maximum:5000},maxChars:{type:'integer',minimum:1,maximum:200000}}},annotations:{readOnlyHint:true,openWorldHint:false}},
+  {name:'read_file',description:'Read a project text file and its whole-file SHA256 revision. Optional offset (1-based), limit (lines) or maxChars returns a bounded window with partial/range/nextOffset metadata. Missing file returns exists:false. Never replace a file with only an excerpt; read the whole file before editing.',inputSchema:{...schema({token:str,path:str}),properties:{token:str,path:str,...windowProperties}},annotations:{readOnlyHint:true,openWorldHint:false}},
   {name:'write_file',description:'Directly create or replace a local project text file. No per-file grants. Read first; expectedSha256 must match its revision, or null for a new file. Original is backed up. No Git or shell.',inputSchema:schema({token:str,path:str,text:str,expectedSha256:{type:['string','null']}}),annotations:{readOnlyHint:false,destructiveHint:true,openWorldHint:false}},
   {name:'delete_file',description:'Directly delete an existing local project file after reading it. Requires matching expectedSha256; original and path are saved for recovery. No directory or recursive deletion.',inputSchema:schema({token:str,path:str,expectedSha256:str}),annotations:{readOnlyHint:false,destructiveHint:true,openWorldHint:false}},
   {name:'get_task',description:'Read the assigned task and input names using its private task token. No repository or Git setup needed.',inputSchema:schema({token:str}),annotations:{readOnlyHint:true,openWorldHint:false}},
-  {name:'read_input',description:'Read one explicitly supplied input by name; no arbitrary filesystem access.',inputSchema:schema({token:str,name:str}),annotations:{readOnlyHint:true,openWorldHint:false}},
+  {name:'read_input',description:'Read one explicitly supplied input by name; no filesystem access. Optional offset (1-based), limit (lines) or maxChars returns complete lines with partial/range/nextOffset and the whole-input SHA256. Without options returns the original full text. Follow nextOffset for required context; an excerpt is not the full input.',inputSchema:{...schema({token:str,name:str}),properties:{token:str,name:str,...windowProperties}},annotations:{readOnlyHint:true,openWorldHint:false}},
   {name:'submit_result',description:'Save the task deliverable, evidence and limitations, and notify the supervisor. No file changes required. Terminal: stops backup checks. Retry identical submission safely. Do not delete the chat.',inputSchema:schema({token:str,status:{type:'string',enum:['completed','failed','cancelled']},summary:str,result:str}),annotations:{readOnlyHint:false,destructiveHint:false,idempotentHint:true,openWorldHint:false}}
 ];
 export async function start({dir,port=43137,controlPort=43139,publicMcp=false,backupMs=900000,waitMs=55000,closeGraceMs=5000,now=Date.now,configFile=configurationFile(),audit=false,entryPath}={}) {
@@ -278,7 +279,12 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
     if(['list_files','read_file','write_file','delete_file'].includes(name))checkDataBoundary(t.workspace);
     validateArguments(tool,args);
     if(name==='get_task')return {id:t.id,instructions:t.instructions,inputs:Object.keys(t.inputs),status:t.status,workspace:t.workspace??null,changes:t.changes??[],recoveryRequired:t.recoveryRequired??[]};
-    if(name==='read_input'){if(!Object.hasOwn(t.inputs,args.name))throw Error('unknown input');return {name:args.name,text:t.inputs[args.name]};}
+    if(name==='read_input'){
+      if(!Object.hasOwn(t.inputs,args.name))throw Error('unknown input');
+      const text=t.inputs[args.name],range=readWindowOptions({offset:args.offset,limit:args.limit,maxChars:args.maxChars});
+      if(!range)return {name:args.name,text}; // Preserve the original response exactly.
+      return {name:args.name,...textWindow(text,range,'input'),sha256:createHash('sha256').update(text).digest('hex')};
+    }
     if(['list_files','read_file','write_file','delete_file'].includes(name)) {
       if(t.status!=='running')throw Error('task is terminal; file access closed');
       if(name==='list_files')return listWorkspace(t.workspace,args.path,{cursor:args.cursor,limit:args.limit});

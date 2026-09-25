@@ -95,6 +95,12 @@ revisions between windows, and read the whole file before replacing it; an excer
 file body. This adapts the bounded-read idea from
 [faithforone/WebGPT](https://github.com/faithforone/WebGPT/tree/b8206c57866cf574fdb65aa2aadc146a4ad2e469)
 to this fork's revision and recovery contracts.
+`read_input` accepts the same optional line-window arguments for long explicitly
+supplied text. Its no-argument full response remains `{name,text}`; bounded responses
+include the whole-input SHA and continuation metadata. Reuse only the required context,
+not an excerpt presented as a complete source. See [workspace.md](skills/webgpt/references/workspace.md)
+for limits and schema refresh; supplied names remain input keys, not file paths.
+
 Follow the [update procedure](skills/webgpt/references/operations-windows.md#parent-resume-transition-and-rollback):
 confirm idle, stop the identified worker and restart owner, verify exit, preserve a consistent
 private backup, then replace the matching worker/client/helpers. Keep a healthy existing tunnel
