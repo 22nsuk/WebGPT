@@ -67,6 +67,20 @@ file mutations. Unrelated tasks remain available. Edit/delete receipts also requ
 an intact original backup matching their recorded hash, as described in
 [backup-safety.md](backup-safety.md). No deleted backup or history is reconstructed.
 
+### Receipt matching cost
+
+Recovery inspection still reads and validates journal and original-backup bytes on
+every call. The worker indexes those validated receipts by operation ID only for
+that inspection, then compares the complete receipt, including extra fields. It
+checks both recorded receipts without matching journals and applied journals not
+recorded in state. Duplicate state records are not collapsed; startup preserves
+the first-match rule and reports conflicting evidence without overwriting it.
+
+This removes repeated full-array receipt searches, using temporary memory linear
+in the history size. It is not an integrity cache, a new recovery policy or a
+constant-time request guarantee. File reads/hashing, directory sorting, shared
+state checks, conditional collection and the external-writer limits remain.
+
 ## Interrupted controller state stages
 
 `state.json` is the committed task inventory; `state.json.tmp` is only a candidate.

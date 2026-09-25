@@ -133,18 +133,23 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
   const revoke=t=>{delete t.token;t.inputs={};t.instructions='';};
   const recoveryFor=task=>{
     const recovery=inspectRecovery(dir,task.id);
-    const directory=resolve(dir,'recovery',task.id);
-    // Inspect both directions: a recorded receipt with a lost journal is not
-    // healthy simply because the remaining directory contains no invalid JSON.
-    // An unreadable directory already explains all its inaccessible children.
-    for(const expected of task.changes??[])if(!recovery.unresolved.includes(directory)
-        &&!recovery.receipts.some(actual=>isDeepStrictEqual(actual,expected))){
-      const operation=expected.operation;
-      recovery.unresolved.push(typeof operation==='string'&&/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(operation)
-        ?resolve(dir,'recovery',task.id,operation+'.json'):resolve(dir,'recovery',task.id));
+    const directory=resolve(dir,'recovery',task.id), unresolved=new Set(recovery.unresolved);
+    // inspectRecovery binds each validated operation to its unique journal name.
+    // Index candidates for this inspection only; an ID match is not receipt equality.
+    const byOperation=new Map(recovery.receipts.map(receipt=>[receipt.operation,receipt]));
+    const unrecorded=new Set(recovery.receipts);
+    for(const expected of task.changes??[]){
+      const actual=byOperation.get(expected.operation);
+      if(actual&&isDeepStrictEqual(actual,expected))unrecorded.delete(actual);
+      // Inspect both directions, including every duplicate state receipt. A root
+      // diagnostic suppresses child noise, not matching of later valid receipts.
+      else if(!unresolved.has(directory)){
+        const operation=expected.operation;
+        unresolved.add(typeof operation==='string'&&/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(operation)
+          ?resolve(directory,operation+'.json'):directory);
+      }
     }
-    recovery.unresolved=[...new Set(recovery.unresolved)];
-    return recovery;
+    return {...recovery,unresolved:[...unresolved],unrecorded};
   };
   // Recover recorded mutations; never guess whether an interrupted mutation was applied.
   for(const t of tasks){
@@ -152,9 +157,12 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
     if(t.status!=='running')continue;
     const {receipts,unresolved}=recoveryFor(t);
     t.recoveryRequired=unresolved;
+    // Preserve find()'s first-match rule for conflicting duplicate state records.
+    const recorded=new Map();
+    for(const change of t.changes??[])if(!recorded.has(change.operation))recorded.set(change.operation,change);
     for(const receipt of receipts) {
-      const existing=(t.changes??=[]).find(c=>c.operation===receipt.operation);
-      if(!existing)t.changes.push(receipt);
+      const existing=recorded.get(receipt.operation);
+      if(!existing){(t.changes??=[]).push(receipt);recorded.set(receipt.operation,receipt);}
       else if(!isDeepStrictEqual(existing,receipt))
         t.recoveryRequired.push(resolve(dir,'recovery',t.id,receipt.operation+'.json'));
     }
@@ -167,11 +175,10 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
     return {events:selected.filter(t=>t.status!=='running'&&!t.collected).map(t=>({id:t.id,status:t.status,summary:t.summary,artifact:t.artifact,sha256:t.sha256})),backupDue:selected.filter(t=>t.status==='running'&&now()>=t.nextCheck).map(t=>t.id),...(recoveryRequired.length?{recoveryRequired}:{}),...(resultRecoveryRequired.length?{resultRecoveryRequired}:{})};
   };
   const flagUnrecordedChanges=task=>{
-    const {receipts,unresolved}=recoveryFor(task);
+    const {unrecorded,unresolved}=recoveryFor(task);
     const pending=new Set([...(task.recoveryRequired??[]),...unresolved]);
-    for(const receipt of receipts)
-      if(!task.changes?.some(c=>isDeepStrictEqual(c,receipt)))
-        pending.add(resolve(dir,'recovery',task.id,receipt.operation+'.json'));
+    for(const receipt of unrecorded)
+      pending.add(resolve(dir,'recovery',task.id,receipt.operation+'.json'));
     // This safety block intentionally stays live even if state storage is unavailable.
     if(pending.size){task.recoveryRequired=[...pending];wake();}
   };
