@@ -2,7 +2,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,29 +9,24 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { start } from './worker.mjs';
 import { withStateWriteFailure } from './test-fixtures/state-write-failure.mjs';
+import { callTool, controllerProxy, replyJson as reply } from './test-fixtures/worker-http.mjs';
 import { request, collectTask, reconcileTasks } from './client.mjs';
 
 const execute = promisify(execFile);
 const text = 'Retained 한국어 🧪\r\nPRIVATE_RECOVERY_FIXTURE';
-const reply = (res, value, status = 200) => {
-  res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(value));
-};
 async function fixture(t, { status = 'completed', intercept = async () => false, interrupted = false } = {}) {
   const base = fs.realpathSync.native(fs.mkdtempSync(join(tmpdir(), 'webgpt-collection-recovery-')));
   const dir = join(base, 'runtime'), root = join(base, 'project'); fs.mkdirSync(root);
   let worker, proxy;
-  const actions = [], failures = [];
   t.after(async () => {
-    if (proxy) { proxy.closeAllConnections(); await new Promise(resolve => proxy.close(resolve)); }
+    await proxy?.close();
     await worker?.close(); fs.rmSync(base, { recursive: true, force: true });
-    assert.deepEqual(failures, []);
+    assert.deepEqual(proxy?.failures ?? [], []);
   });
   worker = await start({ dir, port: 0, controlPort: 0, waitMs: 20, configFile: join(base, 'config.json') });
   const direct = { dataDir: dir, controlPort: worker.controlPort };
   const admin = (action, payload) => request(action, payload, direct);
-  const call = async (name, args) => (await (await fetch(`http://127.0.0.1:${worker.mcpPort}/mcp`, {
-    method: 'POST', body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
-  })).json()).result;
+  const call = (name, args) => callTool(worker, name, args);
   const register = id => admin('register', { id, instructions: 'Retain instructions', inputs: { sample: text }, workspace: { root, mode: 'edit' } });
   const complete = async (task, terminal = status) => {
     assert.equal((await call('submit_result', { token: task.token, status: terminal, summary: 'done', result: text })).isError, false);
@@ -54,22 +48,9 @@ async function fixture(t, { status = 'completed', intercept = async () => false,
     const directory = join(dir, 'recovery', id); fs.mkdirSync(directory, { recursive: true });
     const file = join(directory, 'unresolved.json'); fs.writeFileSync(file, '{}'); return file;
   };
-  const f = { base, dir, root, task, artifact, state, admin, call, register, complete, evidence, direct, actions };
-  proxy = createServer((req, res) => {
-    Promise.resolve().then(async () => {
-      const chunks = []; for await (const chunk of req) chunks.push(chunk);
-      actions.push(req.url);
-      if (await intercept({ ...f, req, res, phase: 'before' })) return;
-      const response = await fetch(`http://127.0.0.1:${worker.controlPort}${req.url}`, {
-        method: req.method, headers: { authorization: req.headers.authorization, 'content-type': 'application/json' },
-        ...(req.method === 'POST' ? { body: Buffer.concat(chunks) } : {}), redirect: 'error',
-      });
-      const data = await response.json();
-      if (!await intercept({ ...f, req, res, phase: 'after', data })) reply(res, data, response.status);
-    }).catch(error => { failures.push(error.message); res.destroy(); });
-  });
-  await new Promise(resolve => proxy.listen(0, '127.0.0.1', resolve));
-  return { ...f, config: { ...direct, controlPort: proxy.address().port } };
+  const f = { base, dir, root, task, artifact, state, admin, call, register, complete, evidence, direct };
+  proxy = await controllerProxy(direct, event => intercept({ ...f, ...event }));
+  return { ...f, actions: proxy.actions, config: { ...direct, controlPort: proxy.port } };
 }
 const initial = resume => resume ? ['/reconcile?id=owned'] : ['/wait?id=owned'];
 const refused = resume => resume ? initial(true) : [...initial(false), '/collect'];

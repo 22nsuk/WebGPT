@@ -4,7 +4,7 @@ import { mkdirSync, writeFileSync, readFileSync, existsSync, renameSync, unlinkS
 import { resolve, relative, isAbsolute, sep, dirname, basename } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { grantWorkspace, listWorkspace, readWorkspace, changeWorkspace, inspectRecovery } from './workspace.mjs';
+import { grantWorkspace, listWorkspace, probeWorkspace, readWorkspace, changeWorkspace, inspectRecovery } from './workspace.mjs';
 import { configuration, configurationFile } from './client.mjs';
 import { inspectPendingResults, storeResult, verifySavedResult } from './results.mjs';
 import { acquireRuntimeLock, readStateBytes, readStateMarker, createStateMarker, assertNoStateStage, writeStateBytes, parseState, fault, startupExitCode } from './runtime.mjs';
@@ -224,7 +224,7 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
     for(const task of tasks.filter(t=>t.status==='running'))flagUnrecordedChanges(task);
     const recoveryRequired=tasks.filter(t=>t.status==='running'&&t.recoveryRequired?.length).map(t=>t.id);
     const unavailableWorkspaces=tasks.filter(t=>t.status==='running'&&t.workspace).filter(t=>{
-      try{checkDataBoundary(t.workspace);listWorkspace(t.workspace,'.',{limit:1});return false;}catch{return true;}
+      try{checkDataBoundary(t.workspace);probeWorkspace(t.workspace);return false;}catch{return true;}
     }).map(t=>t.id);
     const pendingResults=pendingResultTasks();
     const issues=[...(stopping?['SHUTTING_DOWN']:[]),...(stateFailure?['STATE_INVALID']:[]),
