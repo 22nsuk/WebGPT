@@ -88,7 +88,7 @@ for (const kind of ['pending-result', 'journal', 'result-changed', 'result-missi
     });
     assert.deepEqual(fs.readFileSync(f.stateFile), before);
     assert.equal(f.state().token, f.task.token); assert.equal(f.state().inputs.sample, text);
-    assert.deepEqual(f.actions, [resume ? '/reconcile' : '/wait?id=owned', '/collect']);
+    assert.deepEqual(f.actions, [resume ? '/reconcile?id=owned' : '/wait?id=owned', '/collect']);
     assert.equal((await f.call('get_task', { token: f.task.token })).isError, false);
   });
 }
@@ -199,7 +199,7 @@ test('external evidence introduced inside filesystem publication is outside the 
   }, () => assert.rejects(collectTask('owned', f.config), { code: 'COLLECTION_UNCONFIRMED' }));
   assert.equal(f.state().collected, true); assert.equal(f.state().token, undefined);
   assert.equal(fs.readFileSync(f.artifact + '.tmp', 'utf8'), text);
-  assert.deepEqual(f.actions, ['/wait?id=owned', '/collect', '/reconcile']);
+  assert.deepEqual(f.actions, ['/wait?id=owned', '/collect', '/reconcile?id=owned']);
   assert.equal((await collectTask('owned', f.direct, { resume: true })).attention, 'inspect_uncommitted_result');
 });
 

@@ -134,6 +134,17 @@ Readiness checks storage, state consistency, active recovery journals and worksp
 the public `/health` endpoint reports only liveness. Reconciliation includes retired tasks
 and verifies retained result hashes without acknowledging results or resending browser work.
 
+For an owned batch, use `node <skill>/scripts/client.mjs reconcile <task-id> [task-id ...]`
+or `reconcileTasks(config, { ids: [...] })`. This limits retained task-detail inspection
+and returned task records to those IDs; `health` still describes the entire worker and
+checks active work globally. No-argument reconciliation remains the full retained-evidence
+audit. Collection and resume select their task automatically, preserving pre-commit and
+post-commit verification. Invalid/unknown IDs or unconfirmed response scopes fail rather
+than widening the request. Update the identified idle worker and client together; an old
+worker may reject scoped queries. Shared state validation and active-workspace health
+checks are not constant-time. This adds no automatic repair, resend or acknowledgment to
+reconciliation, and no browser actions.
+
 Interrupted result files remain visible as uncommitted candidates. Conflicting resubmissions
 cannot overwrite them, and terminal retries verify the saved artifact before reporting success.
 Missing recorded journals block only the affected task. See

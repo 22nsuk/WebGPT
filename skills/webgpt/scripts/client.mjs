@@ -59,7 +59,7 @@ export async function request(action, payload, config = configuration(), { signa
   if (!read && !['register', 'ack', 'collect', 'checked', 'cancel', 'shutdown'].includes(action)) throw Error('unknown controller action');
   let ids;
   if (read && payload !== undefined) {
-    if (action !== 'wait' || !payload || Array.isArray(payload) || Object.keys(payload).some(key => key !== 'ids'))
+    if (!['wait', 'reconcile'].includes(action) || !payload || Array.isArray(payload) || Object.keys(payload).some(key => key !== 'ids'))
       throw Error('invalid controller payload');
     ids = taskIds(payload.ids);
   } else if (!read && (!payload || typeof payload !== 'object' || Array.isArray(payload))) {
@@ -83,7 +83,7 @@ export async function request(action, payload, config = configuration(), { signa
     statusCode: response.status, code: result?.code, details: result,
     retryable: response.status === 503 && result?.code === 'SHUTTING_DOWN' && result?.retryable === true,
   });
-  if (ids) {
+  if (ids && action === 'wait') {
     if (!result || !Array.isArray(result.events) || !Array.isArray(result.backupDue) || typeof result.settled !== 'boolean'
         || (result.recoveryRequired !== undefined && !Array.isArray(result.recoveryRequired))
         || (result.resultRecoveryRequired !== undefined && !Array.isArray(result.resultRecoveryRequired)))
@@ -92,6 +92,15 @@ export async function request(action, payload, config = configuration(), { signa
         || result.recoveryRequired?.some(event => !ids.includes(event?.id))
         || result.resultRecoveryRequired?.some(event => !ids.includes(event?.id)))
       throw Error('worker returned state outside the requested task scope');
+  }
+  if (ids && action === 'reconcile') {
+    // Do not accept an older worker silently ignoring the scope or a partial
+    // response that omits/duplicates a requested task. This is not a new grant.
+    if (!Array.isArray(result?.scope) || result.scope.length !== ids.length
+        || result.scope.some((id, index) => id !== ids[index]) || !Array.isArray(result.tasks)
+        || result.tasks.length !== ids.length || new Set(result.tasks.map(task => task?.id)).size !== ids.length
+        || result.tasks.some(task => !ids.includes(task?.id)))
+      throw Error('worker did not confirm task-scoped reconciliation; update the idle worker and client together');
   }
   return result;
 }
@@ -175,7 +184,7 @@ function assertCollectionReady(task) {
 // Both collection paths use the same authoritative post-ack observation. A
 // successful HTTP reply alone cannot establish retirement or its disposition.
 async function inspectCollection(id, config, { signal }) {
-  const snapshot = await readReconciliation(config, { signal });
+  const snapshot = await readReconciliation(config, { signal, ids: [id] });
   if (snapshot.health?.issues?.includes('STATE_INVALID'))
     throw Object.assign(Error('controller state is invalid; preserve evidence and inspect'), { code: 'STATE_INVALID' });
   const task = snapshot.tasks.find(task => task.id === id);
@@ -234,9 +243,9 @@ async function acknowledgeCollection(id, before, config, { signal }) {
 }
 
 // Loading controller metadata and auditing every result are distinct operations.
-// Collection still receives the complete health report; no wire scope is changed.
-async function readReconciliation(config, { signal }) {
-  const snapshot = await request('reconcile', undefined, config, { signal });
+// Collection still receives global health, but not unrelated retained journals.
+async function readReconciliation(config, { signal, ids }) {
+  const snapshot = await request('reconcile', ids === undefined ? undefined : { ids }, config, { signal });
   if (!snapshot || !Array.isArray(snapshot.tasks)) throw Error('worker does not support reconciliation');
   return snapshot;
 }
@@ -248,9 +257,9 @@ function reconciliationAttention(task, integrity) {
 }
 
 // Read-only reconciliation. Never acknowledges, cancels, re-registers or opens a chat.
-export async function reconcileTasks(config = configuration(), { signal } = {}) {
-  const snapshot = await readReconciliation(config, { signal });
-  return { health: snapshot.health, browserChecked: false, tasks: snapshot.tasks.map(task => {
+export async function reconcileTasks(config = configuration(), { signal, ids } = {}) {
+  const snapshot = await readReconciliation(config, { signal, ids });
+  return { health: snapshot.health, browserChecked: false, ...(ids === undefined ? {} : { scope: snapshot.scope }), tasks: snapshot.tasks.map(task => {
     let integrity = 'not_expected';
     if (task.artifact || task.sha256) {
       try { integrity = verifyResult(task, config); }
@@ -268,9 +277,11 @@ if (process.argv[1] && process.argv[1] !== '-' && import.meta.url === pathToFile
     if (action === 'dispatch') {
       const { dispatchCli } = await import('./dispatch.mjs');
       result = await dispatchCli(args);
-    } else if (action === 'reconcile' || action === 'ready' || action === 'shutdown') {
+    } else if (action === 'reconcile') {
+      result = await reconcileTasks(configuration(), args.length ? { ids: args } : {});
+    } else if (action === 'ready' || action === 'shutdown') {
       if (args.length) throw Error('unexpected controller arguments');
-      result = action === 'reconcile' ? await reconcileTasks() : await request(action, action === 'shutdown' ? {} : undefined);
+      result = await request(action, action === 'shutdown' ? {} : undefined);
     } else if (action === 'wait' && args.length) {
       if (args[0] === '--file' && args.length !== 2) throw Error('usage: client.mjs wait --file <json-file>');
       const saved = args[0] === '--file' ? readJsonFile(args[1])

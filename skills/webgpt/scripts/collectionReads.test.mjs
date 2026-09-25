@@ -2,16 +2,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { syncBuiltinESMExports } from 'node:module';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
 import { start } from './worker.mjs';
 import { collectTask, reconcileTasks, request } from './client.mjs';
 
 const text = '\uFEFFRetained 한국어 🧪\r\n';
 const sha256 = createHash('sha256').update(text).digest('hex');
-async function fixture(t, { count = 8, status = 'completed', collected = false, discarded = false, artifact = true } = {}) {
+async function fixture(t, { count = 8, status = 'completed', collected = false, discarded = false, artifact = true, recovery = false } = {}) {
   const dir = fs.realpathSync.native(fs.mkdtempSync(join(tmpdir(), 'webgpt-collection-reads-')));
   let worker;
   t.after(async () => { await worker?.close(); fs.rmSync(dir, { recursive: true, force: true }); });
@@ -20,10 +23,19 @@ async function fixture(t, { count = 8, status = 'completed', collected = false, 
     const id = index === 0 ? 'owned' : 'retained-' + index;
     const saved = index !== 0 || artifact;
     if (saved) fs.writeFileSync(path(id), text, { mode: 0o600 });
+    const changes = [];
+    if (recovery) {
+      const operation = randomUUID(), directory = join(dir, 'recovery', id);
+      fs.mkdirSync(directory, { recursive: true });
+      const backup = join(directory, operation + '.before.txt'); fs.writeFileSync(backup, text);
+      const receipt = { operation, path: 'notes.txt', action: 'edit', beforeSha256: sha256, afterSha256: sha256, backup };
+      fs.writeFileSync(join(directory, operation + '.json'), JSON.stringify({ ...receipt, state: 'applied' }));
+      changes.push(receipt);
+    }
     return { id, instructions: '', inputs: {}, status: index === 0 ? status : 'completed',
       collected: index === 0 ? collected : true, ...(index === 0 && discarded ? { discarded } : {}),
       ...(index === 0 && !collected ? { token: 'fixture-only-owned-token' } : {}),
-      summary: 'done', nextCheck: null, changes: [], ...(saved ? { artifact: path(id), sha256 } : {}) };
+      summary: 'done', nextCheck: null, changes, ...(saved ? { artifact: path(id), sha256 } : {}) };
   });
   fs.writeFileSync(join(dir, 'state.json'), JSON.stringify(tasks), { mode: 0o600 });
   worker = await start({ dir, port: 0, controlPort: 0, configFile: join(dir, 'config.json'), waitMs: 20 });
@@ -138,4 +150,80 @@ test('target verification is fresh on later resume and full reconciliation remai
   assert.equal(snapshot.tasks.find(t => t.id === 'owned').integrity, 'mismatch_or_unreadable');
   assert.deepEqual(f.state(), before);
   assert.equal((await request('tasks', undefined, f.config)).running, 0);
+});
+
+// Reuse the same reader instrumentation for retained originals as for results.
+const originals = f => ({ ...f, path: id => f.tasks.find(task => task.id === id).changes[0].backup });
+for (const mode of ['ordinary', 'resume', 'retired']) test(`${mode} collection does not read unrelated retained original backups`, async t => {
+  const f = await fixture(t, { recovery: true, collected: mode === 'retired' });
+  const measured = originals(f), before = f.state();
+  const reads = await observeReads(t, measured, async () => {
+    const result = await collectTask('owned', f.config, { resume: mode !== 'ordinary' });
+    assert.equal(result.collected, true); assert.equal(result.integrity, 'verified');
+  });
+  assert.deepEqual(reads, expectedReads(measured, mode === 'ordinary' ? 2 : mode === 'resume' ? 3 : 1));
+  if (mode === 'retired') assert.deepEqual(f.state(), before);
+});
+
+test('scoped reconciliation is read-only, deduplicates IDs and preserves global health and full diagnostics', async t => {
+  const f = await fixture(t, { recovery: true, collected: true });
+  await request('register', { id: 'active', instructions: '', inputs: {} }, f.config);
+  fs.writeFileSync(f.path('active') + '.tmp', 'pending evidence');
+  fs.writeFileSync(originals(f).path('retained-2'), 'corrupted original');
+  const before = f.state();
+  const reads = await observeReads(t, originals(f), async () => {
+    const selected = await reconcileTasks(f.config, { ids: ['owned', 'retained-1', 'owned'] });
+    assert.deepEqual(selected.scope, ['owned', 'retained-1']);
+    assert.deepEqual(selected.tasks.map(task => task.id), ['owned', 'retained-1']);
+    assert.ok(selected.tasks.every(task => task.integrity === 'verified'));
+    assert.equal(selected.browserChecked, false);
+    assert.ok(selected.health.issues.includes('RESULT_RECOVERY_REQUIRED'), 'unrelated active-task health remains visible');
+  });
+  assert.deepEqual(reads.map(read => read.file), ['owned', 'retained-1'].map(originals(f).path));
+  assert.deepEqual(f.state(), before);
+  const full = await reconcileTasks(f.config);
+  assert.equal(full.scope, undefined); assert.equal(full.tasks.length, 9);
+  assert.equal(full.tasks.find(task => task.id === 'retained-2').attention, 'inspect_recovery');
+});
+
+test('scoped reconciliation rejects invalid requests and missing, widened or duplicate response scopes', async t => {
+  const f = await fixture(t, { collected: true }), before = f.state();
+  const url = `http://127.0.0.1:${f.config.controlPort}/reconcile`;
+  const headers = { authorization: 'Bearer ' + fs.readFileSync(join(f.dir, 'controller.key'), 'utf8') };
+  assert.equal((await fetch(url + '?id=owned')).status, 401);
+  for (const query of ['?id=', '?id=../other', '?id=missing', '?other=owned', '?id=owned&other=1'])
+    assert.equal((await fetch(url + query, { headers })).status, 400);
+  const valid = await request('reconcile', { ids: ['owned'] }, f.config);
+  for (const bad of [
+    { ...valid, scope: undefined }, { ...valid, scope: ['retained-1'] },
+    { ...valid, tasks: [] }, { ...valid, tasks: [valid.tasks[0], valid.tasks[0]] },
+    { ...valid, tasks: [{ ...valid.tasks[0], id: 'retained-1' }] },
+  ]) {
+    let calls = 0;
+    const mock = t.mock.method(globalThis, 'fetch', async () => { calls++; return new Response(JSON.stringify(bad)); });
+    try { await assert.rejects(request('reconcile', { ids: ['owned'] }, f.config), /task-scoped reconciliation/); }
+    finally { mock.mock.restore(); }
+    assert.equal(calls, 1, 'no automatic full-scope fallback');
+  }
+  await assert.rejects(request('reconcile', { ids: [] }, f.config));
+  assert.deepEqual(f.state(), before);
+});
+
+test('reconcile CLI accepts task IDs without collecting or exposing private inputs', async t => {
+  const f = await fixture(t);
+  const privateTask = await request('register', { id: 'private', instructions: 'PRIVATE_RECONCILIATION_INSTRUCTION',
+    inputs: { sample: 'PRIVATE_RECONCILIATION_INPUT' } }, f.config);
+  const before = f.state();
+  const file = join(f.dir, 'config.json'); fs.writeFileSync(file, JSON.stringify(f.config));
+  const { stdout } = await promisify(execFile)(process.execPath,
+    [fileURLToPath(new URL('./client.mjs', import.meta.url)), 'reconcile', 'owned', 'private'], {
+      env: { ...process.env, WEBGPT_CONFIG: file, WEBGPT_DATA_DIR: f.dir }, windowsHide: true, timeout: 10000,
+    });
+  const result = JSON.parse(stdout);
+  assert.deepEqual(result.scope, ['owned', 'private']); assert.equal(result.tasks.length, 2);
+  assert.equal(result.tasks[0].integrity, 'verified'); assert.equal(result.browserChecked, false);
+  assert.equal(result.tasks[1].integrity, 'not_expected');
+  for (const secret of ['fixture-only-owned-token', privateTask.token, 'PRIVATE_RECONCILIATION_INSTRUCTION', 'PRIVATE_RECONCILIATION_INPUT'])
+    assert.ok(!stdout.includes(secret));
+  assert.deepEqual(f.state(), before);
 });
