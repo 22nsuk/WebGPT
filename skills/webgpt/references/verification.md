@@ -14,8 +14,8 @@ transport/verification exercises, not hidden benchmarks of model intelligence.
 | Scenario | Parent entry / worker path | Local evidence checked | Evidence the parent must still inspect |
 |---|---|---|---|
 | `text` | `prepare text` → register → observed web dispatch → `read_input` / `submit_result` | Saved result hash and exact arithmetic JSON | Requested web mode, selected connector, actual new user message and useful answer |
-| `read` | `prepare read` → read-only project → `read_file` / `submit_result` | Original two-file fixture unchanged, no change receipts, correct defect report | Actual file-read calls and granted read-only root; no substitution with pasted code |
-| `edit` | `prepare edit` → edit project → `write_file` / `submit_result` | One expected receipt, original backup/recovery checks, exact corrected bytes and arithmetic behavior | Actual stale-SHA write rejection; the result's `staleWriteRejected` boolean is only a claim |
+| `read` | `prepare read` → read-only project → `read_file` / `submit_result` | Matching recorded read grant, unchanged two-file fixture, no receipts, correct defect report | Actual file-read calls and intended registration; no substitution with pasted code |
+| `edit` | `prepare edit` → edit project → `write_file` / `submit_result` | Matching recorded edit grant, one expected receipt, backup/recovery checks, exact corrected bytes and behavior | Actual stale-SHA write rejection; the result's `staleWriteRejected` boolean is only a claim |
 | `resume` | `prepare resume` once → dispatch once → terminal output → fresh parent `check` / explicit `collect --resume` | Retained result, current collection state and unchanged fixture | Same task/chat/ledger; no replacement registration, new prompt or repeated acknowledgment |
 
 Implementation owners: [verification.mjs](../scripts/verification.mjs) prepares/checks;
@@ -78,10 +78,11 @@ observation. Reading the dispatch ledger briefly takes its existing cooperative 
 Do not run this checker concurrently with the parent's ledger mutation.
 
 Keep each report separately (e.g. `local-before.json`, `local-after.json`). `checks`
-distinguishes controller availability, global health, task recovery, result contents,
-fixture bytes, arithmetic behavior and change receipts. Global health can be blocked by
-another active task; inspect the existing controller diagnostics privately rather than
-exporting that task's details here. The read fixture intentionally
+distinguishes controller availability, its current state observation, global health,
+registered workspace identity, task recovery, result contents, fixture bytes, arithmetic
+behavior and change receipts. Global health can be blocked by another active task;
+inspect the existing controller diagnostics privately rather than exporting its details.
+The read fixture intentionally
 still computes the wrong total; its correct *review* plus unchanged source is success.
 The edit fixture must exactly match the requested one-line correction. Alternative
 implementations require a separately reviewed exercise, not a weakened acceptance check.
@@ -89,14 +90,61 @@ Only those exact bundled bytes are evaluated from an in-memory module, never an 
 returned module, file path, subprocess or repository test command. Every check revalidates
 current bytes even if Node has cached the immutable module. This is not a general sandbox.
 
-**Exit 0 means local fixture PASS only.** Exit 2 means PENDING, BLOCKED or FAIL; exit 1
-means invalid input or inability to produce the report. `browserChecked` is always false
-and `liveVerdict` is always `NOT_EVALUATED`, even with a confirmed dispatch ledger. The
-ledger records prior parent observations; it cannot independently prove current UI state.
-Missing, invalid or wrong-task/mode dispatch evidence and numeric measurements are reported
-separately; they do not erase valid local evidence or confer end-to-end acceptance.
+## Verdict and exit-code contract (check report version 2)
 
-Inspect `parentMustVerify` and the actual narrow UI/tool evidence. Quoted errors and a
+`localVerdict` measures this task's result/fixture acceptance, not overall worker readiness
+or web dispatch. It uses an explicit list of task checks, never every observation in
+`checks`. `checks.globalHealth`, `dispatch` and parent-reported measurements are separate:
+an unrelated recovery issue or a recorded mode mismatch does not change local PASS.
+They still require investigation before operational acceptance; exit 0 is **not** permission
+to collect, send again, ignore readiness or certify the requested browser mode.
+
+| Field / outcome | Meaning | CLI exit |
+|---|---|---|
+| `PASS` | Completed, not discarded; owned result, recovery, fixture and recorded grant checks pass | 0 |
+| `PENDING` | A supported response identifies a running task; final acceptance has not occurred | 2 |
+| `FAIL` | Terminal outcome is failed/cancelled/discarded, or a task acceptance check fails | 2 |
+| `BLOCKED` | Required controller/state/grant proof is unavailable, unsupported or incomplete | 2 |
+| Invalid local input / no report | Unable to produce a report | 1 |
+
+`taskStatus` makes the observed lifecycle explicit; it is null without a supported task
+response. A running edit can have `files:FAIL`, `receipts:FAIL` and `result:NOT_RUN` while
+`localVerdict:PENDING`. These checks compare against the final target, which need not yet
+exist. PENDING is neither a claim that current files are correct nor authorization to keep
+writing through a recovery warning. Read each check. Missing authoritative state or grant
+proof takes precedence and yields BLOCKED even for running work.
+
+`checks.controllerState` requires the controller's new `health.stateVerified:true`:
+its ordinary state/initialization-marker check matched the owned snapshot in this response,
+with no latched invalid-state fault. A failed write canary, pending state stage or unrelated
+active task can make `health.ok:false` despite that successful read. Those readiness faults
+remain visible but do not turn an otherwise correct result into a wrong answer. Conversely,
+unreadable/changed state yields `controllerState:UNAVAILABLE` and BLOCKED, **not PASS** based
+on stale in-memory task data. This is a point-in-time observation, not future writeability,
+an atomic filesystem snapshot or permission to bypass the existing collection guards.
+
+`checks.workspaceGrant` compares explicit owner metadata (`root`, `mode`, `device`, `inode`)
+with the existing `grantWorkspace` descriptor of this run's fixed `project/`. `text`/`resume`
+require an explicit null grant. A different root or mode, or a recreated directory with
+identical content but different identity, fails. The checker never opens a root supplied
+by the response and emits no path/device/inode values in its summary. Reconciliation exposes
+this allowlisted descriptor only on the authenticated controller, including retired tasks;
+it describes the recorded grant, not continuing file access after retirement. No task or
+credential fields are added to public MCP or health output.
+
+`browserChecked` remains false and `liveVerdict` remains `NOT_EVALUATED`, even with local
+PASS and a confirmed dispatch ledger. Missing, invalid or wrong-task/mode dispatch evidence
+and numeric measurements remain separate observations, never end-to-end acceptance.
+
+**Compatibility:** check reports now use version 2 because acceptance no longer depends
+on global readiness. Prepared manifests and measurements remain version 1 / unchanged.
+Update the matching idle worker and parent scripts together: old responses lacking explicit
+`stateVerified` or `workspace` proof produce BLOCKED/exit 2. There is no fallback to global
+`/tasks`, token lookup, direct state-file reads or an unchecked collection path.
+
+Inspect `parentMustVerify` and the actual narrow UI/tool evidence. The automated grant
+comparison verifies stored identity, not the intended registration, original instructions
+or proof that the browser actually used those file tools. Quoted errors and a
 `staleWriteRejected: true` result are not proof of an invocation: match the real `write_file`
 call, task, expected old SHA and rejected response; confirm no second change receipt.
 Read and judge the full answer/diff privately. A correct fixture result is not evidence

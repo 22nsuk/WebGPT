@@ -9,6 +9,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { configuration, reconcileTasks } from './client.mjs';
 import { readDiagnosticBytes } from './audit.mjs';
 import { inspectDispatchEvidence } from './dispatch.mjs';
+import { grantWorkspace } from './workspace.mjs';
 
 export const verificationScenarios = Object.freeze(['text', 'read', 'edit', 'resume']);
 const metricNames = ['browserToolCalls', 'returnedBytes', 'parentInterventions', 'sendAttempts',
@@ -77,6 +78,17 @@ export function prepareVerification(scenario, path, mode) {
   return { version: 1, taskId: run.taskId, scenario, mode, registered: false, browserChecked: false };
 }
 
+// Compare owner-recorded metadata with the fixed local fixture, never open a
+// controller-supplied root. Missing metadata on older workers is not no grant.
+function workspaceCheck(dir, scenario, task) {
+  if (!Object.hasOwn(task, 'workspace')) return 'UNAVAILABLE';
+  try {
+    const expected = ['read', 'edit'].includes(scenario)
+      ? grantWorkspace({ root: directory(join(dir, 'project')), mode: scenario }) : null;
+    return isDeepStrictEqual(task.workspace, expected) ? 'PASS' : 'FAIL';
+  } catch { return 'FAIL'; }
+}
+
 async function projectChecks(dir, scenario, task) {
   if (!['read', 'edit'].includes(scenario)) return { files: 'NOT_APPLICABLE', arithmetic: 'NOT_APPLICABLE', receipts: task.changes.length ? 'FAIL' : 'PASS' };
   let files = 'FAIL', arithmetic = 'NOT_RUN';
@@ -112,9 +124,9 @@ function resultCheck(run, task, config) {
 
 export async function checkVerification(path, config = configuration()) {
   const { dir, run } = loadRun(path);
-  const report = { version: 1, taskId: run.taskId, scenario: run.scenario, requestedMode: run.mode,
+  const report = { version: 2, taskId: run.taskId, scenario: run.scenario, requestedMode: run.mode,
     scope: 'controller_and_fixture', browserChecked: false, liveVerdict: 'NOT_EVALUATED',
-    localVerdict: 'BLOCKED', collection: 'unknown', checks: {},
+    localVerdict: 'BLOCKED', taskStatus: null, collection: 'unknown', checks: {},
     dispatch: { availability: 'not_recorded' },
     unverifiedClaims: run.scenario === 'edit' ? ['staleWriteRejected'] : [],
     measurements: { source: 'parent_reported', availability: 'not_recorded', values: null },
@@ -149,14 +161,20 @@ export async function checkVerification(path, config = configuration()) {
       || task.changes.some(change => !object(change))) {
     report.checks.controller = 'UNAVAILABLE'; return report;
   }
+  report.taskStatus = task.status;
   report.collection = task.discarded ? 'discarded' : task.collected ? 'collected' : 'uncollected';
-  report.checks = { controller: 'PASS', globalHealth: snapshot.health?.ok === true ? 'PASS' : 'FAIL',
+  report.checks = { controller: 'PASS', controllerState: snapshot.health?.stateVerified === true ? 'PASS' : 'UNAVAILABLE',
+    globalHealth: typeof snapshot.health?.ok === 'boolean' ? snapshot.health.ok ? 'PASS' : 'FAIL' : 'UNAVAILABLE',
+    workspaceGrant: workspaceCheck(dir, run.scenario, task),
     recovery: task.recoveryRequired?.length || task.journalIssues?.length || task.pendingResults?.length ? 'FAIL' : 'PASS',
     result: resultCheck(run, task, config), ...await projectChecks(dir, run.scenario, task) };
-  const values = Object.values(report.checks);
-  report.localVerdict = task.status === 'running' ? 'PENDING'
+  // Aggregate only this task's acceptance checks. Global readiness, dispatch and
+  // reported metrics are independent observations, not fixture-quality verdicts.
+  const values = ['workspaceGrant', 'recovery', 'result', 'files', 'arithmetic', 'receipts'].map(key => report.checks[key]);
+  report.localVerdict = report.checks.controllerState !== 'PASS' || values.includes('UNAVAILABLE') ? 'BLOCKED'
+    : task.status === 'running' ? 'PENDING'
     : values.includes('FAIL') || task.discarded || task.status !== 'completed' ? 'FAIL'
-      : values.includes('NOT_RUN') ? 'BLOCKED' : 'PASS';
+      : values.every(value => ['PASS', 'NOT_APPLICABLE'].includes(value)) ? 'PASS' : 'BLOCKED';
   return report;
 }
 

@@ -174,7 +174,10 @@ For an opt-in check of actual delegation after an update, use the
 `verification.mjs check` inspects owned local evidence without registering, sending or
 acknowledging tasks. Browser mode/message proof, real conflict rejection, retained-chat
 review and parent acceptance remain separate. A local PASS never becomes a live PASS,
-and unobserved usage metrics remain unknown. This adds no Worker tool or authority.
+and unobserved usage metrics remain unknown. Version 2 check reports keep global readiness
+and dispatch observations separate from local acceptance; a missing current-state or
+recorded-grant proof blocks acceptance. Update the matching worker and checker together.
+This adds no Worker tool or authority.
 
 ## CI maintenance
 
