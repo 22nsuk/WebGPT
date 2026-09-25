@@ -5,6 +5,7 @@ import { homedir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { readBytesUpTo } from './bounded-read.mjs';
+import { readWindowOptions, textWindow } from './text-window.mjs';
 
 const MAX_BYTES = 1024 * 1024;
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -84,32 +85,9 @@ function snapshot(path) {
 // Optional bounded reads keep the original whole-file snapshot/revision contract.
 // Return complete lines (including their original endings); never silently drop a long-line tail.
 export function readWorkspace(grant,path,options={}) {
-  if(!options || typeof options!=='object' || Array.isArray(options)
-      || Object.keys(options).some(key=>!['offset','limit','maxChars'].includes(key))) throw Error('invalid read options');
-  const bounded=Object.values(options).some(value=>value!==undefined);
-  const {offset=1,limit=400,maxChars=16000}=options;
-  for(const [name,value,maximum] of [['offset',offset,Number.MAX_SAFE_INTEGER],['limit',limit,5000],['maxChars',maxChars,200000]]) {
-    if(!Number.isSafeInteger(value)||value<1||value>maximum)throw Error(`invalid read ${name}`);
-  }
+  const range=readWindowOptions(options);
   const result={path,...snapshot(target(grant,path))};
-  if(!bounded||!result.exists)return result;
-  let totalLines=0,endLine=offset-1,characters=0,stopped=false;
-  const parts=[];
-  for(const match of result.text.matchAll(/[^\r\n]*(?:\r\n|\r|\n|$)/g)) {
-    if(!match[0])continue;
-    totalLines++;
-    if(totalLines<offset||stopped)continue;
-    if(parts.length===limit) {stopped=true;continue;}
-    if(characters+match[0].length>maxChars) {
-      if(parts.length===0)throw Error('first requested line exceeds maxChars; increase maxChars or read the whole file');
-      stopped=true;continue;
-    }
-    parts.push(match[0]);characters+=match[0].length;endLine=totalLines;
-  }
-  if(offset>Math.max(1,totalLines))throw Error('read offset is beyond the file');
-  const partial=offset!==1||endLine<totalLines;
-  return {...result,text:parts.join(''),partial,startLine:offset,endLine,totalLines,
-    nextOffset:endLine<totalLines?endLine+1:null};
+  return range&&result.exists?{...result,...textWindow(result.text,range)}:result;
 }
 // Readiness needs directory access, not a sorted, revision-hashed listing.
 // Keep the same grant/identity/Git-root checks as listWorkspace. Read one entry

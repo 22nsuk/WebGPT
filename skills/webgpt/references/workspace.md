@@ -65,7 +65,27 @@ retries remain supported when they refer to the same directory identity and acce
 This is the protocol available to the worker, not a sequence to copy into ordinary delegation prompts:
 
 - `get_task(token)` returns instructions, input names and any workspace grant;
-  `read_input(token,name)` reads a named string supplied in `inputs`.
+  `read_input(token,name)` reads a named string supplied in `inputs`. With no range
+  arguments, the original `{name,text}` full response is unchanged. Optional `offset`
+  (1-based line), `limit` (1–5000 lines) and `maxChars` (1–200000 UTF-16 code units,
+  including line endings) use the same complete-line window as `read_file`. If any
+  is supplied, omitted values default to 1 / 400 / 16000. The response also includes
+  `sha256` of the **entire supplied string encoded as UTF-8**, `partial`, `startLine`,
+  `endLine`, `totalLines` and `nextOffset`. The digest is not of the JSON envelope or
+  returned excerpt and does not grant file access. Keep the same task/input identity
+  and whole-input digest across windows; follow `nextOffset` until all context needed
+  for the task has been read. Do not describe one page as the full original.
+  CRLF, CR, LF, BOM, Unicode and supplied NULs are preserved, not normalized. A first
+  line that exceeds the budget is rejected, not split or skipped; explicitly choose
+  a larger allowed budget or a full read. Empty input has zero lines; unknown names
+  and offsets beyond the input are errors. Names are exact input keys, never paths.
+  Reads retain the current state/token checks and never acknowledge a task. This
+  reduces returned context for selective rereads, not the shared-state verification
+  or complete-input hash/line scan. It does not measure or promise model-token savings.
+  Update the matching scripts (including `text-window.mjs`) through the normal idle,
+  stopped-worker procedure and refresh the connector's tool schema before using the
+  new optional arguments. Older workers reject them; there is no silent full-read
+  fallback, new registration format or stored-state migration.
 - When local files are needed and granted, `list_files(token,path,limit?,cursor?)` lists a directory
   (`.` for root, default/max 500 entries per page). When `truncated:true`, pass the returned
   `nextCursor` as `cursor` with the same path; continue until `truncated:false`. The cursor is opaque,

@@ -115,3 +115,131 @@ test('MCP advertises optional bounded read arguments and returns range metadata 
     assert.equal((await invoke({token:'wrong',limit:1})).result.isError,true);
   } finally {await service.close();}
 }));
+
+// Input windows exercise the real MCP path without granting a project. Existing
+// file-window tests above remain the compatibility tests for the shared selector.
+async function inputFixture(inputs, run) {
+  return fixture(async f => {
+    const dir=join(f.base,'runtime');
+    let worker=await start({dir,port:0,controlPort:0});
+    const config={dataDir:dir,controlPort:worker.controlPort};
+    const task=await request('register',{id:'inputs',instructions:'Read supplied material',inputs},config);
+    const rpc=async(method,params)=>{
+      const response=await fetch(`http://127.0.0.1:${worker.mcpPort}/mcp`,{method:'POST',
+        body:JSON.stringify({jsonrpc:'2.0',id:1,method,params})});
+      const bytes=Buffer.from(await response.arrayBuffer());
+      return {bytes,result:JSON.parse(bytes).result};
+    };
+    const tool=async(name,args={})=>(await rpc('tools/call',{name,arguments:{token:task.token,...args}})).result;
+    const read=async(name,options={})=>{
+      const result=await tool('read_input',{name,...options});
+      assert.equal(result.isError,false,JSON.stringify(result));
+      assert.deepEqual(JSON.parse(result.content[0].text),result.structuredContent);
+      return result.structuredContent;
+    };
+    try {await run({...f,dir,config,task,rpc,tool,read,state:()=>readFileSync(join(dir,'state.json')),
+      restart:async()=>{await worker.close();worker=await start({dir,port:0,controlPort:0});config.controlPort=worker.controlPort;}});}
+    finally {await worker.close();}
+  });
+}
+
+test('read_input advertises optional windows but keeps its full response and seven-tool boundary',()=>
+  inputFixture({doc:'\ufeff한글 😀\r\nzero\0end\n'},async({rpc,read,tool,state})=>{
+    const before=state(),listed=(await rpc('tools/list',{})).result.tools;
+    assert.equal(listed.length,7);
+    const input=listed.find(t=>t.name==='read_input'),file=listed.find(t=>t.name==='read_file');
+    assert.deepEqual(input.inputSchema.required,['token','name']);
+    assert.equal(input.inputSchema.additionalProperties,false);assert.equal(input.annotations.readOnlyHint,true);
+    for(const key of ['offset','limit','maxChars'])assert.deepEqual(input.inputSchema.properties[key],file.inputSchema.properties[key]);
+    assert.deepEqual(await read('doc'),{name:'doc',text:'\ufeff한글 😀\r\nzero\0end\n'});
+    assert.equal((await tool('read_file',{path:'doc',limit:1})).isError,true,'an input gives no file grant');
+    assert.deepEqual(state(),before);
+  }));
+
+test('input pages reconstruct exact Unicode, BOM, NUL and mixed endings with one whole-input digest',()=>
+  inputFixture({doc:'\ufeff첫째 😀\r\n\r\nthird\rfourth\0\n마지막 🧪',empty:'',terminated:'a\n',blank:'\r\n'},
+  async({read,tool,state})=>{
+    const before=state(),full=await read('doc');let offset=1,assembled='';const ranges=[];
+    do {
+      const page=await read('doc',{offset,limit:2});assembled+=page.text;ranges.push([page.startLine,page.endLine]);
+      assert.equal(page.totalLines,5);assert.equal(page.partial,true);assert.equal(page.text.isWellFormed(),true);
+      assert.equal(page.sha256,sha(full.text));offset=page.nextOffset;
+    }while(offset!==null);
+    assert.equal(assembled,full.text);assert.deepEqual(ranges,[[1,2],[3,4],[5,5]]);
+    assert.equal((await read('doc',{limit:5})).partial,false);
+    for(const [name,lines] of [['empty',0],['terminated',1],['blank',1]]){
+      const page=await read(name,{offset:1});assert.equal(page.totalLines,lines);assert.equal(page.endLine,lines);
+      assert.equal(page.nextOffset,null);assert.equal(page.partial,false);assert.equal(page.sha256,sha((await read(name)).text));
+      assert.equal((await tool('read_input',{name,offset:2})).isError,true);
+    }
+    assert.deepEqual(state(),before);
+  }));
+
+test('input windows enforce line and character limits without dropping tails or widening bad requests',()=>
+  inputFixture({doc:'a\n😀😀\nlast',long:'x'.repeat(200001),many:'a\n'.repeat(501)},async({read,tool,state})=>{
+    const before=state(),first=await read('doc',{maxChars:4});
+    assert.equal(first.text,'a\n');assert.equal(first.nextOffset,2);
+    const rejected=await tool('read_input',{name:'doc',offset:2,maxChars:4});
+    assert.equal(rejected.isError,true);assert.match(rejected.content[0].text,/exceeds maxChars/);
+    const rest=await read('doc',{offset:2,maxChars:9});
+    assert.equal(first.text+rest.text,(await read('doc')).text);assert.equal(rest.nextOffset,null);
+    assert.equal((await read('many',{offset:1})).endLine,400,'bounded default limit');
+    assert.equal((await read('many',{limit:5000,maxChars:200000})).partial,false);
+    assert.equal((await tool('read_input',{name:'long',maxChars:200000})).isError,true);
+    assert.equal((await read('long')).text.length,200001,'unchanged explicit full-read escape for one long line');
+    for(const options of [{offset:0},{offset:1.5},{offset:Number.MAX_SAFE_INTEGER+1},{offset:1000},
+      {limit:0},{limit:5001},{limit:'1'},{limit:null},{maxChars:0},{maxChars:200001},{maxChars:false},{unexpected:1}])
+      assert.equal((await tool('read_input',{name:'doc',...options})).isError,true,JSON.stringify(options));
+    assert.deepEqual(state(),before);
+  }));
+
+test('input names stay exact task-owned keys, never filesystem paths or inherited properties',()=>
+  inputFixture(Object.fromEntries([['../outside.txt','supplied, not a path\n'],['__proto__','own input\n'],['same','first task\n']]),
+  async({config,task,read,tool,state})=>{
+    const other=await request('register',{id:'other',instructions:'Separate',inputs:{same:'second task\n',private:'not shared'}},config);
+    const before=state();
+    assert.equal((await read('../outside.txt',{limit:1})).text,'supplied, not a path\n');
+    assert.equal((await read('__proto__',{limit:1})).text,'own input\n');
+    for(const name of ['constructor','toString','private','/etc/passwd'])
+      assert.equal((await tool('read_input',{name,limit:1})).isError,true);
+    assert.equal((await read('same',{limit:1})).text,'first task\n');
+    assert.equal((await read('same',{token:other.token,limit:1})).text,'second task\n');
+    assert.equal((await tool('read_input',{name:'same',token:task.token+'wrong',limit:1})).isError,true);
+    assert.deepEqual(state(),before);
+  }));
+
+test('input revision survives restart and terminal review, then existing collection retires access',()=>
+  inputFixture({doc:'first\nretained 한국어\n'},async({read,tool,restart,config,task,state})=>{
+    const page=await read('doc',{limit:1});await restart();
+    const afterRestart=state();assert.deepEqual(await read('doc',{limit:1}),page);assert.deepEqual(state(),afterRestart);
+    assert.equal((await tool('submit_result',{status:'completed',summary:'done',result:'reviewed'})).isError,false);
+    const completed=state();assert.deepEqual(await read('doc',{limit:1}),page);assert.deepEqual(state(),completed);
+    // Use the existing guarded collection; window reads themselves never retire work.
+    await request('collect',{id:task.id,expectedStatus:'completed',expectedSha256:sha('reviewed')},config);
+    const collected=state();assert.equal((await tool('read_input',{name:'doc',limit:1})).isError,true);
+    assert.deepEqual(state(),collected);assert.equal(JSON.parse(collected)[0].token,undefined);
+  }));
+
+test('ranged input cannot bypass fresh state validation',()=>inputFixture({doc:'first\nsecond'},async({dir,read,tool,state})=>{
+  await read('doc',{limit:1});writeFileSync(join(dir,'state.json'),'invalid fixture state');
+  const invalid=state();assert.equal((await tool('read_input',{name:'doc',limit:1})).isError,true);
+  assert.deepEqual(state(),invalid,'do not repair or reset state to read an input');
+}));
+
+test('long-input window bounds both MCP representations while preserving exact selected lines and full digest',()=>{
+  const lines=Array.from({length:2048},(_,i)=>String(i+1).padStart(4,'0')+' '+'x'.repeat(58)+'\n');
+  return inputFixture({doc:lines.join('')},async({rpc,task,state})=>{
+    const before=state(),invoke=options=>rpc('tools/call',{name:'read_input',arguments:{token:task.token,name:'doc',...options}});
+    const full=await invoke({}),part=await invoke({offset:1001,limit:8,maxChars:512});
+    assert.equal(full.result.isError,false);assert.equal(part.result.isError,false);
+    const page=part.result.structuredContent;
+    assert.equal(page.text,lines.slice(1000,1008).join(''));assert.equal(Buffer.byteLength(page.text),512);
+    assert.equal(page.sha256,sha(lines.join('')));assert.notEqual(page.sha256,sha(page.text));
+    assert.deepEqual([page.startLine,page.endLine,page.totalLines,page.nextOffset],[1001,1008,2048,1009]);
+    assert.equal(page.partial,true);assert.deepEqual(JSON.parse(part.result.content[0].text),page);
+    const defaultWindow=(await invoke({offset:1})).result.structuredContent;
+    assert.equal(defaultWindow.text.length,16000);assert.equal(defaultWindow.nextOffset,251);
+    assert.ok(part.bytes.length<full.bytes.length/50,'both structured/text envelopes must omit the unrequested tail');
+    assert.deepEqual(state(),before);
+  });
+});
