@@ -101,11 +101,17 @@ export function probeWorkspace(grant) {
 export function listWorkspace(grant,path,{cursor,limit=500}={}) {
   if(!Number.isSafeInteger(limit)||limit<1||limit>500)throw Error('limit must be an integer between 1 and 500');
   const directory=target(grant,path,false,false,true);
-  const entries=readdirSync(directory,{withFileTypes:true})
+  const entries=readdirSync(directory,{withFileTypes:true,encoding:'buffer'})
+    .map(e=>{
+      // Decode without changing the native name. A replacement character can
+      // otherwise alias a different file and hide changes from the page cursor.
+      const name=e.name.toString('utf8');
+      if(!Buffer.from(name).equals(e.name))throw Error('directory entry name must be UTF-8; inspect with native filesystem tools');
+      return {name,type:e.isSymbolicLink()?'symlink':e.isDirectory()?'directory':'file'};
+    })
     .filter(e=>!isGitMetadataName(e.name))
     // Binary name ordering is deterministic even when locale collation considers two names equal.
-    .sort((a,b)=>a.name<b.name?-1:a.name>b.name?1:0)
-    .map(e=>({name:e.name,type:e.isSymbolicLink()?'symlink':e.isDirectory()?'directory':'file'}));
+    .sort((a,b)=>a.name<b.name?-1:a.name>b.name?1:0);
   const revision=hash(JSON.stringify([grant.root,grant.device,grant.inode,path,entries]));
   let offset=0;
   if(cursor!==undefined) {
