@@ -14,14 +14,14 @@ import { collectTask, reconcileTasks, request } from './client.mjs';
 
 const text = '\uFEFFRetained 한국어 🧪\r\n';
 const sha256 = createHash('sha256').update(text).digest('hex');
-async function fixture(t, { count = 8, status = 'completed', collected = false, discarded = false, artifact = true, recovery = false } = {}) {
+async function fixture(t, { count = 8, status = 'completed', collected = false, discarded = false, artifact = true, recovery = false, running = [] } = {}) {
   const dir = fs.realpathSync.native(fs.mkdtempSync(join(tmpdir(), 'webgpt-collection-reads-')));
   let worker;
   t.after(async () => { await worker?.close(); fs.rmSync(dir, { recursive: true, force: true }); });
   const path = id => join(dir, id + '.result.txt');
   const tasks = Array.from({ length: count }, (_, index) => {
     const id = index === 0 ? 'owned' : 'retained-' + index;
-    const saved = index !== 0 || artifact;
+    const active = running.includes(index), saved = !active && (index !== 0 || artifact);
     if (saved) fs.writeFileSync(path(id), text, { mode: 0o600 });
     const changes = [];
     if (recovery) {
@@ -32,10 +32,10 @@ async function fixture(t, { count = 8, status = 'completed', collected = false, 
       fs.writeFileSync(join(directory, operation + '.json'), JSON.stringify({ ...receipt, state: 'applied' }));
       changes.push(receipt);
     }
-    return { id, instructions: '', inputs: {}, status: index === 0 ? status : 'completed',
-      collected: index === 0 ? collected : true, ...(index === 0 && discarded ? { discarded } : {}),
-      ...(index === 0 && !collected ? { token: 'fixture-only-owned-token' } : {}),
-      summary: 'done', nextCheck: null, changes, ...(saved ? { artifact: path(id), sha256 } : {}) };
+    return { id, instructions: '', inputs: {}, status: active ? 'running' : index === 0 ? status : 'completed',
+      collected: active ? false : index === 0 ? collected : true, ...(index === 0 && discarded ? { discarded } : {}),
+      ...(active ? { token: 'fixture-active-' + id } : index === 0 && !collected ? { token: 'fixture-only-owned-token' } : {}),
+      summary: 'done', nextCheck: active ? Date.now() + 900000 : null, changes, ...(saved ? { artifact: path(id), sha256 } : {}) };
   });
   fs.writeFileSync(join(dir, 'state.json'), JSON.stringify(tasks), { mode: 0o600 });
   worker = await start({ dir, port: 0, controlPort: 0, configFile: join(dir, 'config.json'), waitMs: 20 });
@@ -226,4 +226,85 @@ test('reconcile CLI accepts task IDs without collecting or exposing private inpu
   for (const secret of ['fixture-only-owned-token', privateTask.token, 'PRIVATE_RECONCILIATION_INSTRUCTION', 'PRIVATE_RECONCILIATION_INPUT'])
     assert.ok(!stdout.includes(secret));
   assert.deepEqual(f.state(), before);
+});
+
+
+// Health and detail share one fresh journal observation within a reconcile response,
+// not across requests or across collection's pre/post-commit checks.
+for (const scope of ['full', 'active', 'retired']) test(`${scope} reconciliation reads each required recovery history exactly once`, async t => {
+  const f = await fixture(t, { count: 4, recovery: true, running: [0, 1], collected: true });
+  const measured = originals(f), before = f.state();
+  const ids = scope === 'full' ? undefined : [scope === 'active' ? 'owned' : 'retained-2'];
+  const expected = scope === 'full' ? f.tasks : f.tasks.slice(0, scope === 'active' ? 2 : 3);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    let snapshot;
+    const reads = await observeReads(t, measured, async () => { snapshot = await reconcileTasks(f.config, { ids }); });
+    assert.deepEqual(reads, expected.map(task => ({ file: measured.path(task.id), bytes: Buffer.byteLength(text) })),
+      'every needed backup is fully read once, including unselected active work; no retained-history fallback');
+    assert.equal(snapshot.health.ok, true);
+    assert.deepEqual(snapshot.tasks.map(task => task.id), ids ?? f.tasks.map(task => task.id));
+    assert.ok(snapshot.tasks.every(task => task.journalIssues.length === 0 && task.recoveryRequired.length === 0));
+    for (const task of snapshot.tasks) assert.deepEqual(task.changes, f.tasks.find(saved => saved.id === task.id).changes);
+  }
+  assert.deepEqual(f.state(), before);
+});
+
+test('a transient backup read failure is shared within one response but rechecked on the next request', async t => {
+  const f = await fixture(t, { recovery: true, running: [0], collected: true });
+  const backup = originals(f).path('owned'), journal = backup.replace(/\.before\.txt$/, '.json');
+  const before = f.state(), bytes = fs.readFileSync(backup), open = fs.openSync;
+  let attempts = 0, snapshot;
+  const mock = t.mock.method(fs, 'openSync', (file, ...args) => {
+    if (file === backup && ++attempts === 1) throw Object.assign(Error('fixture transient read failure'), { code: 'EIO' });
+    return open(file, ...args);
+  });
+  syncBuiltinESMExports();
+  try { snapshot = await request('reconcile', { ids: ['owned'] }, f.config); }
+  finally { mock.mock.restore(); syncBuiltinESMExports(); }
+  assert.equal(attempts, 1, 'do not silently re-read a failed observation in the same response');
+  assert.deepEqual(snapshot.health.recoveryRequired, ['owned']);
+  assert.deepEqual(snapshot.tasks[0].journalIssues, [journal]);
+  assert.deepEqual(snapshot.tasks[0].recoveryRequired, [journal]);
+  const next = await request('reconcile', { ids: ['owned'] }, f.config);
+  assert.deepEqual(next.tasks[0].journalIssues, [], 'a later observation reopens the recovered backup');
+  assert.deepEqual(next.tasks[0].recoveryRequired, [journal], 'sticky quarantine is not silently repaired');
+  assert.deepEqual(f.state(), before); assert.deepEqual(fs.readFileSync(backup), bytes);
+});
+
+test('scoped recovery reuse retains global active warnings and does not hide later terminal damage', async t => {
+  const f = await fixture(t, { count: 4, recovery: true, running: [0, 1], collected: true });
+  const measured = originals(f), before = f.state();
+  await request('reconcile', { ids: ['owned'] }, f.config);
+  for (const id of ['retained-1', 'retained-3']) fs.writeFileSync(measured.path(id), text.replace('Retained', 'Damaged!'));
+  const selected = await request('reconcile', { ids: ['owned'] }, f.config);
+  assert.deepEqual(selected.health.recoveryRequired, ['retained-1']);
+  assert.deepEqual(selected.tasks[0].journalIssues, []); assert.equal(selected.tasks.length, 1);
+  const full = await request('reconcile', undefined, f.config);
+  for (const id of ['retained-1', 'retained-3']) {
+    const task = full.tasks.find(task => task.id === id);
+    assert.deepEqual(task.journalIssues, [measured.path(id).replace(/\.before\.txt$/, '.json')]);
+  }
+  assert.deepEqual(f.state(), before);
+});
+
+test('external changes after the shared journal observation require a fresh request, not a response-time atomicity claim', async t => {
+  const f = await fixture(t, { count: 2, recovery: true, running: [0], collected: true });
+  const backup = originals(f).path('owned'), before = f.state(), stat = fs.lstatSync;
+  let injected = false;
+  // Pending-result inspection follows the recovery scan inside readiness. Model
+  // an external writer at this boundary; no worker mutation or clock race is used.
+  const mock = t.mock.method(fs, 'lstatSync', (file, ...args) => {
+    if (!injected && file === f.path('owned')) { injected = true; fs.writeFileSync(backup, text.replace('Retained', 'Damaged!')); }
+    return stat(file, ...args);
+  });
+  syncBuiltinESMExports();
+  let observed;
+  try { observed = await request('reconcile', { ids: ['owned'] }, f.config); }
+  finally { mock.mock.restore(); syncBuiltinESMExports(); }
+  assert.equal(injected, true);
+  assert.equal(observed.health.ok, true); assert.deepEqual(observed.tasks[0].journalIssues, []);
+  const next = await request('reconcile', { ids: ['owned'] }, f.config);
+  assert.equal(next.health.ok, false);
+  assert.deepEqual(next.tasks[0].journalIssues, [backup.replace(/\.before\.txt$/, '.json')]);
+  assert.deepEqual(f.state(), before, 'read-only observations do not retire inputs or authorize collection');
 });

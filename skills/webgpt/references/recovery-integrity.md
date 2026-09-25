@@ -90,6 +90,20 @@ comparison. Long-history negative cases preserve a matching prefix and reject
 only the late mismatch, so reducing comparison counts by skipping verification
 is not an optimization. These checks do not replace the normal byte validation.
 
+Reconciliation uses one fresh recovery scan for each active task: its health
+quarantine and selected task details share that scan's journal issues inside the
+same synchronous response. Unselected active tasks still contribute to global
+health, and selected terminal tasks are inspected independently. The temporary
+map holds diagnostic paths only, not receipt contents or backup bytes, and is
+created for each request. A transient scan failure is reported in both sections;
+a later request rescans the files, without clearing sticky recovery quarantine.
+
+This removes a duplicate journal/backup read, not the underlying byte/hash checks.
+It does not promise the latest possible sample at response time: an external file
+change after the scan may appear only on the next request. Reconciliation never
+acknowledges work. Conditional collection and its post-commit observation each
+continue to verify current evidence independently; they do not reuse this map.
+
 This removes repeated full-array receipt searches, using temporary memory linear
 in the history size. It is not an integrity cache, a new recovery policy or a
 constant-time request guarantee. File reads/hashing, directory sorting, shared
