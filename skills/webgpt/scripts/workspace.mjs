@@ -42,6 +42,7 @@ export function grantWorkspace(input) {
   if (input == null) return null;
   if (!input || typeof input.root !== 'string' || !isAbsolute(input.root)
       || !['read','edit'].includes(input.mode) || 'read' in input || 'write' in input) throw Error('use workspace root and mode only');
+  if (!input.root.isWellFormed()) throw Error('workspace root must be well-formed Unicode');
   const root = gitSafeRoot(input.root), stat = lstatSync(root);
   if (!stat.isDirectory() || root === parse(root).root || root === realpathSync.native(homedir())) throw Error('project root required');
   return {root, device:stat.dev, inode:stat.ino, mode:input.mode};

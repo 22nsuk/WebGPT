@@ -44,6 +44,26 @@ stale edits. Only the parent can choose the project root and mode.
 
 Send the returned **task token** privately to its WebGPT worker.
 
+Registration requires well-formed Unicode in `instructions`, every input name/value and
+`workspace.root`. Valid UTF-8 JSON can still contain an escaped unpaired UTF-16 surrogate
+(such as `"\ud800"`); those strings are rejected before task persistence or root resolution.
+Do not automatically replace them with `�`: a changed name may be unreadable through the
+tool contract, a changed root can select another directory, and different malformed strings
+can encode to the same replacement-character bytes before hashing. This is an encoding
+loss, not a SHA-256 collision. Normal Unicode, paired emoji, combining sequences, literal
+backslash-u text, BOM, a deliberately supplied `�` and input NULs remain unchanged. No
+Unicode normalization or new size limit is applied.
+
+Older stored tasks are not rewritten or rejected at startup merely for these text fields.
+`get_task` refuses malformed instructions/input names; `read_input` refuses a malformed
+selected value for both full and ranged reads, without returning a digest or raw content.
+Other tasks and valid selected inputs remain usable; controller inspection and explicit
+cancellation remain available. Preserve the original private request/state and inspect its
+source before correcting registration. A root already converted by an older worker cannot
+be reconstructed from its stored canonical spelling. Update matching worker/workspace
+scripts through the usual stopped-worker procedure; no state migration or automatic retry
+is added. Registration rejection does not permit resending an earlier browser message.
+
 If a registration response is lost, resubmit the exact payload with the same ID. An identical
 running registration returns the original token with `duplicate:true` without renewing its deadline.
 Different inputs, instructions, grants or a terminal task reject ID reuse. This is controller retry
