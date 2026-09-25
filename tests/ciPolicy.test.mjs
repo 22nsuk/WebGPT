@@ -49,7 +49,7 @@ test('CI preserves its least-privilege, uncached test-only configuration', () =>
 });
 
 test('both test layouts retain the explicit test-file concurrency budget', () => {
-  for (const name of ['run.mjs', 'installation.test.mjs']) {
+  for (const name of ['run.mjs', 'helpers/installed-suite.mjs']) {
     const source = readFileSync(new URL(name, import.meta.url), 'utf8');
     assert.match(source, /'--test', '--test-concurrency=2', '--test-reporter=tap'/);
   }
