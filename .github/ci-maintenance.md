@@ -17,6 +17,20 @@ For an installed skill alone, run
 Bare `node --test` uses Node's CPU-dependent concurrency and can overlap the
 repository's installation test with other files; use the runner above for CI parity.
 
+### Avoid duplicate event runs, not coverage
+
+All nine OS/Node combinations still run on each pull request, on pushes to `main`,
+and on manual `workflow_dispatch`. Feature-branch pushes no longer start a second
+matrix alongside the pull-request event. The two old event types used different
+concurrency groups, so `cancel-in-progress` did not eliminate that duplication.
+
+A branch without an open pull request now has no automatic push run. Open a PR,
+use the manual workflow, or run `node tests/run.mjs` locally for that branch.
+This removes one nine-job matrix per update to an open same-repository PR; it does
+not halve every repository run or promise a fixed saving in billed CI time.
+The repository and standalone suites, assertions, deadlines and action pins stay
+unchanged.
+
 ## Action dependencies
 
 The test workflow pins executable actions to full 40-character commit SHAs.
