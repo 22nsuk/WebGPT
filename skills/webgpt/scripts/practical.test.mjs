@@ -401,3 +401,106 @@ test('native non-UTF-8 filename cannot be advertised as a different replacement-
     assert.deepEqual(readFileSync(join(f.dir, 'state.json')), before);
     assert.equal(existsSync(join(f.dir, 'recovery')), false);
   }));
+
+// Registration follows legitimate root aliases. Their canonical native bytes
+// must still name the requested project, not a replacement-character sibling.
+test('normal Unicode root aliases retain grant identity, retries and scoped edits', t => fixture(async f => {
+  const root = join(f.base, '한글-🎾-\ufffd-e\u0301'), alias = join(f.base, 'selected-project');
+  mkdirSync(root); writeFileSync(join(root, 'value.txt'), 'selected project');
+  try { fs.symlinkSync(root, alias, process.platform === 'win32' ? 'junction' : 'dir'); }
+  catch (error) { if (['EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) return t.skip('directory aliases unavailable'); throw error; }
+  for (const mode of ['read', 'edit']) {
+    const task = await f.register('alias-' + mode, { workspace: { root: alias, mode } });
+    const direct = grantWorkspace({ root, mode }), before = readFileSync(join(f.dir, 'state.json'));
+    assert.deepEqual((await f.call('get_task', { token: task.token })).structuredContent.workspace, direct);
+    const retry = await f.register(task.id, { workspace: { root, mode } });
+    assert.equal(retry.duplicate, true); assert.equal(retry.token, task.token);
+    assert.deepEqual(readFileSync(join(f.dir, 'state.json')), before);
+    assert.equal((await f.call('list_files', { token: task.token, path: '.' })).structuredContent.entries[0].name, 'value.txt');
+    const read = (await f.call('read_file', { token: task.token, path: 'value.txt' })).structuredContent;
+    assert.equal(read.text, 'selected project');
+    const changed = await f.call('write_file', { token: task.token, path: 'value.txt', text: 'updated', expectedSha256: read.sha256 });
+    assert.equal(changed.isError, mode === 'read');
+  }
+  await f.restart();
+  assert.equal(readFileSync(join(root, 'value.txt'), 'utf8'), 'updated');
+  assert.equal((await f.admin('reconcile')).health.stateVerified, true);
+}));
+
+test('native canonical bytes are checked at grant and file resolution without changing ordinary paths', t => fixture(async f => {
+  const replacement = join(f.base, 'root-\ufffd'); mkdirSync(replacement);
+  const file = join(f.root, 'value.txt'), other = join(f.root, 'file-\ufffd.txt');
+  writeFileSync(file, 'requested'); writeFileSync(other, 'different');
+  const grant = grantWorkspace({ root: f.root, mode: 'edit' }), native = fs.realpathSync.native;
+  const malformedRoot = Buffer.concat([Buffer.from(f.base + '/root-'), Buffer.from([0xff])]);
+  const malformedFile = Buffer.concat([Buffer.from(f.root + '/file-'), Buffer.from([0xff]), Buffer.from('.txt')]);
+  let selected = f.root, bytes = malformedRoot;
+  // Synthetic native returns make the rejection test portable. The following
+  // Linux fixtures exercise real arbitrary-byte aliases without this mock.
+  const mock = t.mock.method(fs.realpathSync, 'native', (path, options) => path === selected
+    ? options?.encoding === 'buffer' ? bytes : bytes.toString('utf8') : native(path, options));
+  try {
+    assert.throws(() => grantWorkspace({ root: f.root, mode: 'edit' }), /workspace path must be UTF-8/);
+    selected = native(file); bytes = malformedFile; // Include native temp-path aliases on Windows/macOS.
+    const task = await f.register('canonical-file', { workspace: { root: f.root, mode: 'edit' } });
+    const before = readFileSync(join(f.dir, 'state.json'));
+    const read = await f.call('read_file', { token: task.token, path: 'value.txt' });
+    assert.equal(read.isError, true); assert.equal(read.structuredContent, undefined);
+    assert.equal(read.content[0].text, 'workspace path must be UTF-8; inspect with native filesystem tools');
+    assert.deepEqual(readFileSync(join(f.dir, 'state.json')), before);
+    assert.equal(grant.root, native(f.root));
+  } finally { mock.mock.restore(); }
+  assert.equal(readFileSync(file, 'utf8'), 'requested'); assert.equal(readFileSync(other, 'utf8'), 'different');
+  assert.equal(existsSync(join(f.dir, 'recovery')), false);
+}));
+
+test('native root alias cannot register a replacement-character sibling as the selected project',
+  { skip: process.platform !== 'linux' ? 'native arbitrary-byte directory fixture requires Linux' : false },
+  () => fixture(async f => {
+    const raw = Buffer.concat([Buffer.from(f.base + '/project-'), Buffer.from([0xff])]);
+    const replacement = join(f.base, 'project-\ufffd'), alias = join(f.base, 'selected-project');
+    fs.mkdirSync(raw); mkdirSync(replacement); fs.symlinkSync(raw, alias, 'dir');
+    fs.writeFileSync(Buffer.concat([raw, Buffer.from('/value.txt')]), 'requested raw directory');
+    writeFileSync(join(replacement, 'value.txt'), 'different directory');
+    await f.register('independent'); const before = readFileSync(join(f.dir, 'state.json'));
+    assert.equal(alias.isWellFormed(), true);
+    assert.equal(Buffer.from(fs.realpathSync.native(alias)).equals(fs.realpathSync.native(alias, { encoding: 'buffer' })), false);
+    for (const mode of ['read', 'edit']) {
+      assert.throws(() => grantWorkspace({ root: alias, mode }), /workspace path must be UTF-8/);
+      await assert.rejects(f.register('rejected-' + mode, { workspace: { root: alias, mode } }), error => {
+        assert.equal(error.statusCode, 400); assert.match(error.message, /workspace path must be UTF-8/);
+        assert.ok(!error.message.includes(f.base)); return true;
+      });
+    }
+    assert.deepEqual(readFileSync(join(f.dir, 'state.json')), before);
+    assert.equal(existsSync(join(f.dir, 'state.json.tmp')), false); assert.equal(existsSync(join(f.dir, 'recovery')), false);
+    assert.equal(readFileSync(Buffer.concat([raw, Buffer.from('/value.txt')]), 'utf8'), 'requested raw directory');
+    assert.equal(readFileSync(join(replacement, 'value.txt'), 'utf8'), 'different directory');
+  }));
+
+test('retained grant rejects a newly lossy canonical ancestor before file reads or mutations',
+  { skip: process.platform !== 'linux' ? 'native arbitrary-byte directory fixture requires Linux' : false },
+  () => fixture(async f => {
+    const parent = join(f.base, 'ordinary-parent'), root = join(parent, 'child');
+    mkdirSync(root, { recursive: true }); writeFileSync(join(root, 'value.txt'), 'original');
+    const task = await f.register('retained', { workspace: { root, mode: 'edit' } }), other = await f.register('independent');
+    const revision = (await f.call('read_file', { token: task.token, path: 'value.txt' })).structuredContent.sha256;
+    const original = fs.lstatSync(root), raw = Buffer.concat([Buffer.from(f.base + '/moved-'), Buffer.from([0xff])]);
+    fs.renameSync(parent, raw); fs.symlinkSync(raw, parent, 'dir');
+    const current = fs.lstatSync(root); assert.equal(current.ino, original.ino); assert.equal(current.dev, original.dev);
+    const before = readFileSync(join(f.dir, 'state.json'));
+    for (const [name, args] of [['list_files', { path: '.' }], ['read_file', { path: 'value.txt' }],
+      ['write_file', { path: 'value.txt', text: 'must not replace', expectedSha256: revision }],
+      ['write_file', { path: 'new/child.txt', text: 'must not create', expectedSha256: null }],
+      ['delete_file', { path: 'value.txt', expectedSha256: revision }]]) {
+      const result = await f.call(name, { token: task.token, ...args });
+      assert.equal(result.isError, true); assert.match(result.content[0].text, /workspace path must be UTF-8/);
+    }
+    const health = (await f.admin('reconcile', { ids: [task.id] })).health;
+    assert.equal(health.stateVerified, true); assert.deepEqual(health.unavailableWorkspaces, [task.id]);
+    assert.equal((await f.call('get_task', { token: other.token })).isError, false);
+    assert.equal((await f.call('get_task', { token: task.token })).isError, false, 'parent/task evidence remains available');
+    assert.deepEqual(readFileSync(join(f.dir, 'state.json')), before);
+    assert.equal(readFileSync(join(root, 'value.txt'), 'utf8'), 'original');
+    assert.equal(existsSync(join(root, 'new')), false); assert.equal(existsSync(join(f.dir, 'recovery')), false);
+  }));
