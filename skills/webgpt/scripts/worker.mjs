@@ -485,7 +485,6 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
   });
   for(const server of [mcp,control])server.requestTimeout=15000;
   const listen=(s,p)=>new Promise((yes,no)=>{s.once('error',no);s.listen(p,'127.0.0.1',yes);});
-  try{await listen(mcp,port);await listen(control,controlPort);}catch(e){mcp.close();control.close();throw e;}
   const close=()=>{
     if(closePromise)return closePromise;
     stopping=true;wake();
@@ -501,6 +500,9 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
     });
     return closePromise;
   };
+  // A failed second bind can leave a request on the first listener. Stop tool
+  // execution and drain both servers before releasing this runtime's ownership.
+  try{await listen(mcp,port);await listen(control,controlPort);}catch(e){await close();throw e;}
   writeAudit({phase:'started'});
   return {mcpPort:mcp.address().port,controlPort:control.address().port,key,close};
   }catch(e){release();throw e;}

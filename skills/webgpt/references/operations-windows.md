@@ -77,6 +77,19 @@ its own lock. It does not cancel tasks, acknowledge results or replay mutations.
 The controller's authenticated `POST /shutdown` accepts only `{}`. The corresponding
 local command is `node <absolute-client.mjs-path> shutdown` with the private config.
 
+Listener startup failures use the same bounded shutdown path. If the MCP listener
+opens but the controller bind fails, already-received MCP requests are rejected
+after body parsing; both listeners are drained or closed before runtime ownership
+is released. The original bind error (for example `EADDRINUSE`) remains a startup
+failure, not permission to adopt or stop the process holding that port. Optional
+HTTP audit observations are finalized before release as on ordinary shutdown.
+
+This cleanup can take the existing close grace period (five seconds by default).
+It does not roll back startup recovery or a task action completed before the bind
+failure, cancel retained tasks, or retry the bind automatically. A returned startup
+error is not a promise that no earlier startup work occurred. Inspect retained state
+and use the established explicit retry/update procedure after fixing the cause.
+
 For a supervised worker, `service.mjs stop` is the preferred wrapper stop command:
 it writes an instance-scoped request inside the private supervisor lock directory.
 The launcher accepts only a regular single-link marker matching its instance ID,
