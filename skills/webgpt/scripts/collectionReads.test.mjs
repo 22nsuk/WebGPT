@@ -11,6 +11,8 @@ import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { start } from './worker.mjs';
 import { collectTask, reconcileTasks, request } from './client.mjs';
+import * as resultFiles from './results.mjs';
+import { callTool } from './test-fixtures/worker-http.mjs';
 
 const text = '\uFEFFRetained 한국어 🧪\r\n';
 const sha256 = createHash('sha256').update(text).digest('hex');
@@ -40,11 +42,11 @@ async function fixture(t, { count = 8, status = 'completed', collected = false, 
   fs.writeFileSync(join(dir, 'state.json'), JSON.stringify(tasks), { mode: 0o600 });
   worker = await start({ dir, port: 0, controlPort: 0, configFile: join(dir, 'config.json'), waitMs: 20 });
   const config = { dataDir: dir, controlPort: worker.controlPort };
-  return { dir, config, path, tasks, state: () => fs.readFileSync(join(dir, 'state.json')) };
+  return { dir, worker, config, path, tasks, state: () => fs.readFileSync(join(dir, 'state.json')) };
 }
 async function observeReads(t, f, run) {
   const original = { open: fs.openSync, read: fs.readSync, close: fs.closeSync };
-  const descriptors = new Map(), reads = [], artifacts = new Set(f.tasks.map(task => f.path(task.id)));
+  const descriptors = new Map(), reads = [], artifacts = new Set(f.files ?? f.tasks.map(task => f.path(task.id)));
   const mocks = [
     t.mock.method(fs, 'openSync', (file, ...args) => {
       const fd = original.open(file, ...args);
@@ -307,4 +309,147 @@ test('external changes after the shared journal observation require a fresh requ
   assert.equal(next.health.ok, false);
   assert.deepEqual(next.tasks[0].journalIssues, [backup.replace(/\.before\.txt$/, '.json')]);
   assert.deepEqual(f.state(), before, 'read-only observations do not retire inputs or authorize collection');
+});
+
+
+// Presence-only gates must not confuse "needs inspection" with verified bytes.
+test('candidate presence follows pending paths without reading or validating result bodies', async t => {
+  const f = await fixture(t, { count: 1, running: [0] }), task = f.tasks[0];
+  const file = f.path('owned'), stage = file + '.tmp', measured = { ...f, files: [file, stage] };
+  assert.equal(typeof resultFiles.hasPendingResults, 'function');
+  const check = async (expected, value = task) => {
+    const reads = await observeReads(t, measured, () => assert.equal(resultFiles.hasPendingResults(value, f.dir), expected));
+    assert.deepEqual(reads, []);
+  };
+  await check(false);
+  for (const target of [file, stage]) {
+    for (const bytes of [Buffer.alloc(0), Buffer.from([0xff]), Buffer.alloc(1024 * 1024 + 1)]) {
+      fs.writeFileSync(target, bytes); await check(true); fs.unlinkSync(target);
+    }
+    fs.mkdirSync(target); await check(true); fs.rmdirSync(target);
+  }
+  fs.writeFileSync(file, text);
+  for (const status of ['completed', 'failed', 'cancelled']) {
+    await check(false, { ...task, status, artifact: file });
+    await check(true, { ...task, status, collected: true });
+  }
+  fs.linkSync(file, stage);
+  await check(true, { ...task, status: 'completed', artifact: file });
+  fs.unlinkSync(stage); fs.unlinkSync(file);
+  await check(false, { ...task, artifact: '/not-an-input-path' });
+  for (const id of ['../other', '', 'con']) assert.throws(() => resultFiles.hasPendingResults({ ...task, id }, f.dir));
+});
+
+test('candidate presence detects a dangling link without following or creating its target', async t => {
+  const f = await fixture(t, { count: 1, running: [0] }), link = f.path('owned') + '.tmp', target = join(f.dir, 'absent');
+  try { fs.symlinkSync(target, link, process.platform === 'win32' ? 'junction' : 'dir'); }
+  catch (error) { if (!['EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) throw error; t.skip('link privilege unavailable'); return; }
+  assert.equal(resultFiles.hasPendingResults(f.tasks[0], f.dir), true);
+  const details = resultFiles.inspectPendingResults(f.tasks[0], f.dir);
+  assert.equal(details[0].integrity, 'unreadable');
+  assert.equal(fs.existsSync(target), false); assert.equal(fs.lstatSync(link).isSymbolicLink(), true);
+});
+
+test('candidate presence treats metadata errors as blocking, never as absence', async t => {
+  const f = await fixture(t, { count: 1, running: [0] }), file = f.path('owned'), stat = fs.lstatSync;
+  for (const code of ['EACCES', 'EPERM', 'EIO', 'ENOTDIR', 'ELOOP']) {
+    const mock = t.mock.method(fs, 'lstatSync', (path, ...args) => {
+      if (path === file) throw Object.assign(Error('fixture metadata failure'), { code });
+      return stat(path, ...args);
+    });
+    syncBuiltinESMExports();
+    try {
+      assert.equal(resultFiles.hasPendingResults(f.tasks[0], f.dir), true, code);
+      await assert.rejects(request('ready', undefined, f.config), e => e.details.pendingResultTasks.includes('owned'));
+      assert.deepEqual(resultFiles.inspectPendingResults(f.tasks[0], f.dir), [{ artifact: file, integrity: 'unreadable', code }]);
+    } finally { mock.mock.restore(); syncBuiltinESMExports(); }
+  }
+  assert.equal(resultFiles.hasPendingResults(f.tasks[0], f.dir), false);
+  assert.equal((await request('ready', undefined, f.config)).ok, true, 'presence errors are freshly observed, not cached');
+});
+
+test('candidate health and wait notices read no bodies and observe later appearance and removal', async t => {
+  const f = await fixture(t, { count: 8, running: [0, 1, 2, 3, 4, 5, 6, 7] });
+  const files = f.tasks.flatMap(task => [f.path(task.id), f.path(task.id) + '.tmp']), before = f.state();
+  assert.equal((await request('ready', undefined, f.config)).ok, true);
+  for (const file of files) fs.writeFileSync(file, text);
+  const reads = await observeReads(t, { ...f, files }, async () => {
+    for (let repeat = 0; repeat < 2; repeat++) {
+      await assert.rejects(request('ready', undefined, f.config), error => {
+        assert.deepEqual(error.details.pendingResultTasks, f.tasks.map(task => task.id)); return true;
+      });
+      assert.deepEqual((await request('status', undefined, f.config)).resultRecoveryRequired, f.tasks.map(task => ({ id: task.id })));
+      assert.deepEqual((await request('wait', { ids: ['owned'] }, f.config)).resultRecoveryRequired, [{ id: 'owned' }]);
+    }
+  });
+  assert.deepEqual(reads, []); assert.deepEqual(f.state(), before);
+  for (const file of files) { assert.equal(fs.readFileSync(file, 'utf8'), text); fs.unlinkSync(file); }
+  assert.equal((await request('ready', undefined, f.config)).ok, true);
+  assert.equal((await request('status', undefined, f.config)).resultRecoveryRequired, undefined);
+});
+
+test('candidate reconciliation still reads every selected candidate once and reports its actual bytes', async t => {
+  const f = await fixture(t, { count: 3, running: [0, 1, 2] });
+  const files = f.tasks.flatMap(task => [f.path(task.id), f.path(task.id) + '.tmp']), before = f.state();
+  for (const file of files) fs.writeFileSync(file, text);
+  for (const ids of [['owned'], undefined]) {
+    const selected = ids ? files.slice(0, 2) : files;
+    const reads = await observeReads(t, { ...f, files }, async () => {
+      const snapshot = await reconcileTasks(f.config, { ids });
+      assert.deepEqual(snapshot.health.pendingResultTasks, f.tasks.map(task => task.id));
+      assert.deepEqual(snapshot.tasks.flatMap(task => task.pendingResults), selected.map(artifact => ({
+        artifact, sha256, bytes: Buffer.byteLength(text), integrity: 'uncommitted',
+      })));
+    });
+    assert.deepEqual(reads, selected.map(file => ({ file, bytes: Buffer.byteLength(text) })));
+  }
+  fs.writeFileSync(files[1], 'later bytes');
+  const fresh = await reconcileTasks(f.config, { ids: ['owned'] });
+  assert.equal(fresh.tasks[0].pendingResults[1].sha256, createHash('sha256').update('later bytes').digest('hex'));
+  fs.unlinkSync(files[1]); fs.mkdirSync(files[1]);
+  assert.equal((await reconcileTasks(f.config, { ids: ['owned'] })).tasks[0].pendingResults[1].integrity, 'unreadable');
+  assert.deepEqual(f.state(), before);
+});
+
+test('candidate gates block valid project mutations without reading candidates or retiring input', async t => {
+  const f = await fixture(t, { count: 0 }), root = fs.realpathSync.native(fs.mkdtempSync(join(tmpdir(), 'webgpt-candidate-project-')));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const task = await request('register', { id: 'owned', instructions: 'keep', inputs: { sample: text }, workspace: { root, mode: 'edit' } }, f.config);
+  const file = f.path('owned'), stage = file + '.tmp', project = join(root, 'original.txt');
+  fs.writeFileSync(file, text); fs.writeFileSync(stage, text); fs.writeFileSync(project, text);
+  const before = f.state();
+  const reads = await observeReads(t, { ...f, files: [file, stage] }, async () => {
+    for (const [name, args] of [
+      ['write_file', { path: 'new/child.txt', text: 'blocked', expectedSha256: null }],
+      ['write_file', { path: 'original.txt', text: 'blocked', expectedSha256: sha256 }],
+      ['delete_file', { path: 'original.txt', expectedSha256: sha256 }],
+    ]) {
+      const reply = await callTool(f.worker, name, { token: task.token, ...args });
+      assert.equal(reply.isError, true); assert.match(reply.content[0].text, /uncommitted result/);
+    }
+  });
+  assert.deepEqual(reads, []); assert.deepEqual(f.state(), before);
+  assert.equal(fs.existsSync(join(root, 'new')), false); assert.equal(fs.existsSync(join(f.dir, 'recovery', 'owned')), false);
+  assert.equal(fs.readFileSync(project, 'utf8'), text);
+  assert.equal((await callTool(f.worker, 'read_input', { token: task.token, name: 'sample' })).structuredContent.text, text);
+  assert.equal((await callTool(f.worker, 'read_file', { token: task.token, path: 'original.txt' })).isError, false);
+  assert.equal((await callTool(f.worker, 'submit_result', { token: task.token, status: 'completed', summary: 'done', result: 'different' })).isError, true);
+  assert.deepEqual(f.state(), before); assert.equal(fs.readFileSync(file, 'utf8'), text); assert.equal(fs.readFileSync(stage, 'utf8'), text);
+  // Explicit identical recovery still reads and flushes bytes; no automatic cleanup.
+  fs.unlinkSync(stage);
+  assert.equal((await callTool(f.worker, 'submit_result', { token: task.token, status: 'completed', summary: 'done', result: text })).isError, false);
+  assert.equal((await collectTask('owned', f.config)).integrity, 'verified');
+});
+
+test('candidate absence never replaces the conditional collection result-integrity guard', async t => {
+  const f = await fixture(t, { count: 1 }), task = f.tasks[0], before = f.state();
+  fs.writeFileSync(f.path('owned'), 'changed committed bytes');
+  assert.equal(resultFiles.hasPendingResults(task, f.dir), false, 'a committed artifact is not a pending candidate');
+  await assert.rejects(request('collect', { id: task.id, expectedStatus: task.status, expectedSha256: task.sha256 }, f.config),
+    { code: 'COLLECTION_UNCONFIRMED', statusCode: 409 });
+  assert.deepEqual(f.state(), before);
+  fs.writeFileSync(f.path('owned'), text); fs.writeFileSync(f.path('owned') + '.tmp', text);
+  await assert.rejects(request('collect', { id: task.id, expectedStatus: task.status, expectedSha256: task.sha256 }, f.config),
+    { code: 'COLLECTION_RECOVERY_REQUIRED', statusCode: 409 });
+  assert.deepEqual(f.state(), before);
 });

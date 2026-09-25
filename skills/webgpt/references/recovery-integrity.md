@@ -36,6 +36,20 @@ For a running task with candidate evidence:
 - Reads remain available, but further project writes/deletes for that task are
   blocked until the result is reconciled. Unrelated tasks are not blocked.
 
+Presence-only notices and edit/delete gates use `lstat` on the same candidate
+paths, without opening or hashing candidate bodies. Any directory entry, including
+a dangling link or an oversized file, is enough to require inspection; metadata
+errors other than `ENOENT` also remain blocking. This is a negative guard, not
+result verification or permission to overwrite a candidate. Each call probes
+again; no presence or integrity verdict is cached across requests.
+
+Detailed reconciliation, offline diagnosis, explicit resubmission and conditional
+collection retain their bounded content/type/hash checks. Reconciliation hashes
+only the candidates needed for its selected task details; global active-task
+notices need presence only. A candidate can still change after a probe, so this
+is not a filesystem transaction or a guarantee of future absence. Result evidence,
+input/token retention, read-only project access and recovery policy are unchanged.
+
 An explicit cancellation retires the task token without deleting candidate bytes;
 reconciliation continues to show their need for inspection. A conflicting
 candidate is not authorization to erase it. Preserve the original evidence and

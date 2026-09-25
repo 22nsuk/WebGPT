@@ -6,7 +6,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { grantWorkspace, listWorkspace, probeWorkspace, readWorkspace, changeWorkspace, inspectRecovery } from './workspace.mjs';
 import { configuration, configurationFile } from './client.mjs';
-import { inspectPendingResults, storeResult, verifySavedResult } from './results.mjs';
+import { hasPendingResults, inspectPendingResults, storeResult, verifySavedResult } from './results.mjs';
 import { acquireRuntimeLock, readStateBytes, readStateMarker, createStateMarker, assertNoStateStage, writeStateBytes, parseState, fault, startupExitCode } from './runtime.mjs';
 import { protocolVersions, validateMessage, negotiateProtocol, validateArguments } from './protocol.mjs';
 import { auditFromEnvironment, createAuditWriter } from './audit.mjs';
@@ -170,7 +170,7 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
     t.recoveryRequired=[...pending];
   }
   if(tasks.length)persist();
-  const pendingResultTasks=(selected=tasks)=>selected.filter(t=>t.status==='running'&&inspectPendingResults(t,dir).length).map(t=>t.id);
+  const pendingResultTasks=(selected=tasks)=>selected.filter(t=>t.status==='running'&&hasPendingResults(t,dir)).map(t=>t.id);
   const view=(selected=tasks)=>{
     const resultRecoveryRequired=pendingResultTasks(selected).map(id=>({id}));
     const recoveryRequired=selected.filter(t=>t.status==='running'&&t.recoveryRequired?.length).map(t=>({id:t.id,journals:t.recoveryRequired}));
@@ -267,7 +267,7 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
       if(t.status!=='running')throw Error('task is terminal; file access closed');
       if(name==='list_files')return listWorkspace(t.workspace,args.path,{cursor:args.cursor,limit:args.limit});
       if(name==='read_file')return readWorkspace(t.workspace,args.path,{offset:args.offset,limit:args.limit,maxChars:args.maxChars});
-      if(inspectPendingResults(t,dir).length)throw fault('RESULT_CONFLICT','uncommitted result: reconcile before further edits');
+      if(hasPendingResults(t,dir))throw fault('RESULT_CONFLICT','uncommitted result: reconcile before further edits');
       flagUnrecordedChanges(t);
       if(t.recoveryRequired?.length)throw Error('interrupted mutation: supervisor recovery required before further edits');
       // A pre-existing state candidate cannot record a new file receipt. Refuse
