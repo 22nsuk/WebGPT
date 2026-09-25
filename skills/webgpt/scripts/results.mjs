@@ -71,13 +71,26 @@ export function storeResult(dir, id, text) {
   return { artifact, sha256: digest(bytes) };
 }
 
+function pendingPaths(task, dir) {
+  const [artifact, temporary] = paths(dir, task.id);
+  return task.status === 'running' || !task.artifact ? [artifact, temporary] : [temporary];
+}
+
+// Presence is enough to block new work, not to verify or publish a result.
+// lstat detects dangling links too. Only ENOENT proves absence; unreadable
+// metadata remains blocking. Detailed inspection and publication still read bytes.
+export function hasPendingResults(task, dir) {
+  return pendingPaths(task, dir).some(file => {
+    try { lstatSync(file); return true; }
+    catch (error) { return error.code !== 'ENOENT'; }
+  });
+}
+
 // These hashes describe observed bytes, not a committed result or verified work.
 // Include candidates left by cancellation too; never read a path supplied by state.
 export function inspectPendingResults(task, dir) {
-  const [artifact, temporary] = paths(dir, task.id);
-  const candidates = task.status === 'running' || !task.artifact ? [artifact, temporary] : [temporary];
   const results = [];
-  for (const file of candidates) {
+  for (const file of pendingPaths(task, dir)) {
     try {
       const saved = readCandidate(file);
       if (saved) results.push({ artifact: file, sha256: saved.sha256, bytes: saved.bytes.length, integrity: 'uncommitted' });
