@@ -202,6 +202,7 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
   const reconciliationTask=(t,journalIssues=recoveryFor(t).unresolved)=>({
     id:t.id,status:t.status,collected:t.collected,discarded:t.discarded??false,nextCheck:t.nextCheck,
     artifact:t.artifact??null,sha256:t.sha256??null,changes:t.changes??[],
+    workspace:t.workspace?{root:t.workspace.root,mode:t.workspace.mode,device:t.workspace.device,inode:t.workspace.inode}:null,
     recoveryRequired:t.recoveryRequired??[],journalIssues,pendingResults:inspectPendingResults(t,dir)
   });
   // The controller owns both the decision and the state transition. No await or
@@ -235,9 +236,10 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
     return {ok:true,id:t.id,status:t.status,sha256:t.sha256,collected:true,duplicate:t.collected};
   };
   const readiness=(journalIssuesByTask)=>{
-    let probe;
+    let probe,stateVerified=false;
     try{
       verifyState();
+      stateVerified=true; // Fresh state evidence is distinct from write readiness and other tasks.
       assertNoStateStage(statePath);
       // Check write/rename ability without rewriting state or recovery evidence.
       probe=resolve(dir,'.health-'+randomUUID());
@@ -257,7 +259,7 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
     const issues=[...(stopping?['SHUTTING_DOWN']:[]),...(stateFailure?['STATE_INVALID']:[]),
       ...(storageFailure?['STORAGE_UNAVAILABLE']:[]),...(recoveryRequired.length?['RECOVERY_REQUIRED']:[]),
       ...(unavailableWorkspaces.length?['WORKSPACE_UNAVAILABLE']:[]),...(pendingResults.length?['RESULT_RECOVERY_REQUIRED']:[])];
-    return {ok:!issues.length,instanceId:ownership.instanceId,issues,recoveryRequired,unavailableWorkspaces,pendingResultTasks:pendingResults,
+    return {ok:!issues.length,stateVerified:stateVerified&&!stateFailure,instanceId:ownership.instanceId,issues,recoveryRequired,unavailableWorkspaces,pendingResultTasks:pendingResults,
       storage:storageFailure?{ok:false,...storageFailure}:{ok:!stateFailure},automaticRestartRecommended:false};
   };
   const json=(res,status,value)=>{if(res.destroyed||res.writableEnded)return;res.writeHead(status,{'content-type':'application/json','cache-control':'no-store'});res.end(JSON.stringify(value));};

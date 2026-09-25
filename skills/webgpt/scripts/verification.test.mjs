@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { execFile } from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
 import { start } from './worker.mjs';
 import { request, collectTask } from './client.mjs';
 import { callTool, controllerProxy, replyJson } from './test-fixtures/worker-http.mjs';
@@ -23,10 +24,11 @@ function baseFixture(t) {
   t.after(async () => { await f.worker?.close(); fs.rmSync(base, { recursive: true, force: true }); });
   return f;
 }
-async function fixture(t, scenario = 'text') {
+async function fixture(t, scenario = 'text', changeRegistration = () => {}) {
   const f = baseFixture(t);
   f.prepared = prepareVerification(scenario, f.run, 'pro');
   f.registration = readJson(join(f.run, 'request.json'));
+  changeRegistration(f.registration, f);
   f.dir = join(f.base, 'runtime');
   f.worker = await start({ dir: f.dir, port: 0, controlPort: 0, waitMs: 20 });
   f.config = { dataDir: f.dir, controlPort: f.worker.controlPort };
@@ -252,4 +254,165 @@ test('partial controller evidence stays blocked rather than inventing clean reco
     assertNotLive(report);
   }
   assert.deepEqual(f.state(), before);
+});
+
+
+// Check the actual CLI contract, not just the in-process report.
+async function cliCheck(f) {
+  const config = join(f.base, 'checker-config.json'); writeJson(config, f.config);
+  const options = { env: { ...process.env, WEBGPT_CONFIG: config, WEBGPT_DATA_DIR: f.dir }, timeout: 10000 };
+  try { const { stdout, stderr } = await exec(process.execPath, [script, 'check', f.run], options);
+    assert.equal(stderr, ''); return { code: 0, report: JSON.parse(stdout) };
+  } catch (error) { assert.equal(error.stderr, ''); return { code: error.code, report: JSON.parse(error.stdout) }; }
+}
+
+for (const cause of ['candidate', 'journal', 'workspace'])
+  test(`unrelated ${cause} readiness failures do not fail an accepted local fixture`, async t => {
+    const f = await fixture(t); await performFixture(f, 'text');
+    const root = join(f.base, 'unrelated-project'); fs.mkdirSync(root);
+    await request('register', { id: 'unrelated', instructions: 'not part of the exercise', inputs: {},
+      workspace: { root, mode: 'read' } }, f.config);
+    if (cause === 'candidate') fs.writeFileSync(join(f.dir, 'unrelated.result.txt.tmp'), 'preserve');
+    else if (cause === 'journal') {
+      fs.mkdirSync(join(f.dir, 'recovery', 'unrelated'), { recursive: true });
+      fs.writeFileSync(join(f.dir, 'recovery', 'unrelated', 'broken.json'), '{}');
+    } else fs.rmdirSync(root);
+    if (cause === 'candidate') await recordFixtureDispatch(f, { mode: 'xhigh' });
+    const before = f.state(), { code, report } = await cliCheck(f);
+    assert.equal(code, 0); assert.equal(report.version, 2); assert.equal(report.taskStatus, 'completed');
+    assert.equal(report.localVerdict, 'PASS'); assert.equal(report.checks.globalHealth, 'FAIL');
+    assert.equal(report.checks.controllerState, 'PASS'); assert.equal(report.checks.recovery, 'PASS'); assertNotLive(report);
+    if (cause === 'candidate') assert.equal(report.dispatch.availability, 'mismatched');
+    assert.deepEqual(f.state(), before); assert.equal(report.collection, 'uncollected');
+    assert.equal(JSON.stringify(report).includes('unrelated'), false, 'do not export unrelated diagnostic IDs');
+    // A candidate belonging to this task is still a local acceptance failure.
+    fs.writeFileSync(join(f.dir, f.task.id + '.result.txt.tmp'), 'owned candidate');
+    const rejected = await cliCheck(f);
+    assert.equal(rejected.code, 2); assert.equal(rejected.report.localVerdict, 'FAIL');
+    assert.equal(rejected.report.checks.recovery, 'FAIL'); assert.deepEqual(f.state(), before);
+  });
+
+test('write readiness failure is independent, but unavailable current state blocks local acceptance', async t => {
+  const f = await fixture(t); await performFixture(f, 'text');
+  const before = f.state(), write = fs.writeFileSync;
+  const mock = t.mock.method(fs, 'writeFileSync', (file, ...args) => {
+    if (typeof file === 'string' && file.startsWith(join(f.dir, '.health-')))
+      throw Object.assign(Error('fixture full disk'), { code: 'ENOSPC' });
+    return write(file, ...args);
+  });
+  syncBuiltinESMExports();
+  try {
+    const report = await f.check();
+    assert.equal(report.checks.controllerState, 'PASS'); assert.equal(report.checks.globalHealth, 'FAIL');
+    assert.equal(report.localVerdict, 'PASS');
+  } finally { mock.mock.restore(); syncBuiltinESMExports(); }
+  assert.equal((await cliCheck(f)).code, 0, 'sticky write failure is still separate from freshly verified state');
+  const read = fs.readFileSync, stateFile = join(f.dir, 'state.json');
+  const unreadable = t.mock.method(fs, 'readFileSync', (file, ...args) => {
+    if (file === stateFile) throw Object.assign(Error('fixture unreadable state'), { code: 'EIO' });
+    return read(file, ...args);
+  });
+  syncBuiltinESMExports();
+  try {
+    const report = await f.check();
+    assert.equal(report.checks.controllerState, 'UNAVAILABLE'); assert.equal(report.localVerdict, 'BLOCKED');
+  } finally { unreadable.mock.restore(); syncBuiltinESMExports(); }
+  // A subsequent check verifies the bytes again; a prior PASS is not cached.
+  assert.equal((await cliCheck(f)).code, 0);
+  fs.writeFileSync(stateFile, 'invalid current state');
+  const invalid = await cliCheck(f);
+  assert.equal(invalid.code, 2); assert.equal(invalid.report.localVerdict, 'BLOCKED');
+  assert.equal(invalid.report.checks.controllerState, 'UNAVAILABLE'); assertNotLive(invalid.report);
+  assert.equal(fs.readFileSync(stateFile, 'utf8'), 'invalid current state');
+  fs.writeFileSync(stateFile, before); // Fixture restoration is not controller repair.
+  assert.equal((await f.check()).localVerdict, 'BLOCKED', 'existing state quarantine remains sticky');
+});
+
+test('PENDING describes the running lifecycle even when final fixture checks currently fail', async t => {
+  const f = await fixture(t, 'edit'), before = f.state(), pending = await cliCheck(f);
+  assert.equal(pending.code, 2); assert.equal(pending.report.taskStatus, 'running');
+  assert.equal(pending.report.localVerdict, 'PENDING'); assert.equal(pending.report.checks.files, 'FAIL');
+  assert.equal(pending.report.checks.receipts, 'FAIL'); assert.equal(pending.report.checks.result, 'NOT_RUN');
+  assert.deepEqual(f.state(), before);
+  await f.submit(resultFor('edit'));
+  const terminal = await cliCheck(f);
+  assert.equal(terminal.code, 2); assert.equal(terminal.report.taskStatus, 'completed');
+  assert.equal(terminal.report.localVerdict, 'FAIL'); assertNotLive(terminal.report);
+});
+
+for (const scenario of ['read', 'edit'])
+  test(`${scenario} acceptance binds receipts and local fixture bytes to the owner-recorded root`, async t => {
+    const f = await fixture(t, scenario, (registration, f) => {
+      const other = join(f.base, 'other-project'); fs.cpSync(join(f.run, 'project'), other, { recursive: true });
+      registration.workspace.root = other;
+    });
+    await performFixture(f, scenario);
+    // Equal contents and relative receipt paths are not evidence of the same root.
+    if (scenario === 'edit') fs.copyFileSync(join(f.registration.workspace.root, 'total.mjs'), join(f.run, 'project', 'total.mjs'));
+    const before = f.state(), { code, report } = await cliCheck(f);
+    for (const key of ['files', 'arithmetic', 'receipts', 'result']) assert.equal(report.checks[key], 'PASS', key);
+    assert.equal(report.checks.workspaceGrant, 'FAIL'); assert.equal(report.localVerdict, 'FAIL'); assert.equal(code, 2);
+    assertNotLive(report); assert.deepEqual(f.state(), before); assert.equal(JSON.stringify(report).includes(f.base), false);
+  });
+
+test('recorded grant mode and explicit no-workspace scenarios are part of acceptance', async t => {
+  for (const scenario of ['read', 'text', 'resume']) {
+    const f = await fixture(t, scenario, (registration, f) => {
+      if (scenario === 'read') registration.workspace.mode = 'edit';
+      else { const root = join(f.base, 'extra-grant'); fs.mkdirSync(root); registration.workspace = { root, mode: 'read' }; }
+    });
+    await f.submit(resultFor(scenario));
+    const before = f.state(), { code, report } = await cliCheck(f);
+    assert.equal(report.checks.result, 'PASS'); assert.equal(report.checks.workspaceGrant, 'FAIL');
+    assert.equal(report.localVerdict, 'FAIL'); assert.equal(code, 2); assert.deepEqual(f.state(), before);
+  }
+});
+
+test('replacing a retired fixture directory with identical bytes cannot reuse its registered identity', async t => {
+  const f = await fixture(t, 'read'); await performFixture(f, 'read');
+  await collectTask(f.task.id, f.config);
+  const before = f.state(), root = join(f.run, 'project');
+  assert.equal((await f.check()).checks.workspaceGrant, 'PASS');
+  fs.renameSync(root, root + '-retained'); fs.cpSync(root + '-retained', root, { recursive: true });
+  const { code, report } = await cliCheck(f);
+  assert.equal(report.checks.files, 'PASS'); assert.equal(report.checks.result, 'PASS');
+  assert.equal(report.checks.workspaceGrant, 'FAIL'); assert.equal(report.localVerdict, 'FAIL'); assert.equal(code, 2);
+  assert.deepEqual(f.state(), before); assert.equal(report.collection, 'collected');
+});
+
+test('scoped reconciliation exposes recorded grant identity without credentials', async t => {
+  const f = await fixture(t, 'read'), before = f.state();
+  const snapshot = await request('reconcile', { ids: [f.task.id] }, f.config);
+  assert.equal(snapshot.health.stateVerified, true);
+  const info = fs.lstatSync(join(f.run, 'project'));
+  assert.deepEqual(snapshot.tasks[0].workspace, {
+    root: fs.realpathSync.native(join(f.run, 'project')), mode: 'read', device: info.dev, inode: info.ino,
+  });
+  const serialized = JSON.stringify(snapshot);
+  for (const secret of [f.task.token, f.registration.instructions, 'controller.key']) assert.equal(serialized.includes(secret), false);
+  assert.deepEqual(f.state(), before);
+});
+
+test('missing owner proof remains BLOCKED instead of inferring no grant or healthy state', async t => {
+  const f = await fixture(t); await performFixture(f, 'text');
+  let remove;
+  const proxy = await controllerProxy(f.config, ({ phase, data, res }) => {
+    if (phase !== 'after') return false;
+    remove(data); replyJson(res, data); return true;
+  });
+  t.after(() => proxy.close());
+  const before = f.state();
+  for (const [field, change] of [
+    ['workspaceGrant', data => { delete data.tasks[0].workspace; }],
+    ['controllerState', data => { delete data.health.stateVerified; }],
+    ['controllerState', data => { data.health.stateVerified = 'true'; }],
+    ['controllerState', data => { data.health = null; }],
+  ]) {
+    remove = change;
+    const local = { ...f, config: { ...f.config, controlPort: proxy.port } }, { code, report } = await cliCheck(local);
+    assert.equal(report.checks[field], 'UNAVAILABLE'); assert.equal(report.localVerdict, 'BLOCKED'); assert.equal(code, 2);
+    assertNotLive(report);
+  }
+  assert.deepEqual(f.state(), before);
+  assert.ok(proxy.actions.every(action => action === '/reconcile?id=' + f.task.id), 'never widen to /tasks or retry an old endpoint');
 });
