@@ -166,6 +166,16 @@ See [Windows operation and recovery](skills/webgpt/references/operations-windows
 classes, migration, rollback and the review-only WinSW template. Service registration, accounts,
 ACLs, fixed tunnel addresses and browser/Codex resumption are separate deployment work.
 
+## Operational verification
+
+For an opt-in check of actual delegation after an update, use the
+[parent verification workflow and feature map](skills/webgpt/references/verification.md).
+`verification.mjs prepare` creates one fresh text/read/edit/resume exercise;
+`verification.mjs check` inspects owned local evidence without registering, sending or
+acknowledging tasks. Browser mode/message proof, real conflict rejection, retained-chat
+review and parent acceptance remain separate. A local PASS never becomes a live PASS,
+and unobserved usage metrics remain unknown. This adds no Worker tool or authority.
+
 ## CI maintenance
 
 Run `node tests/run.mjs` from the repository to test the checkout and then a complete

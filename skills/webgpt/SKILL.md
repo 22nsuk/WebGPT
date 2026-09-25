@@ -22,6 +22,11 @@ Keep private payloads and raw UI evidence local and return only bounded, safe ob
 Run `node <skill>/scripts/client.mjs dispatch preflight` before controller registration to verify
 the local helper runtime. Its readiness is not proof of browser or connector readiness.
 
+For an explicitly requested operational check or before/after delegation comparison, use
+[verification.md](references/verification.md): four small parent-owned exercises, scoped
+evidence checks and numeric measurements. Local fixture PASS is not live browser acceptance;
+complete the separate UI/quality review before collection. Do not run them on every task.
+
 ## Dispatch
 
 - Verify UI mode: `xh|xhigh` = Extra High (default), `p|pro` = Pro. Never silently substitute.

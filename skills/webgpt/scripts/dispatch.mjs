@@ -339,6 +339,24 @@ export async function inspectDispatch(file) {
   return withLedger(file, ledger => safeSummary(getDispatch(ledger)));
 }
 
+// Task-bound, allowlisted evidence for the parent verification workflow. This
+// validates recorded observations, not the current browser or result quality.
+export async function inspectDispatchEvidence(file, taskId) {
+  return withLedger(file, ledger => {
+    const d = getDispatch(ledger);
+    if (d.taskId !== taskId) fail('INPUT');
+    const elapsed = (from, to) => {
+      const value = Date.parse(d[to]) - Date.parse(d[from]);
+      return Number.isSafeInteger(value) && value >= 0 ? value : null;
+    };
+    return { ...safeSummary(d), timingSource: 'recorded_wall_clock', timingMs: {
+      preparation: elapsed('registeredAt', 'preparedAt'),
+      readyToSend: elapsed('preparedAt', 'sendingAt'),
+      confirmation: elapsed('sendingAt', 'submittedAt'),
+    } };
+  });
+}
+
 // The adapter must use existing authorized browser tools. No browser SDK/private session is supplied.
 // fillAndSend replaces/inserts the prepared body once and sends in one supported tool call,
 // checking the composer/body, connector and Send readiness within that call; never appending/retrying.
