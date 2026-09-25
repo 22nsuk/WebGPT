@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { syncBuiltinESMExports } from 'node:module';
 import { start } from './worker.mjs';
 import { request, collectTask } from './client.mjs';
-import { grantWorkspace } from './workspace.mjs';
+import { grantWorkspace, inspectRecovery } from './workspace.mjs';
 import { callTool } from './test-fixtures/worker-http.mjs';
 
 const text = 'Original 한국어 🧪\r\n', hash = createHash('sha256').update(text).digest('hex');
@@ -48,20 +48,26 @@ async function fixture(t, { count = 4, recorded = values => values, status = 'ru
 async function comparisons(t, run) {
   const equal = util.isDeepStrictEqual;
   let count = 0;
+  const operations = new Set();
   const mock = t.mock.method(util, 'isDeepStrictEqual', (a, b) => {
-    if (typeof a?.operation === 'string' && typeof b?.operation === 'string') count++;
+    if (typeof a?.operation === 'string' && typeof b?.operation === 'string') {
+      count++;
+      if (a.operation === b.operation) operations.add(a.operation);
+    }
     return equal(a, b);
   });
   syncBuiltinESMExports();
   try { await run(); } finally { mock.mock.restore(); syncBuiltinESMExports(); }
-  return count;
+  return { count, operations };
 }
 
 for (const count of [0, 1, 64]) test(`receipt matching stays linear for ${count} records at restart, readiness, reconciliation and collection`, async t => {
   const f = await fixture(t, { count });
   const check = async (label, budget, run) => {
-    const calls = await comparisons(t, run);
-    assert.ok((count === 0 ? calls === 0 : calls > 0) && calls <= budget, `${label}: ${calls} full comparisons exceeds ${budget}`);
+    const observed = await comparisons(t, run);
+    assert.ok(observed.count <= budget, `${label}: ${observed.count} full comparisons exceeds ${budget}`);
+    assert.deepEqual([...observed.operations].sort(), f.receipts.map(receipt => receipt.operation).sort(),
+      `${label}: every operation must receive a full same-ID comparison, not just a low total`);
   };
   await check('startup', count * 2, f.boot);
   const saved = fs.readFileSync(f.state);
@@ -83,7 +89,7 @@ for (const ordering of ['matching-first', 'conflict-first']) test(`duplicate ope
   await f.boot();
   const stored = JSON.parse(fs.readFileSync(f.state))[0], path = f.journal(f.receipts[0]);
   assert.deepEqual(stored.changes, f.task.changes, 'do not discard or overwrite duplicate evidence');
-  assert.deepEqual(stored.recoveryRequired, ordering === 'conflict-first' ? [path, path] : [path]);
+  assert.deepEqual(stored.recoveryRequired, [path], 'diagnostics are unique, not the conflicting state receipts');
   const before = fs.readFileSync(f.state), inspected = await f.inspect();
   assert.deepEqual(inspected.journalIssues, [path]);
   assert.deepEqual(inspected.recoveryRequired, [path]);
@@ -91,18 +97,21 @@ for (const ordering of ['matching-first', 'conflict-first']) test(`duplicate ope
   assert.equal(reply.isError, true); assert.equal(fs.existsSync(join(f.root, 'new.txt')), false);
   assert.deepEqual(fs.readFileSync(f.state), before);
   assert.equal((await f.call('read_input', { token: f.token, name: 'sample' })).structuredContent.text, text);
+  await f.close(); await f.boot();
+  assert.deepEqual(fs.readFileSync(f.state), before, 'restart does not multiply diagnostics or remove conflicting evidence');
 });
 
-test('all receipt fields, missing journals and malformed operations retain diagnostic ordering', async t => {
+test('a 64-record history validates every field of its last receipt and preserves diagnostic ordering', async t => {
   for (const mismatch of ['path', 'action', 'beforeSha256', 'afterSha256', 'backup', 'extra', 'missing', 'invalid']) {
-    const f = await fixture(t, { status: 'completed', recorded: values => {
-      if (mismatch === 'invalid') return [{ operation: 'not-a-uuid' }, { ...values[0], extra: true }, ...values.slice(1)];
-      if (mismatch === 'missing') return [...values, { ...values[0], operation: randomUUID() }];
-      return [{ ...values[0], [mismatch]: mismatch.endsWith('Sha256') ? '0'.repeat(64) : 'different' }, ...values.slice(1)];
+    const f = await fixture(t, { count: 64, status: 'completed', recorded: values => {
+      const last = values.at(-1);
+      if (mismatch === 'invalid') return [...values.slice(0, -1), { operation: 'not-a-uuid' }, { ...last, extra: true }];
+      if (mismatch === 'missing') return [...values, { ...last, operation: randomUUID() }];
+      return [...values.slice(0, -1), { ...last, [mismatch]: mismatch.endsWith('Sha256') ? '0'.repeat(64) : 'different' }];
     } });
     await f.boot();
     const before = fs.readFileSync(f.state), actual = await f.inspect();
-    const expected = mismatch === 'invalid' ? [f.recovery] : [f.journal(mismatch === 'missing' ? f.task.changes.at(-1) : f.receipts[0])];
+    const expected = mismatch === 'invalid' ? [f.recovery] : [f.journal(mismatch === 'missing' ? f.task.changes.at(-1) : f.receipts.at(-1))];
     assert.deepEqual(actual.journalIssues, expected, mismatch);
     await assert.rejects(collectTask('owned', f.config), { code: 'COLLECTION_RECOVERY_REQUIRED' });
     assert.deepEqual(fs.readFileSync(f.state), before); await f.close();
@@ -143,4 +152,66 @@ for (const damage of ['backup', 'journal', 'directory']) test(`fresh recovery in
   assert.deepEqual(actual.journalIssues, [expected]); assert.deepEqual(actual.recoveryRequired, [expected]);
   await assert.rejects(f.admin('ready'), error => error.details.issues.includes('RECOVERY_REQUIRED'));
   assert.deepEqual(fs.readFileSync(f.state), before);
+});
+
+// Put the conflict after 63 matching state receipts. Exercise startup and a fresh
+// live observation separately so one phase cannot conceal another's skipped work.
+for (const phase of ['startup', 'live']) test(`64-record ${phase} check quarantines only the late mismatch and preserves evidence`, async t => {
+  const f = await fixture(t, { count: 64, recorded: values => phase === 'startup'
+    ? [...values.slice(0, -1), { ...values.at(-1), afterSha256: '0'.repeat(64) }] : values });
+  await f.boot();
+  const last = f.receipts.at(-1), path = f.journal(last);
+  if (phase === 'live') {
+    assert.equal((await f.admin('ready')).ok, true);
+    fs.writeFileSync(path, JSON.stringify({ ...last, afterSha256: '0'.repeat(64), state: 'applied' }));
+  }
+  const state = fs.readFileSync(f.state), journal = fs.readFileSync(path), backup = fs.readFileSync(last.backup);
+  if (phase === 'startup') assert.deepEqual(JSON.parse(state)[0].recoveryRequired, [path]);
+  await assert.rejects(f.admin('ready'), error => {
+    assert.deepEqual(error.details.recoveryRequired, ['owned']); return true;
+  });
+  const inspected = await f.inspect();
+  assert.deepEqual(inspected.journalIssues, [path]); assert.deepEqual(inspected.recoveryRequired, [path]);
+  assert.deepEqual(inspected.changes, f.task.changes);
+  const changed = await f.call('write_file', { token: f.token, path: 'new.txt', expectedSha256: null, text: 'blocked' });
+  assert.equal(changed.isError, true); assert.equal(fs.existsSync(join(f.root, 'new.txt')), false);
+  assert.equal((await f.call('submit_result', { token: f.token, status: 'completed', summary: 'not safe', result: text })).isError, true);
+  assert.equal((await f.call('read_input', { token: f.token, name: 'sample' })).structuredContent.text, text);
+  assert.deepEqual(fs.readFileSync(f.state), state); assert.deepEqual(fs.readFileSync(path), journal);
+  assert.deepEqual(fs.readFileSync(last.backup), backup); assert.equal(fs.readFileSync(join(f.root, 'notes.txt'), 'utf8'), text);
+});
+
+// Test the producer's uniqueness contract using actual files, not a fabricated
+// inspectRecovery return value. A second filename must never supply the same ID.
+for (const order of ['before', 'after']) for (const conflicting of [false, true]) {
+  test(`journal identity rejects a ${conflicting ? 'conflicting' : 'matching'} same-ID copy sorted ${order} its canonical file`, async t => {
+    const f = await fixture(t), receipt = f.receipts[0];
+    const name = order === 'before' ? '00000000-0000-0000-0000-000000000000' : 'ffffffff-ffff-ffff-ffff-ffffffffffff';
+    const copy = f.journal({ operation: name });
+    assert.equal(order === 'before' ? copy < f.journal(receipt) : copy > f.journal(receipt), true);
+    const bytes = Buffer.from(JSON.stringify({ ...receipt, ...(conflicting ? { afterSha256: '0'.repeat(64) } : {}), state: 'applied' }));
+    fs.writeFileSync(copy, bytes, { mode: 0o600 });
+    const parsed = inspectRecovery(f.dir, 'owned');
+    assert.deepEqual(parsed.receipts, [...f.receipts].sort((a, b) => a.operation.localeCompare(b.operation)));
+    assert.deepEqual(parsed.unresolved, [copy]);
+    await f.boot();
+    const state = fs.readFileSync(f.state), inspected = await f.inspect();
+    assert.deepEqual(inspected.changes, f.task.changes); assert.deepEqual(inspected.recoveryRequired, [copy]);
+    assert.deepEqual(inspected.journalIssues, [copy]);
+    assert.equal((await f.call('submit_result', { token: f.token, status: 'completed', summary: 'blocked', result: text })).isError, true);
+    assert.deepEqual(fs.readFileSync(f.state), state); assert.deepEqual(fs.readFileSync(copy), bytes);
+    assert.equal((await f.call('get_task', { token: f.token })).isError, false);
+  });
+}
+
+test('a misnamed sole journal cannot be promoted into startup state', async t => {
+  const f = await fixture(t, { count: 1, recorded: () => [] }), receipt = f.receipts[0];
+  const copy = f.journal({ operation: '00000000-0000-0000-0000-000000000000' });
+  fs.renameSync(f.journal(receipt), copy);
+  const bytes = fs.readFileSync(copy);
+  assert.deepEqual(inspectRecovery(f.dir, 'owned'), { receipts: [], unresolved: [copy] });
+  await f.boot();
+  const stored = JSON.parse(fs.readFileSync(f.state))[0];
+  assert.deepEqual(stored.changes, []); assert.deepEqual(stored.recoveryRequired, [copy]);
+  assert.equal(stored.token, f.token); assert.deepEqual(fs.readFileSync(copy), bytes);
 });
