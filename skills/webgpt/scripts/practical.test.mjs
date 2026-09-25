@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import { withStateWriteFailure } from './test-fixtures/state-write-failure.mjs';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, existsSync, rmdirSync } from 'node:fs';
+import fs, { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, existsSync, rmdirSync } from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -318,3 +319,85 @@ test('only the failing file task is blocked; unrelated tasks can still complete 
   assert.deepEqual(state.recoveryRequired.map(t => t.id), ['editor']);
   assert.equal((await f.complete(editor.token)).isError, true);
 }));
+
+// A name advertised as text must round-trip to the same native directory entry.
+// These checks do not grant access to raw byte paths or normalize valid Unicode.
+test('Unicode directory pages retain exact names, cursor ordering and readable targets', () => fixture(async f => {
+  for (const name of ['a.txt', '한글-🎾.txt', '\ufeffbom.txt', 'replacement-\ufffd.txt', 'e\u0301.txt'])
+    writeFileSync(join(f.root, name), 'owned file: ' + name);
+  mkdirSync(join(f.root, '.git'));
+  const expected = fs.readdirSync(f.root).filter(name => name !== '.git').sort();
+  const { token } = await f.register('unicode-pages', { workspace: { root: f.root, mode: 'read' } });
+  const before = readFileSync(join(f.dir, 'state.json'));
+  const names = []; let cursor;
+  do {
+    const result = await f.call('list_files', { token, path: '.', limit: 2, ...(cursor ? { cursor } : {}) });
+    assert.equal(result.isError, false);
+    assert.deepEqual(JSON.parse(result.content[0].text), result.structuredContent);
+    for (const entry of result.structuredContent.entries) {
+      names.push(entry.name); assert.equal(entry.type, 'file');
+      const read = await f.call('read_file', { token, path: entry.name });
+      assert.equal(read.isError, false);
+      assert.equal(read.structuredContent.text, readFileSync(join(f.root, entry.name), 'utf8'));
+    }
+    cursor = result.structuredContent.nextCursor;
+    assert.ok(names.length <= expected.length, 'pagination must not repeat names');
+  } while (cursor);
+  assert.deepEqual(names, expected); assert.ok(names.includes('\ufeffbom.txt')); assert.ok(names.includes('replacement-\ufffd.txt'));
+  assert.deepEqual(readFileSync(join(f.dir, 'state.json')), before);
+}));
+
+test('listing rejects lossy name bytes before returning any page, without silent filtering', t => fixture(async f => {
+  for (const name of ['a.txt', 'b.txt', 'c.txt']) writeFileSync(join(f.root, name), name);
+  const { token } = await f.register('name-bytes', { workspace: { root: f.root, mode: 'read' } });
+  const first = (await f.call('list_files', { token, path: '.', limit: 1 })).structuredContent;
+  const before = readFileSync(join(f.dir, 'state.json')), readdir = fs.readdirSync;
+  let malformed;
+  // Windows cannot create arbitrary POSIX filename bytes. Exercise the same
+  // decoder there with explicitly synthetic Dirents; native Linux is tested below.
+  const mock = t.mock.method(fs, 'readdirSync', (path, options) => {
+    const entries = readdir(path, options);
+    if (path === fs.realpathSync.native(f.root) && malformed) entries.push({
+      name: options?.encoding === 'buffer' ? malformed : malformed.toString('utf8'),
+      isSymbolicLink: () => false, isDirectory: () => false,
+    });
+    return entries;
+  });
+  syncBuiltinESMExports();
+  try {
+    for (const bytes of [[0xff], [0x80], [0xc0, 0xaf], [0xed, 0xa0, 0x80], [0xe2, 0x82]]) {
+      malformed = Buffer.concat([Buffer.from('z-private-'), Buffer.from(bytes), Buffer.from('.txt')]);
+      for (const options of [{ limit: 1 }, { limit: 1, cursor: first.nextCursor }]) {
+        const result = await f.call('list_files', { token, path: '.', ...options });
+        assert.equal(result.isError, true); assert.equal(result.structuredContent, undefined);
+        assert.equal(result.content[0].text, 'directory entry name must be UTF-8; inspect with native filesystem tools');
+        assert.ok(!JSON.stringify(result).includes('z-private-'));
+      }
+    }
+    malformed = null;
+    const second = await f.call('list_files', { token, path: '.', limit: 1, cursor: first.nextCursor });
+    assert.equal(second.isError, false); assert.equal(second.structuredContent.entries[0].name, 'b.txt');
+  } finally { mock.mock.restore(); syncBuiltinESMExports(); }
+  assert.deepEqual(readFileSync(join(f.dir, 'state.json')), before);
+  assert.equal(existsSync(join(f.dir, 'recovery')), false);
+}));
+
+test('native non-UTF-8 filename cannot be advertised as a different replacement-character file',
+  { skip: process.platform !== 'linux' ? 'native arbitrary-byte filename fixture requires Linux' : false },
+  () => fixture(async f => {
+    const raw = Buffer.concat([Buffer.from(f.root + '/report-'), Buffer.from([0xff]), Buffer.from('.txt')]);
+    const valid = join(f.root, 'report-\ufffd.txt');
+    writeFileSync(raw, 'raw-name original'); writeFileSync(valid, 'different valid file');
+    mkdirSync(join(f.root, 'safe')); writeFileSync(join(f.root, 'safe', 'ok.txt'), 'independent');
+    const { token } = await f.register('native-names', { workspace: { root: f.root, mode: 'edit' } });
+    const before = readFileSync(join(f.dir, 'state.json'));
+    const result = await f.call('list_files', { token, path: '.' });
+    assert.equal(result.isError, true); assert.equal(result.structuredContent, undefined);
+    assert.match(result.content[0].text, /name must be UTF-8/);
+    assert.equal((await f.call('read_file', { token, path: 'report-\ufffd.txt' })).structuredContent.text, 'different valid file');
+    assert.deepEqual((await f.call('list_files', { token, path: 'safe' })).structuredContent.entries, [{ name: 'ok.txt', type: 'file' }]);
+    assert.deepEqual((await f.call('get_task', { token })).structuredContent.changes, []);
+    assert.equal(readFileSync(raw, 'utf8'), 'raw-name original'); assert.equal(readFileSync(valid, 'utf8'), 'different valid file');
+    assert.deepEqual(readFileSync(join(f.dir, 'state.json')), before);
+    assert.equal(existsSync(join(f.dir, 'recovery')), false);
+  }));

@@ -112,6 +112,14 @@ This is the protocol available to the worker, not a sequence to copy into ordina
   scoped to the directory listing and not a permission grant. Changed names/types invalidate it;
   restart without a cursor rather than silently accepting an incomplete listing. `limit` is 1–500.
   Old calls without optional arguments keep their result shape for a non-truncated directory.
+  Native entry names must round-trip through UTF-8 without replacement. If any name in the
+  requested directory cannot be represented exactly, listing fails before returning a page or
+  cursor; entries are not renamed, silently omitted or advertised under `�` aliases. This also
+  applies when the bad entry falls outside the requested page or appears between page requests.
+  Inspect the original names with native filesystem tools; no automatic conversion or cleanup
+  is performed. Valid `�`, leading BOM, combining characters and other Unicode are preserved.
+  This check is local to the listed directory, not recursive; known valid files/subdirectories
+  retain their ordinary access checks. Readiness does not certify every directory entry name.
   `read_file(token,path)` gets text and SHA-256 (missing files return `exists:false`).
   Optional `offset` (1-based line), `limit` (1–5000 lines) or `maxChars` (1–200000 UTF-16 code units)
   enables a bounded window; omitted values then default to 1, 400 and 16000. Calls with none of
