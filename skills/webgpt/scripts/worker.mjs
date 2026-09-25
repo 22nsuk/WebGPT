@@ -156,7 +156,7 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
     if(t.collected)revoke(t);
     if(t.status!=='running')continue;
     const {receipts,unresolved}=recoveryFor(t);
-    t.recoveryRequired=unresolved;
+    const pending=new Set(unresolved);
     // Preserve find()'s first-match rule for conflicting duplicate state records.
     const recorded=new Map();
     for(const change of t.changes??[])if(!recorded.has(change.operation))recorded.set(change.operation,change);
@@ -164,8 +164,10 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
       const existing=recorded.get(receipt.operation);
       if(!existing){(t.changes??=[]).push(receipt);recorded.set(receipt.operation,receipt);}
       else if(!isDeepStrictEqual(existing,receipt))
-        t.recoveryRequired.push(resolve(dir,'recovery',t.id,receipt.operation+'.json'));
+        pending.add(resolve(dir,'recovery',t.id,receipt.operation+'.json'));
     }
+    // Normalize diagnostic paths, never the original (possibly conflicting) receipts.
+    t.recoveryRequired=[...pending];
   }
   if(tasks.length)persist();
   const pendingResultTasks=(selected=tasks)=>selected.filter(t=>t.status==='running'&&inspectPendingResults(t,dir).length).map(t=>t.id);

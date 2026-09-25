@@ -75,6 +75,20 @@ that inspection, then compares the complete receipt, including extra fields. It
 checks both recorded receipts without matching journals and applied journals not
 recorded in state. Duplicate state records are not collapsed; startup preserves
 the first-match rule and reports conflicting evidence without overwriting it.
+Recovery warning paths are unique in first-observed order at startup as well as
+live inspection. This normalizes only `recoveryRequired`, not the `changes` array,
+journal contents or original backups; a repeated path is not a separate conflict.
+
+The index relies on `inspectRecovery()` accepting an operation only from its exact
+`<operation>.json` filename. A copy under another name remains unresolved even
+when its internal ID and receipt fields match; it cannot replace an indexed
+receipt or supply a missing canonical journal. Tests exercise that producer
+contract with actual files sorted before and after the canonical name.
+
+Comparison-budget tests also require every operation to receive a full same-ID
+comparison. Long-history negative cases preserve a matching prefix and reject
+only the late mismatch, so reducing comparison counts by skipping verification
+is not an optimization. These checks do not replace the normal byte validation.
 
 This removes repeated full-array receipt searches, using temporary memory linear
 in the history size. It is not an integrity cache, a new recovery policy or a
