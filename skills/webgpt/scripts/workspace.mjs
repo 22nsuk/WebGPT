@@ -19,6 +19,14 @@ function windowsReplacement(action,file,temporary,expectedSha256) {
   if(result.error)throw result.error;
   if(result.status!==0)throw Error(`Windows permission-preserving replacement failed: ${result.stderr.trim() || result.signal || result.status}`);
 }
+// Native aliases can resolve through non-UTF-8 names even when the supplied
+// string is well formed. Never use a replacement-character spelling as a path.
+function nativeText(bytes, subject) {
+  const text=bytes.toString('utf8');
+  if(!Buffer.from(text).equals(bytes))throw Error(`${subject} must be UTF-8; inspect with native filesystem tools`);
+  return text;
+}
+const nativePath = path => nativeText(realpathSync.native(path,{encoding:'buffer'}),'workspace path');
 // Apply one portable Git-metadata policy before filesystem access and when listing.
 // Windows aliases include case variants, trailing dots/spaces, GIT~1 and NTFS streams.
 const isGitMetadataName = name => /^(?:\.git|git~1)[ .]*(?::|$)/i.test(name);
@@ -34,7 +42,7 @@ function gitSafeRoot(root) {
     if (resolve(path).split(sep).some(isGitMetadataName)) throw Error('invalid workspace root or Git metadata');
   };
   check(root);
-  const canonical = realpathSync.native(root);
+  const canonical = nativePath(root);
   check(canonical);
   return canonical;
 }
@@ -66,7 +74,7 @@ function target(grant,path,writing=false,createParents=false,directory=false) {
     if(stat.isSymbolicLink()) throw Error('symlink, hardlink or invalid target type');
     // Native resolution expands actual Windows short names, including aliases other than GIT~1.
     // Check each existing ancestor before creating children or opening a file beneath it.
-    cursor=realpathSync.native(cursor);
+    cursor=nativePath(cursor);
     if(isGitMetadataName(basename(cursor))) throw Error('invalid path or Git metadata');
     if(i<parts.length-1 || directory ? !stat.isDirectory() : !stat.isFile() || stat.nlink!==1) throw Error('symlink, hardlink or invalid target type');
   }
@@ -105,8 +113,7 @@ export function listWorkspace(grant,path,{cursor,limit=500}={}) {
     .map(e=>{
       // Decode without changing the native name. A replacement character can
       // otherwise alias a different file and hide changes from the page cursor.
-      const name=e.name.toString('utf8');
-      if(!Buffer.from(name).equals(e.name))throw Error('directory entry name must be UTF-8; inspect with native filesystem tools');
+      const name=nativeText(e.name,'directory entry name');
       return {name,type:e.isSymbolicLink()?'symlink':e.isDirectory()?'directory':'file'};
     })
     .filter(e=>!isGitMetadataName(e.name))

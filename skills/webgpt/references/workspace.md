@@ -64,6 +64,19 @@ be reconstructed from its stored canonical spelling. Update matching worker/work
 scripts through the usual stopped-worker procedure; no state migration or automatic retry
 is added. Registration rejection does not permit resending an earlier browser message.
 
+Native canonical workspace paths must also round-trip through UTF-8 unchanged.
+A well-formed supplied root can still follow an alias whose native target contains
+non-UTF-8 name bytes. Reject that grant before it can select a different `�`-named
+project. The same check runs for retained roots and resolved project components,
+before reads, parent-directory creation or mutations. Normal aliases/Windows short
+names and deliberately supplied `�` remain supported; no name is normalized or
+renamed. Rejection leaves existing tasks/evidence available for inspection and
+explicit cancellation. It does not reconstruct a root already misregistered by an
+older worker, validate every operational configuration path, or isolate arbitrary
+concurrent filesystem changes. Preserve the original alias and inspect its native
+target instead of registering the replacement spelling. Update matching scripts
+through the existing stopped-worker procedure; no stored-state change is required.
+
 If a registration response is lost, resubmit the exact payload with the same ID. An identical
 running registration returns the original token with `duplicate:true` without renewing its deadline.
 Different inputs, instructions, grants or a terminal task reject ID reuse. This is controller retry
