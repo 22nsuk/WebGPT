@@ -187,6 +187,12 @@ async function inspectCollection(id, config, { signal }) {
   const snapshot = await readReconciliation(config, { signal, ids: [id] });
   if (snapshot.health?.issues?.includes('STATE_INVALID'))
     throw Object.assign(Error('controller state is invalid; preserve evidence and inspect'), { code: 'STATE_INVALID' });
+  // A read failure can leave valid-looking in-memory task data without a fresh
+  // disk observation. Require that proof, not global write/workspace readiness.
+  if (snapshot.health?.stateVerified !== true)
+    throw Object.assign(Error('controller state could not be verified; inspect storage and update the idle worker and client together'), {
+      code: 'COLLECTION_UNCONFIRMED',
+    });
   const task = snapshot.tasks.find(task => task.id === id);
   if (!task) throw Error('unknown task');
   if (task.status === 'running')
