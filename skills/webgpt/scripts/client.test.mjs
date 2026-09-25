@@ -370,7 +370,7 @@ test('resume preserves a concurrent discard and reports unverifiable post-ack re
     });
     assert.equal(actions.filter(action => action === '/collect').length, 2);
   }, async ({ req, actions }) => {
-    if (req.url === '/reconcile' && actions.length === 1) await f.admin('cancel', { id: 'discard' });
+    if (req.url === '/reconcile?id=discard' && actions.length === 1) await f.admin('cancel', { id: 'discard' });
     if (req.url === '/collect' && actions.filter(action => action === '/collect').length === 2)
       writeFileSync(join(f.dir, 'changed.result.txt'), 'tampered after acknowledgment');
     return false;

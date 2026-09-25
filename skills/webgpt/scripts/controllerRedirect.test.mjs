@@ -136,7 +136,7 @@ for (const resume of [false, true]) test(`collection${resume ? ' resume' : ''} r
     await f.forward(req, res, bytes);
   });
   await assert.rejects(collectTask('owned', { ...f.config, controlPort: proxy.port }, { resume }), redirectFailure);
-  assert.deepEqual(paths, [...(resume ? ['/reconcile'] : ['/wait?id=owned']), '/collect']);
+  assert.deepEqual(paths, [...(resume ? ['/reconcile?id=owned'] : ['/wait?id=owned']), '/collect']);
   assert.deepEqual(readFileSync(join(f.dir, 'state.json')), before);
   assert.equal(f.state().collected, false); assert.equal(f.state().token, f.task.token);
   assert.equal(readFileSync(join(f.dir, 'owned.result.txt'), 'utf8'), resultBytes);

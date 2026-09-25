@@ -71,7 +71,7 @@ async function fixture(t, { status = 'completed', intercept = async () => false,
   await new Promise(resolve => proxy.listen(0, '127.0.0.1', resolve));
   return { ...f, config: { ...direct, controlPort: proxy.address().port } };
 }
-const initial = resume => resume ? ['/reconcile'] : ['/wait?id=owned'];
+const initial = resume => resume ? ['/reconcile?id=owned'] : ['/wait?id=owned'];
 const refused = resume => resume ? initial(true) : [...initial(false), '/collect'];
 function recoveryError(kind) {
   return error => {
@@ -114,7 +114,7 @@ for (const kind of ['pending-result', 'unresolved-journal', 'missing-backup']) {
       assert.equal(error.cause.code, 'COLLECTION_RECOVERY_REQUIRED');
       return true;
     });
-    assert.deepEqual(f.actions, [...initial(resume), '/collect', '/reconcile']);
+    assert.deepEqual(f.actions, [...initial(resume), '/collect', '/reconcile?id=owned']);
     const stored = JSON.parse(fs.readFileSync(f.state))[0];
     assert.equal(stored.collected, true); assert.equal(stored.token, undefined);
     assert.equal(fs.readFileSync(f.artifact, 'utf8'), text);
@@ -131,7 +131,7 @@ for (const kind of ['pending-result', 'unresolved-journal']) test(`unrelated ${k
   const f = await fixture(t), other = await f.register('other'); await f.complete(other);
   const candidate = f.evidence(kind, 'other'), bytes = fs.readFileSync(candidate);
   assert.equal((await collectTask('owned', f.config)).collected, true);
-  assert.deepEqual(f.actions, [...initial(false), '/collect', '/reconcile']);
+  assert.deepEqual(f.actions, [...initial(false), '/collect', '/reconcile?id=owned']);
   assert.deepEqual(fs.readFileSync(candidate), bytes);
   const snapshot = await reconcileTasks(f.direct);
   assert.equal(snapshot.tasks.find(task => task.id === 'other').attention,

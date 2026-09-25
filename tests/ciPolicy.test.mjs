@@ -41,11 +41,15 @@ test('CI preserves its least-privilege, uncached test-only configuration', () =>
   assert.match(workflow, /^    timeout-minutes: 10\s*$/m);
   assert.match(workflow, /^  cancel-in-progress: true\s*$/m);
   assert.match(workflow, /^        run: node tests\/run\.mjs\s*$/m);
+  // Keep the full PR matrix without duplicating it on feature-branch pushes.
+  assert.match(workflow, /^on:\n  push:\n    branches: \[main\]\n  pull_request:\n  workflow_dispatch:\n/m);
+  assert.match(workflow, /^        os: \[windows-latest, macos-latest, ubuntu-latest\]\s*$/m);
+  assert.match(workflow, /^        node: \['22', '24', '26'\]\s*$/m);
   assert.doesNotMatch(workflow, /pull_request_target:|workflow_run:|write-all|id-token:|secrets\.|self-hosted/);
 });
 
 test('both test layouts retain the explicit test-file concurrency budget', () => {
-  for (const name of ['run.mjs', 'installation.test.mjs']) {
+  for (const name of ['run.mjs', 'helpers/installed-suite.mjs']) {
     const source = readFileSync(new URL(name, import.meta.url), 'utf8');
     assert.match(source, /'--test', '--test-concurrency=2', '--test-reporter=tap'/);
   }

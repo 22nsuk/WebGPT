@@ -6,16 +6,47 @@ CI and local repository validation use `node tests/run.mjs`. The runner discover
 all shipped and repository `*.test.mjs` files without shell globs, runs repository
 tests first, then the standalone installation test. The installation test still
 copies the complete skill and runs every shipped test with no surrounding repo.
-Both test commands use `--test-concurrency=2`: at most two active test files, plus
-their real worker/supervisor/PowerShell children. The installed-suite wrapper only
-waits while its child runner executes. This avoids overlapping whole-suite runs
-and host-CPU-dependent fan-out; it does not serialize concurrency scenarios inside
-tests, retry failed tests, skip checks or extend request/test/job deadlines.
+The repository command uses `--test-concurrency=2`. The installation harness
+discovers every shipped test file, including nested files, and runs independent
+Node test commands from the copied skill with at most two active files. This avoids
+overlapping whole-suite runs and host-CPU-dependent fan-out without changing
+concurrency scenarios inside tests, retrying failures or skipping checks.
+
+The installation deadline is per active file: 120 seconds on Windows and 60 seconds
+elsewhere. Previously the same deadline covered the entire growing shipped suite;
+Windows/Node 22 completed the equivalent repository phase in 149.8 seconds and
+repeatedly exceeded the installed total limit. Applying the budget to a file makes
+it independent of suite size. Existing individual test/request deadlines and the
+ten-minute CI job limit remain unchanged; this is not a fixed speedup claim.
+
+The harness logs each file's start, finish and elapsed time as it runs, retains a
+bounded output tail for failures, and sums all TAP results. Normal failures do not
+skip queued files. On a file deadline it terminates the tracked live runner's tree
+on Windows or its process group on POSIX, then waits for stream closure. This is
+test-fixture ownership, not containment of arbitrary detached descendants. If
+termination cannot be confirmed, it fails and preserves the installation directory.
+Cleanup uses bounded asynchronous retries and preserves the primary execution
+failure when cleanup also fails. Async copying also avoids a reproduced Node 22
+native crash in recursive `cpSync` from a Unicode checkout path.
 
 For an installed skill alone, run
 `node --test --test-concurrency=2 --test-reporter=tap` from its directory.
 Bare `node --test` uses Node's CPU-dependent concurrency and can overlap the
 repository's installation test with other files; use the runner above for CI parity.
+
+### Avoid duplicate event runs, not coverage
+
+All nine OS/Node combinations still run on each pull request, on pushes to `main`,
+and on manual `workflow_dispatch`. Feature-branch pushes no longer start a second
+matrix alongside the pull-request event. The two old event types used different
+concurrency groups, so `cancel-in-progress` did not eliminate that duplication.
+
+A branch without an open pull request now has no automatic push run. Open a PR,
+use the manual workflow, or run `node tests/run.mjs` locally for that branch.
+This removes one nine-job matrix per update to an open same-repository PR; it does
+not halve every repository run or promise a fixed saving in billed CI time.
+Event filtering leaves the repository and standalone coverage, assertions and
+action pins unchanged. The installation deadline ownership is described above.
 
 ## Action dependencies
 

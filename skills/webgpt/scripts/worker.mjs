@@ -359,7 +359,16 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
       if(req.method==='GET'&&req.url==='/ready'){
         const report=readiness();return json(res,report.ok?200:503,report);
       }
-      if(req.method==='GET'&&req.url==='/reconcile')return json(res,200,{health:readiness(),tasks:tasks.map(reconciliationTask)});
+      if(req.method==='GET'&&url.pathname==='/reconcile'){
+        const ids=[...new Set(url.searchParams.getAll('id'))];
+        if([...url.searchParams.keys()].some(key=>key!=='id')
+            ||ids.some(id=>!/^[a-zA-Z0-9_-]{1,80}$/.test(id)))throw Error('invalid reconciliation query');
+        const selected=ids.length?tasks.filter(t=>ids.includes(t.id)):tasks;
+        if(ids.length&&selected.length!==ids.length)throw Error('unknown task');
+        // Health remains global. Only retained-task detail inspection is scoped;
+        // full reconcile still audits every journal, original and result candidate.
+        return json(res,200,{health:readiness(),tasks:selected.map(reconciliationTask),...(ids.length?{scope:ids}:{})});
+      }
       if(stopping)return json(res,503,{error:'worker is stopping',code:'SHUTTING_DOWN',retryable:true});
       if(req.method==='GET'&&['/wait','/status','/tasks'].includes(url.pathname))verifyState();
       if(req.method==='GET'&&url.pathname==='/wait'){
