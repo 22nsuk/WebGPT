@@ -63,7 +63,21 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
   if(savedState!==null&&!stateInitialized){createStateMarker(markerPath);stateInitialized=true;}
   let storageFailure=null, stateFailure=null;
   const waiters=new Set();
-  const wake=()=>{for(const fn of [...waiters])fn();};
+  let waking=false,wakePending=false;
+  const wake=()=>{
+    // A waiter's state check can report storage failure and wake its peers.
+    // Drain that notification without recursively revisiting completed waiters.
+    wakePending=true;
+    if(waking)return;
+    waking=true;
+    try{
+      do{
+        wakePending=false;
+        for(const fn of [...waiters])fn();
+        // A prior waiter may have re-parked before a later one found the error.
+      }while(wakePending);
+    }finally{waking=false;}
+  };
   const storageError=error=>{
     if(error.code==='STATE_INVALID')stateFailure=error;
     else storageFailure={code:error.code??'STORAGE_UNAVAILABLE'};

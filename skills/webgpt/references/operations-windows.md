@@ -118,6 +118,17 @@ and `SHUTTING_DOWN`. Credentials, prompts and inputs are not included. Actual
 storage-write failures are sticky until a successful real persist or a controlled
 restart after repair; a successful canary alone must not hide a failed result save.
 
+Parked controller waits are notified synchronously. If a waiter's state check
+reports a storage error, nested notifications join the current drain instead of
+recursively revisiting completed waiters. Another pass covers any earlier waiter
+that re-parked before a later waiter observed the failure. Every remaining waiter
+still verifies state; there is no cached integrity verdict, timer-based retry or
+new background queue. Scope filtering, disconnect cleanup and error responses
+remain unchanged. Parallel clients must match responses by task ID, not arrival
+order. This prevents notification-driven repeated reads during shared failures;
+it does not bound client count, total state size or filesystem latency, repair
+storage, clear quarantine, acknowledge work or change the retry policy.
+
 This is an advisory, point-in-time check, not a proof that every future write will
 succeed. It does not measure tunnel reachability, browser login, model progress,
 every individual file's write ACL, all retained artifacts, or physical power-loss
