@@ -4,6 +4,10 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, existsSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
+import { grantWorkspace } from './workspace.mjs';
 import { start, tools } from './worker.mjs';
 import { request, collectTask } from './client.mjs';
 
@@ -289,4 +293,113 @@ test('live error recovery isolates malformed journals without waiting for a work
   assert.match(result.content[0].text, /supervisor recovery required/);
   await f.assertBlocked();
   assert.equal((await f.call('submit_result', { token: f.other.token, status: 'completed', summary: '', result: 'independent done' })).isError, false);
+}));
+
+
+// Valid UTF-8 JSON may still decode escaped unpaired UTF-16 surrogates. Test
+// admission separately from wire decoding and the existing tool-argument guard.
+for (const field of ['instructions', 'name', 'value']) test(`registration rejects ill-formed ${field} before persisting a task`, () => fixture(async f => {
+  for (const bad of ['\ud800', '\udfff', 'left\ud800right', '\udfff\ud800']) {
+    const payload = { id: 'rejected', instructions: 'unchanged', inputs: { doc: 'text' } };
+    if (field === 'instructions') payload.instructions = bad;
+    if (field === 'name') payload.inputs = { [bad]: 'text' };
+    if (field === 'value') payload.inputs.doc = bad;
+    // JSON.stringify escapes these code units, so the transport bytes are valid UTF-8.
+    const wire = Buffer.from(JSON.stringify(payload));
+    assert.equal(new TextDecoder('utf-8', { fatal: true }).decode(wire), wire.toString());
+    await assert.rejects(f.admin('register', payload), error => {
+      assert.equal(error.statusCode, 400); assert.match(error.message, /well-formed Unicode/); return true;
+    });
+    assert.equal(existsSync(join(f.dir, 'state.json')), false);
+    assert.equal(existsSync(join(f.dir, 'state.initialized')), false);
+    assert.equal(existsSync(join(f.dir, 'state.json.tmp')), false);
+    assert.equal(existsSync(join(f.dir, 'recovery')), false);
+  }
+  const valid = { id: 'rejected', instructions: 'unchanged', inputs: { doc: 'text' } };
+  const accepted = await f.admin('register', valid), before = readFileSync(join(f.dir, 'state.json'));
+  const retry = await f.admin('register', valid);
+  assert.equal(retry.duplicate, true); assert.equal(retry.token, accepted.token);
+  await assert.rejects(f.admin('register', { ...valid, instructions: '\ud800' }), /well-formed Unicode/);
+  assert.deepEqual(readFileSync(join(f.dir, 'state.json')), before);
+}));
+
+test('workspace roots reject lossy Unicode before resolving a replacement-character directory', () => fixture(async f => {
+  const root = join(f.base, 'project-\ufffd'); mkdirSync(root); writeFileSync(join(root, 'original.txt'), 'preserve');
+  for (const bad of ['\ud800', '\udfff']) {
+    const workspace = { root: join(f.base, 'project-' + bad), mode: 'edit' };
+    assert.throws(() => grantWorkspace(workspace), /workspace/);
+    await assert.rejects(f.admin('register', { id: 'bad-root', instructions: '', inputs: {}, workspace }), error => {
+      assert.equal(error.statusCode, 400); return true;
+    });
+    assert.equal(existsSync(join(f.dir, 'state.json')), false);
+    assert.equal(readFileSync(join(root, 'original.txt'), 'utf8'), 'preserve');
+  }
+  // An intentionally supplied U+FFFD is valid and must not be banned or normalized.
+  const workspace = { root, mode: 'read' }, { token } = await f.admin('register', { id: 'valid-root', instructions: '', inputs: {}, workspace });
+  assert.deepEqual((await f.call('get_task', { token })).structuredContent.workspace, grantWorkspace(workspace));
+  assert.equal((await f.call('read_file', { token, path: 'original.txt' })).structuredContent.text, 'preserve');
+}));
+
+test('registration preserves valid Unicode, literal escapes and exact full/window input digests across restart', () => fixture(async f => {
+  const instructions = '\ufeff한글 🎾 e\u0301 \ufffd\r\nzero\0end';
+  const inputs = Object.fromEntries([['자료 🧪', instructions], ['literal', '\\ud800'], ['__proto__', 'own'], ['empty', ''],
+    ['composed', '\u00e9'], ['decomposed', 'e\u0301']]);
+  const { token } = await f.admin('register', { id: 'valid-unicode', instructions, inputs });
+  for (const reboot of [false, true]) {
+    if (reboot) await f.restart();
+    const before = readFileSync(join(f.dir, 'state.json'));
+    const task = (await f.call('get_task', { token })).structuredContent;
+    assert.equal(task.instructions, instructions); assert.deepEqual(task.inputs, Object.keys(inputs));
+    for (const [name, text] of Object.entries(inputs)) {
+      const full = await f.call('read_input', { token, name }), page = await f.call('read_input', { token, name, limit: 10 });
+      assert.equal(full.isError, false); assert.equal(page.isError, false);
+      assert.deepEqual(full.structuredContent, { name, text }); assert.equal(page.structuredContent.text, text);
+      assert.equal(page.structuredContent.sha256, createHash('sha256').update(Buffer.from(text)).digest('hex'));
+      assert.equal(page.structuredContent.partial, false);
+    }
+    assert.deepEqual(readFileSync(join(f.dir, 'state.json')), before);
+  }
+}));
+
+test('legacy malformed text is preserved and isolated without a startup-wide rejection or lossy reads', () => fixture(async f => {
+  const { token } = await f.admin('register', { id: 'legacy', instructions: 'review', inputs: { doc: 'valid', safe: 'readable' } });
+  const other = await f.admin('register', { id: 'healthy', instructions: 'independent', inputs: {} });
+  const path = join(f.dir, 'state.json');
+  for (const field of ['instructions', 'name', 'value']) {
+    const saved = JSON.parse(readFileSync(path)), legacy = saved.find(t => t.id === 'legacy');
+    legacy.instructions = field === 'instructions' ? 'PRIVATE_BAD\ud800' : 'review';
+    legacy.inputs = field === 'name' ? { ['PRIVATE_BAD\udfff']: 'kept', safe: 'readable' }
+      : { doc: field === 'value' ? 'PRIVATE_BAD\ud800' : 'valid', safe: 'readable' };
+    // Model a retained older state, not concurrent edits that bypass verifyState.
+    writeFileSync(path, JSON.stringify(saved)); await f.restart();
+    const before = readFileSync(path), overview = await f.call('get_task', { token });
+    assert.equal(overview.isError, field !== 'value');
+    if (overview.isError) assert.equal(JSON.stringify(overview).includes('PRIVATE_BAD'), false);
+    if (field === 'value') for (const options of [{}, { limit: 1 }]) {
+      const out = await f.call('read_input', { token, name: 'doc', ...options });
+      assert.equal(out.isError, true); assert.equal(out.structuredContent, undefined);
+      assert.equal(JSON.stringify(out).includes('PRIVATE_BAD'), false);
+    }
+    assert.equal((await f.call('read_input', { token, name: 'safe' })).structuredContent.text, 'readable');
+    assert.equal((await f.call('get_task', { token: other.token })).structuredContent.status, 'running');
+    assert.deepEqual(readFileSync(path), before, 'no normalization, repair, cancellation or evidence rewrite on read');
+  }
+  await f.admin('cancel', { id: 'legacy' });
+  assert.equal((await f.call('get_task', { token })).isError, true);
+  assert.equal((await f.call('get_task', { token: other.token })).isError, false);
+}));
+
+test('CLI registration rejects JSON-escaped surrogate input without modifying or echoing the private source', () => fixture(async f => {
+  const file = join(f.base, 'request.json'), config = join(f.base, 'config.json');
+  const payload = { id: 'cli-invalid', instructions: 'PRIVATE_REQUEST', inputs: { doc: 'PRIVATE_INPUT\ud800' } };
+  writeFileSync(file, JSON.stringify(payload)); writeFileSync(config, JSON.stringify(f.config));
+  const before = readFileSync(file);
+  await assert.rejects(promisify(execFile)(process.execPath, [fileURLToPath(new URL('./client.mjs', import.meta.url)), 'register', file], {
+    env: { ...process.env, WEBGPT_CONFIG: config, WEBGPT_DATA_DIR: f.dir }, timeout: 10000, windowsHide: true,
+  }), error => {
+    assert.equal(error.code, 1); assert.equal(error.stdout, ''); assert.match(error.stderr, /well-formed Unicode/);
+    for (const secret of ['PRIVATE_REQUEST', 'PRIVATE_INPUT', file]) assert.ok(!error.stderr.includes(secret));
+    return true;
+  });
+  assert.deepEqual(readFileSync(file), before); assert.equal(existsSync(join(f.dir, 'state.json')), false);
 }));

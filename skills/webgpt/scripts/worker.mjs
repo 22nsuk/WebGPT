@@ -278,10 +278,19 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
     const tool=tools.find(tool=>tool.name===name);if(!tool)throw Error('unknown tool');
     if(['list_files','read_file','write_file','delete_file'].includes(name))checkDataBoundary(t.workspace);
     validateArguments(tool,args);
-    if(name==='get_task')return {id:t.id,instructions:t.instructions,inputs:Object.keys(t.inputs),status:t.status,workspace:t.workspace??null,changes:t.changes??[],recoveryRequired:t.recoveryRequired??[]};
+    if(name==='get_task'){
+      const inputs=Object.keys(t.inputs);
+      // Keep legacy malformed records inspectable by the parent, not repaired
+      // or promoted to ordinary tool text. Other tasks can still operate.
+      if(!t.instructions.isWellFormed()||inputs.some(name=>!name.isWellFormed()))
+        throw Error('stored task text is not well-formed Unicode; supervisor inspection required');
+      return {id:t.id,instructions:t.instructions,inputs,status:t.status,workspace:t.workspace??null,changes:t.changes??[],recoveryRequired:t.recoveryRequired??[]};
+    }
     if(name==='read_input'){
       if(!Object.hasOwn(t.inputs,args.name))throw Error('unknown input');
-      const text=t.inputs[args.name],range=readWindowOptions({offset:args.offset,limit:args.limit,maxChars:args.maxChars});
+      const text=t.inputs[args.name];
+      if(!text.isWellFormed())throw Error('stored input is not well-formed Unicode; supervisor inspection required');
+      const range=readWindowOptions({offset:args.offset,limit:args.limit,maxChars:args.maxChars});
       if(!range)return {name:args.name,text}; // Preserve the original response exactly.
       return {name:args.name,...textWindow(text,range,'input'),sha256:createHash('sha256').update(text).digest('hex')};
     }
@@ -460,6 +469,10 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
       if(req.url==='/register'){
         if(a&&['terminal','mode'].some(key=>Object.hasOwn(a,key)))throw Error('terminal/open modes are not supported by this file-scoped fork');
         if(!a||typeof a.id!=='string'||!/^[a-zA-Z0-9_-]{1,80}$/.test(a.id)||typeof a.instructions!=='string'||!a.inputs||typeof a.inputs!=='object'||Array.isArray(a.inputs)||Object.values(a.inputs).some(v=>typeof v!=='string'))throw Error('invalid task');
+        // Valid wire UTF-8 does not exclude JSON-escaped unpaired surrogates.
+        // Reject them before storing unreadable keys or lossy UTF-8 input hashes.
+        if(!a.instructions.isWellFormed()||Object.entries(a.inputs).some(([name,text])=>!name.isWellFormed()||!text.isWellFormed()))
+          throw Error('task instructions and inputs must be well-formed Unicode');
         // IDs become result/recovery filenames, so keep them portable across Windows and POSIX.
         if(/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(a.id))throw Error('invalid task ID: reserved Windows filename');
         const workspace=grantWorkspace(a.workspace);
