@@ -183,11 +183,12 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
       pending.add(resolve(dir,'recovery',task.id,receipt.operation+'.json'));
     // This safety block intentionally stays live even if state storage is unavailable.
     if(pending.size){task.recoveryRequired=[...pending];wake();}
+    return unresolved;
   };
-  const reconciliationTask=t=>({
+  const reconciliationTask=(t,journalIssues=recoveryFor(t).unresolved)=>({
     id:t.id,status:t.status,collected:t.collected,discarded:t.discarded??false,nextCheck:t.nextCheck,
     artifact:t.artifact??null,sha256:t.sha256??null,changes:t.changes??[],
-    recoveryRequired:t.recoveryRequired??[],journalIssues:recoveryFor(t).unresolved,pendingResults:inspectPendingResults(t,dir)
+    recoveryRequired:t.recoveryRequired??[],journalIssues,pendingResults:inspectPendingResults(t,dir)
   });
   // The controller owns both the decision and the state transition. No await or
   // event-loop yield may split these checks from persist. This serializes worker
@@ -219,7 +220,7 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
     }
     return {ok:true,id:t.id,status:t.status,sha256:t.sha256,collected:true,duplicate:t.collected};
   };
-  const readiness=()=>{
+  const readiness=(journalIssuesByTask)=>{
     let probe;
     try{
       verifyState();
@@ -230,7 +231,10 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
       renameSync(probe+'.tmp',probe);unlinkSync(probe);
     }catch(error){storageError(error);}
     finally{if(probe)for(const file of [probe+'.tmp',probe])try{unlinkSync(file);}catch{}}
-    for(const task of tasks.filter(t=>t.status==='running'))flagUnrecordedChanges(task);
+    for(const task of tasks.filter(t=>t.status==='running')){
+      const issues=flagUnrecordedChanges(task);
+      journalIssuesByTask?.set(task,issues);
+    }
     const recoveryRequired=tasks.filter(t=>t.status==='running'&&t.recoveryRequired?.length).map(t=>t.id);
     const unavailableWorkspaces=tasks.filter(t=>t.status==='running'&&t.workspace).filter(t=>{
       try{checkDataBoundary(t.workspace);probeWorkspace(t.workspace);return false;}catch{return true;}
@@ -376,7 +380,10 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
         if(ids.length&&selected.length!==ids.length)throw Error('unknown task');
         // Health remains global. Only retained-task detail inspection is scoped;
         // full reconcile still audits every journal, original and result candidate.
-        return json(res,200,{health:readiness(),tasks:selected.map(reconciliationTask),...(ids.length?{scope:ids}:{})});
+        // Share only this synchronous response's observed diagnostics, not receipts
+        // or a cross-request integrity verdict. Collection checks independently.
+        const journalIssues=new Map(),health=readiness(journalIssues);
+        return json(res,200,{health,tasks:selected.map(t=>reconciliationTask(t,journalIssues.get(t))),...(ids.length?{scope:ids}:{})});
       }
       if(stopping)return json(res,503,{error:'worker is stopping',code:'SHUTTING_DOWN',retryable:true});
       if(req.method==='GET'&&['/wait','/status','/tasks'].includes(url.pathname))verifyState();
