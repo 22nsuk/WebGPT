@@ -140,7 +140,7 @@ test('cancel racing collection has an ordered outcome and cannot relabel a colle
   const [collected] = await Promise.all([f.post(), f.admin('cancel', { id: 'owned' })]);
   assert.equal(f.state().collected, true);
   if (collected.status === 200) assert.equal(f.state().discarded ?? false, false);
-  else { assert.equal(collected.data.code, 'COLLECTION_DISCARDED'); assert.equal(f.state().discarded ?? false, true); }
+  else { assert.equal(collected.data.code, 'COLLECTION_DISCARDED'); assert.equal(f.state().discarded, true); }
 });
 
 test('failed state publication preserves inputs and candidate; an explicit same-byte conditional retry succeeds', async t => {
@@ -183,7 +183,7 @@ test('external evidence introduced inside filesystem publication is outside the 
   assert.equal(f.state().collected, true); assert.equal(f.state().token, undefined);
   assert.equal(fs.readFileSync(f.artifact + '.tmp', 'utf8'), text);
   assert.deepEqual(f.actions, ['/wait?id=owned', '/collect', '/reconcile?id=owned']);
-  assert.equal((await collectTask('owned', f.config, { resume: true })).attention, 'inspect_uncommitted_result');
+  assert.equal((await collectTask('owned', f.direct, { resume: true })).attention, 'inspect_uncommitted_result');
 });
 
 test('the guard does not yield to an event-loop continuation before committed retirement', async t => {
