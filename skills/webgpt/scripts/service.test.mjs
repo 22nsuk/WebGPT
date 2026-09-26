@@ -238,3 +238,66 @@ test('worker fixture reports real startup stderr and exit code before any readin
     }
   }
 }));
+
+// A requested stop suppresses restarts, not the child's failure status. These
+// controlled exits cover the same numeric/signal distinction on every platform.
+for (const [code, signal] of [[0, null], [74, null], [null, 'SIGKILL']])
+  test(`requested stop preserves worker outcome ${code ?? signal} without restarting`, () => fixture(async f => {
+    const records = []; let launches = 0, sends = 0;
+    const service = runService(f.env, {
+      record: entry => records.push(entry), pause: () => assert.fail('must not restart after stop'),
+      spawnWorker() {
+        launches++;
+        const child = new EventEmitter();
+        Object.assign(child, { exitCode: null, signalCode: null, connected: true,
+          send(message, callback) {
+            sends++; assert.deepEqual(message, { type: 'shutdown' }); callback();
+            setImmediate(() => { child.exitCode = code; child.signalCode = signal; child.emit('exit', code, signal); });
+          },
+          kill() { assert.fail('responsive child must not be force-killed'); },
+        });
+        return child;
+      },
+    });
+    assert.deepEqual(requestServiceStop(f.env), { accepted: true });
+    assert.equal(await service, code ?? 1);
+    assert.equal(launches, 1); assert.equal(sends, 1);
+    assert.equal(records.find(entry => entry.event === 'worker_exited').exitCode, code);
+    assert.equal(records.find(entry => entry.event === 'worker_exited').signal, signal);
+    assert.equal(records.at(-1).exitCode, code ?? 1);
+    assert.equal(records.at(-1).stopReason, 'stop_request');
+    assert.equal(records.some(entry => entry.event === 'worker_restart_scheduled'), false);
+    assert.equal(existsSync(join(f.config.dataDir, 'service.lock')), false);
+  }));
+
+test('worker ownership-release failure is preserved by requested service stop', () => fixture(async f => {
+  const records = [];
+  const running = realService(f, { record: entry => records.push(entry) });
+  try {
+    await running.until(async () => (await request('ready', undefined, f.config)).ok);
+    const task = await request('register', { id: 'retained', instructions: 'private task', inputs: { source: 'private input' } }, f.config);
+    const state = readFileSync(join(f.config.dataDir, 'state.json'));
+    const lock = join(f.config.dataDir, 'worker.lock');
+    const owner = readFileSync(join(lock, 'owner.json'));
+    // Real filesystem evidence makes the real worker's existing release refuse.
+    // Never substitute an exit code or remove the entry to make shutdown succeed.
+    writeFileSync(join(lock, 'preserve.txt'), 'unexpected owned-fixture evidence');
+    assert.equal(requestServiceStop(f.env).accepted, true);
+    const result = await running.service;
+    assert.equal(records.find(entry => entry.event === 'worker_exited').exitCode, 74);
+    assert.equal(result, 74);
+    assert.equal(records.at(-1).exitCode, 74);
+    assert.equal(records.at(-1).stopReason, 'stop_request');
+    assert.equal(records.filter(entry => entry.event === 'worker_started').length, 1);
+    assert.equal(records.some(entry => entry.event === 'worker_restart_scheduled'), false);
+    assert.deepEqual(readFileSync(join(lock, 'owner.json')), owner);
+    assert.equal(readFileSync(join(lock, 'preserve.txt'), 'utf8'), 'unexpected owned-fixture evidence');
+    assert.deepEqual(readFileSync(join(f.config.dataDir, 'state.json')), state);
+    assert.equal(JSON.parse(state)[0].token, task.token);
+    assert.equal(existsSync(join(f.config.dataDir, 'service.lock')), false);
+    for (const port of [f.config.mcpPort, f.config.controlPort])
+      await assert.rejects(fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(2000) }));
+  } finally {
+    if (!running.finished) { requestServiceStop(f.env); await running.service; }
+  }
+}));

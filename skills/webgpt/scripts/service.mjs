@@ -96,7 +96,9 @@ export async function runService(env = process.env, { spawnWorker = spawn, pause
       catch (error) { throw fault('CONFIG_INVALID', 'worker could not be launched: ' + (error.code ?? 'UNKNOWN')); }
       log('worker_exited', { workerPid: child.pid ?? null, exitCode: code, signal, attempt, stopReason });
       clearTimeout(killTimer);child = null;
-      if (stopping) return result = 0;
+      // Stop intent suppresses restarts; it must not turn a failed drain or
+      // signal termination into success for the launcher and its final log.
+      if (stopping) return result = code ?? 1;
       const wait = restartDelay(code, signal, attempt);
       if (wait === null) {
         log('worker_restart_refused', { exitCode: code, signal, attempt,
