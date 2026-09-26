@@ -386,7 +386,8 @@ test('exclusive marker creation still resolves a racing writer by instance ident
     t.mock.method(fs, 'writeFileSync', (path, ...args) => {
       if (path === f.marker) {
         collided = true;
-        assert.equal(args[1].flag, 'wx'); assert.equal(args[1].flush, true);
+        assert.equal(args[1].flag, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL
+          | (fs.constants.O_NOFOLLOW ?? 0)); assert.equal(args[1].flush, true);
         write(f.marker, same ? f.instanceId : '00000000-0000-0000-0000-000000000000', { flag: 'wx', mode: 0o600 });
       }
       return write(path, ...args);
@@ -398,5 +399,149 @@ test('exclusive marker creation still resolves a racing writer by instance ident
       assert.equal(collided, true);
       assert.equal(readFileSync(f.marker, 'utf8'), same ? f.instanceId : '00000000-0000-0000-0000-000000000000');
     } finally { t.mock.restoreAll(); syncBuiltinESMExports(); unlinkSync(f.marker); }
+  }
+}));
+
+
+// Creation and verification have separate races. Controlled replacements retain
+// the original inode so an equal payload cannot stand in for the inspected file.
+for (const kind of ['regular', 'symlink', 'original-link'])
+  test(`service stop refuses a ${kind} replacement between marker metadata and open`, t => stopFixture(async f => {
+    const retained = join(f.base, 'retained'), target = join(f.base, 'target');
+    writeFileSync(f.marker, f.instanceId); writeFileSync(target, f.instanceId);
+    if (kind !== 'regular') {
+      const probe = join(f.base, 'link-probe');
+      try { symlinkSync(target, probe, 'file'); unlinkSync(probe); }
+      catch (error) {
+        if (['EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) { t.skip('file symlink creation unavailable'); return; }
+        throw error;
+      }
+    }
+    const stat = fs.lstatSync, write = fs.writeFileSync; let observed = 0, replaced = false;
+    await observeStopWrites(t, f.marker, attempts => {
+      assert.throws(() => requestServiceStop(f.env));
+      assert.equal(replaced, true); assert.equal(attempts(), 0);
+    }, { lstatSync(path, ...args) {
+      const info = stat(path, ...args);
+      if (path === f.marker && ++observed === 2) {
+        fs.renameSync(f.marker, retained);
+        if (kind !== 'regular') symlinkSync(kind === 'original-link' ? retained : target, f.marker, 'file');
+        else write(f.marker, f.instanceId);
+        replaced = true;
+      }
+      return info;
+    } });
+    assert.equal(readFileSync(retained, 'utf8'), f.instanceId);
+    assert.equal(readFileSync(target, 'utf8'), f.instanceId);
+    assert.equal(fs.lstatSync(f.marker).isSymbolicLink(), kind !== 'regular');
+  }));
+
+test('stop collision preserves metadata errors from the ownership recheck', t => stopFixture(async f => {
+  writeFileSync(f.marker, f.instanceId);
+  const stat = fs.lstatSync;
+  for (const code of ['EACCES', 'EIO']) {
+    let observed = 0;
+    await observeStopWrites(t, f.marker, attempts => {
+      assert.throws(() => requestServiceStop(f.env), { code });
+      assert.equal(attempts(), 0); assert.equal(observed, 2);
+    }, { lstatSync(path, ...args) {
+      if (path === f.marker && ++observed === 2)
+        throw Object.assign(Error('private fixture metadata'), { code });
+      return stat(path, ...args);
+    } });
+    assert.equal(readFileSync(f.marker, 'utf8'), f.instanceId);
+  }
+}));
+
+test('stop verification propagates descriptor errors and closes every opened handle', t => stopFixture(async f => {
+  writeFileSync(f.marker, f.instanceId);
+  for (const stage of ['openSync', 'fstatSync', 'readSync', 'closeSync']) {
+    const open = fs.openSync, close = fs.closeSync, stat = fs.fstatSync, operation = fs[stage];
+    let fd, closed = 0;
+    const overrides = {
+      openSync(path, ...args) {
+        const opened = open(path, ...args); if (path === f.marker) fd = opened; return opened;
+      },
+      closeSync(opened) { if (opened === fd) closed++; return close(opened); },
+    };
+    const forward = overrides[stage] ?? operation;
+    overrides[stage] = (first, ...args) => {
+      if (stage === 'openSync' ? first === f.marker : fd !== undefined && first === fd) {
+        if (stage === 'closeSync') { closed++; close(first); }
+        throw Object.assign(Error('private fixture descriptor failure'), { code: 'EIO' });
+      }
+      return forward(first, ...args);
+    };
+    await observeStopWrites(t, f.marker, attempts => {
+      assert.throws(() => requestServiceStop(f.env), { code: 'EIO' });
+      assert.equal(attempts(), 0); assert.equal(closed, stage === 'openSync' ? 0 : 1);
+      if (fd !== undefined) assert.throws(() => stat(fd), { code: 'EBADF' });
+    }, overrides);
+  }
+}));
+
+test('stop verification caps actual growth and never reads the marker through its path', t => stopFixture(async f => {
+  writeFileSync(f.marker, f.instanceId);
+  const open = fs.openSync, read = fs.readSync, readFile = fs.readFileSync, close = fs.closeSync, write = fs.writeFileSync;
+  let fd, consumed = 0, closed = 0, legacyReads = 0, grown = false;
+  const grow = () => {
+    if (grown) return;
+    grown = true; const appender = open(f.marker, 'a');
+    try { write(appender, 'x'.repeat(8192)); } finally { close(appender); }
+  };
+  await observeStopWrites(t, f.marker, attempts => {
+    assert.throws(() => requestServiceStop(f.env), { code: 'EEXIST' });
+    assert.equal(attempts(), 0); assert.equal(grown, true);
+    assert.equal(legacyReads, 0); assert.equal(consumed, 37); assert.equal(closed, 1);
+  }, {
+    openSync(path, ...args) { const opened = open(path, ...args); if (path === f.marker) fd = opened; return opened; },
+    readFileSync(path, ...args) { if (path === f.marker) { legacyReads++; grow(); } return readFile(path, ...args); },
+    readSync(opened, ...args) { if (opened === fd) grow(); const count = read(opened, ...args); if (opened === fd) consumed += count; return count; },
+    closeSync(opened) { if (opened === fd) closed++; return close(opened); },
+  });
+  assert.equal(fs.statSync(f.marker).size, 36 + 8192, 'growth evidence is not truncated or removed');
+}));
+
+test('native exclusive creation refuses a late dangling marker where no-follow is supported', t => stopFixture(async f => {
+  if (!fs.constants.O_NOFOLLOW) { t.skip('native O_NOFOLLOW unavailable; no Windows race guarantee'); return; }
+  const target = join(f.base, 'absent-target'), write = fs.writeFileSync; let raced = false;
+  await observeStopWrites(t, f.marker, () => {
+    assert.throws(() => requestServiceStop(f.env));
+    assert.equal(raced, true); assert.equal(fs.lstatSync(f.marker).isSymbolicLink(), true);
+    assert.equal(existsSync(target), false);
+  }, { writeFileSync(path, ...args) {
+    if (path === f.marker) {
+      assert.equal(args[1].flag, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW);
+      symlinkSync(target, f.marker, 'file'); raced = true;
+    }
+    return write(path, ...args);
+  } });
+}));
+
+test('an unreadable marker neither crashes the supervisor poll nor authorizes shutdown', t => fixture(async f => {
+  const records = [], running = realService(f, { record: entry => records.push(entry) });
+  let restored = false;
+  const restore = () => { t.mock.restoreAll(); syncBuiltinESMExports(); restored = true; };
+  try {
+    await running.until(async () => (await request('ready', undefined, f.config)).ok === true);
+    const marker = join(f.config.dataDir, 'service.lock', 'stop-request');
+    const owner = JSON.parse(readFileSync(join(f.config.dataDir, 'service.lock', 'owner.json'), 'utf8'));
+    const stat = fs.lstatSync; let polls = 0;
+    writeFileSync(marker, owner.instanceId);
+    t.mock.method(fs, 'lstatSync', (path, ...args) => {
+      if (path === marker) { polls++; throw Object.assign(Error('private poll failure'), { code: 'EIO' }); }
+      return stat(path, ...args);
+    });
+    syncBuiltinESMExports();
+    await untilFixture(() => polls > 0, { timeoutMs: 2000, label: 'marker poll', stopped: () => running.finished });
+    assert.equal(running.finished, false);
+    assert.equal((await request('ready', undefined, f.config)).ok, true);
+    assert.equal(records.some(entry => entry.event === 'worker_exited'), false);
+    restore();
+    assert.deepEqual(requestServiceStop(f.env), { accepted: true });
+    assert.equal(await running.service, 0);
+  } finally {
+    if (!restored) restore();
+    if (!running.finished) { requestServiceStop(f.env); await running.service; }
   }
 }));
