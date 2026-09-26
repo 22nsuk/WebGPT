@@ -181,6 +181,15 @@ repair method. Readiness/reconciliation do not authorize task recovery decisions
 
 ## Failure classes and retry budgets
 
+`service.mjs stop` inspects an existing stop marker before attempting creation.
+An identical, single-link regular marker is accepted without another write;
+foreign or partial contents, directories and links (including dangling links) are
+refused and preserved. Metadata errors are not treated as absence. A missing
+marker is still created exclusively and flushed; if a concurrent creator wins,
+only the same verified instance marker is accepted. This aligns the stop path
+with the other private-file creation guards, not a guarantee against arbitrary
+concurrent filesystem replacement. Refusal does not authorize marker deletion.
+
 An explicit service stop disables further restarts but does not certify a clean
 worker exit. The supervisor preserves a nonzero child exit code in its own exit
 status and final `service_exited` log; signal-only termination yields 1 and retains

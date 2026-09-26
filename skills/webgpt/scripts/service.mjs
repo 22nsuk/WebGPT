@@ -42,8 +42,13 @@ export function requestServiceStop(env = process.env) {
   const owner = JSON.parse(readFileSync(ownerFile, 'utf8'));
   if (typeof owner.instanceId !== 'string' || !/^[a-f0-9-]{36}$/.test(owner.instanceId)) throw Error('invalid service owner');
   const file = resolve(lock, 'stop-request');
-  try { writeFileSync(file, owner.instanceId, { flag: 'wx', mode: 0o600, flush: true }); }
-  catch (error) {
+  try {
+    // Refuse known entries before a creation-capable open, including dangling
+    // links. Keep exclusive creation for an entry arriving after this check.
+    if (lstatSync(file, { throwIfNoEntry: false }))
+      throw Object.assign(Error('service stop marker already exists'), { code: 'EEXIST' });
+    writeFileSync(file, owner.instanceId, { flag: 'wx', mode: 0o600, flush: true });
+  } catch (error) {
     if (error.code !== 'EEXIST' || !ownsStopRequest(file, owner.instanceId)) throw error;
   }
   return { accepted: true }; // No PID kill, secrets, SCM changes or installation.
