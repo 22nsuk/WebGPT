@@ -2,13 +2,14 @@
 // WinSW must use onfailure=none: this launcher owns the finite retry budget.
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { lstatSync, mkdirSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs';
 import { resolve, isAbsolute, dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { configuration } from './client.mjs';
 import { acquireRuntimeLock, startupExitCode, fault } from './runtime.mjs';
 import { validatedEntryPath } from './installation.mjs';
+import { readBytesUpTo } from './bounded-read.mjs';
 
 const backoff = [1000, 5000, 15000];
 const report = entry => console.error(JSON.stringify(entry));
@@ -27,12 +28,29 @@ function serviceConfig(env) {
     return configuration(env, { requireExplicitDataDir: true });
   } catch { throw fault('CONFIG_INVALID', 'service configuration requires an explicit absolute dataDir and valid ports'); }
 }
-function ownsStopRequest(file, instanceId) {
+function ownsStopRequest(file, instanceId, { strict = false } = {}) {
   try {
-    const info = lstatSync(file);
-    return info.isFile() && !info.isSymbolicLink() && info.nlink === 1 && info.size === 36
-      && readFileSync(file, 'utf8') === instanceId;
-  } catch { return false; }
+    const info = lstatSync(file, { throwIfNoEntry: false });
+    if (!info?.isFile() || info.isSymbolicLink() || info.nlink !== 1 || info.size !== 36) return false;
+    // Verify the opened object, not a second path-based read. NONBLOCK avoids
+    // parking the supervisor if a FIFO replaces the inspected regular file.
+    const fd = openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+    try {
+      const opened = fstatSync(fd);
+      if (!opened.isFile() || opened.nlink !== 1 || opened.size !== 36
+          || opened.dev !== info.dev || opened.ino !== info.ino) return false;
+      // Also inspect the current entry on platforms without O_NOFOLLOW.
+      const current = lstatSync(file);
+      if (!current.isFile() || current.isSymbolicLink() || current.nlink !== 1
+          || current.dev !== opened.dev || current.ino !== opened.ino) return false;
+      return readBytesUpTo(fd, 37).equals(Buffer.from(instanceId));
+    } finally { closeSync(fd); }
+  } catch (error) {
+    // A poll cannot authorize a stop from unreadable evidence. An explicit
+    // requester must receive the actual I/O failure, not a fabricated EEXIST.
+    if (strict) throw error;
+    return false;
+  }
 }
 export function requestServiceStop(env = process.env) {
   const config = serviceConfig(env), lock = resolve(config.dataDir, 'service.lock');
@@ -47,9 +65,10 @@ export function requestServiceStop(env = process.env) {
     // links. Keep exclusive creation for an entry arriving after this check.
     if (lstatSync(file, { throwIfNoEntry: false }))
       throw Object.assign(Error('service stop marker already exists'), { code: 'EEXIST' });
-    writeFileSync(file, owner.instanceId, { flag: 'wx', mode: 0o600, flush: true });
+    writeFileSync(file, owner.instanceId, { flag: constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL
+      | (constants.O_NOFOLLOW ?? 0), mode: 0o600, flush: true });
   } catch (error) {
-    if (error.code !== 'EEXIST' || !ownsStopRequest(file, owner.instanceId)) throw error;
+    if (error.code !== 'EEXIST' || !ownsStopRequest(file, owner.instanceId, { strict: true })) throw error;
   }
   return { accepted: true }; // No PID kill, secrets, SCM changes or installation.
 }

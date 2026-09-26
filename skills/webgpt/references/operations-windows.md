@@ -182,13 +182,34 @@ repair method. Readiness/reconciliation do not authorize task recovery decisions
 ## Failure classes and retry budgets
 
 `service.mjs stop` inspects an existing stop marker before attempting creation.
-An identical, single-link regular marker is accepted without another write;
-foreign or partial contents, directories and links (including dangling links) are
-refused and preserved. Metadata errors are not treated as absence. A missing
-marker is still created exclusively and flushed; if a concurrent creator wins,
-only the same verified instance marker is accepted. This aligns the stop path
-with the other private-file creation guards, not a guarantee against arbitrary
-concurrent filesystem replacement. Refusal does not authorize marker deletion.
+Known foreign/partial markers, directories and links are refused and preserved;
+an identical single-link regular marker is accepted without another write.
+A missing marker is created with `O_WRONLY | O_CREAT | O_EXCL`, mode 0600 and
+flush, plus `O_NOFOLLOW` where Node exposes it. Exclusive creation is retained
+for a competing creator after the first inspection. POSIX `O_CREAT | O_EXCL`
+already refuses a final symlink, including a dangling one: adding `O_NOFOLLOW`
+is not evidence that `wx` previously followed such links on POSIX. Node's Windows
+builds do not expose `O_NOFOLLOW`; its omission is explicit, not an emulated
+Win32 reparse-point guarantee. The earlier check still protects only entries
+already observed. No Windows late-link target-creation guarantee is added.
+
+Existing markers are read through a read-only descriptor, with no-follow and
+nonblocking flags where available. The opened object's type, single link, size,
+device/inode and current directory entry must match the inspected regular file
+before reading. The existing bounded reader consumes at most 37 bytes for a
+36-byte marker, rejecting growth rather than accepting a truncated prefix.
+Every opened descriptor is closed, including failed verification paths.
+An explicit stop request preserves metadata/open/read/close errors instead of
+masking them as `EEXIST`; for example, an unreadable marker yields `EACCES` and
+the existing storage-failure exit 74. A verified nonmatching/invalid marker still
+fails with `EEXIST`. The supervisor's polling and cleanup checks remain quiet on
+unreadable evidence: they cannot authorize shutdown or marker removal from it.
+
+These checks are not atomic with creation, reads or cleanup. Same-inode content
+changes, parent-directory replacement and changes after the last check remain
+outside this guarantee. Keep the runtime private and locally owned; refusal does
+not authorize marker deletion, ownership takeover or automatic retry. Owner-file
+reading and runtime-lock recovery are unchanged by this stop-marker check.
 
 An explicit service stop disables further restarts but does not certify a clean
 worker exit. The supervisor preserves a nonzero child exit code in its own exit
