@@ -77,6 +77,17 @@ its own lock. It does not cancel tasks, acknowledge results or replay mutations.
 The controller's authenticated `POST /shutdown` accepts only `{}`. The corresponding
 local command is `node <absolute-client.mjs-path> shutdown` with the private config.
 
+Once the authenticated empty-body request is accepted, shutdown does not depend on
+its HTTP response finishing. Earlier pipelined long polls are interrupted before
+queuing the acknowledgment; drain is scheduled even if that connection is lost.
+Otherwise the response can wait behind a poll whose wake-up depends on shutdown,
+or a disconnect can leave a live `SHUTTING_DOWN` owner holding ports and its lock.
+The existing close grace and ownership-release order remain unchanged. A 202 reply
+is acceptance, not proof of process exit; a lost reply is not proof of rejection.
+Verify the identified worker's exit and preserved state before an explicit restart
+or update. Do not cancel tasks, acknowledge results, steal its lock or retransmit
+browser work to resolve uncertainty about a stop request.
+
 Listener startup failures use the same bounded shutdown path. If the MCP listener
 opens but the controller bind fails, already-received MCP requests are rejected
 after body parsing; both listeners are drained or closed before runtime ownership

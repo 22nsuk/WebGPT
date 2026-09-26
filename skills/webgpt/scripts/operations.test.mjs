@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import { withStateWriteFailure } from './test-fixtures/state-write-failure.mjs';
+import { untilFixture } from './test-fixtures/worker-process.mjs';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, readdirSync, existsSync, unlinkSync, renameSync } from 'node:fs';
 import { tmpdir, hostname } from 'node:os';
@@ -7,7 +8,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { createServer, Server } from 'node:http';
+import { createServer, Server, ServerResponse } from 'node:http';
 import { connect } from 'node:net';
 import { setTimeout as delay } from 'node:timers/promises';
 import { randomUUID } from 'node:crypto';
@@ -392,3 +393,79 @@ test('grants cannot include the running scripts that an unattended restart would
   }
   assert.equal((await f.admin('tasks')).tasks.length, 0);
 }));
+
+// The HTTP stop command must own its shutdown lifecycle, not wait for delivery
+// of an acknowledgment. These use actual TCP ordering; no fake wait response.
+for (const count of [1, 3]) test(`shutdown wakes ${count} earlier pipelined waits before draining the connection`, () => fixture(async f => {
+  const owned = await f.register('owned'), completed = await f.register('completed');
+  await f.complete(completed.token);
+  const before = readFileSync(join(f.dir, 'state.json'));
+  const artifact = readFileSync(join(f.dir, 'completed.result.txt'));
+  const socket = connect(f.service.controlPort, '127.0.0.1');
+  let closed = false, wire = '';
+  socket.on('error', () => {}); socket.once('close', () => { closed = true; });
+  socket.on('data', bytes => { wire += bytes.toString(); });
+  try {
+    await once(socket, 'connect');
+    const headers = `Host: localhost\r\nAuthorization: Bearer ${f.service.key}\r\n`;
+    socket.write(`GET /wait?id=owned HTTP/1.1\r\n${headers}\r\n`.repeat(count)
+      + `POST /shutdown HTTP/1.1\r\n${headers}Content-Type: application/json\r\nContent-Length: 2\r\n\r\n{}`);
+    await untilFixture(() => closed && !existsSync(join(f.dir, 'worker.lock')), {
+      timeoutMs: 5000, label: 'accepted shutdown must drain without the 55-second wait deadline',
+    });
+    assert.deepEqual([...wire.matchAll(/HTTP\/1\.1 (\d+)/g)].map(match => Number(match[1])), [...Array(count).fill(200), 202]);
+    assert.equal([...wire.matchAll(/"interrupted":true/g)].length, count);
+    assert.ok(wire.includes('"accepted":true'));
+    for (const secret of [owned.token, completed.token, 'private input', f.dir]) assert.ok(!wire.includes(secret));
+    // Do not manually close the worker before proving HTTP-initiated completion.
+    for (const port of [f.service.mcpPort, f.service.controlPort])
+      await assert.rejects(fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(2000) }));
+    assert.deepEqual(readFileSync(join(f.dir, 'state.json')), before);
+    assert.deepEqual(readFileSync(join(f.dir, 'completed.result.txt')), artifact);
+    await f.restart();
+    assert.equal((await f.call('get_task', { token: owned.token })).structuredContent.status, 'running');
+    assert.equal((await f.call('read_input', { token: owned.token, name: 'source' })).structuredContent.text, 'private input');
+    assert.equal((await f.admin('tasks')).uncollected, 1);
+  } finally { socket.destroy(); }
+}, { waitMs: 55000 }));
+
+test('accepted shutdown still drains and preserves ownership when its response connection is lost', t => fixture(async f => {
+  const task = await f.register('owned');
+  const before = readFileSync(join(f.dir, 'state.json'));
+  const socket = connect(f.service.controlPort, '127.0.0.1');
+  let partialAccepted = false, closed = false, dropped = false, finished = false;
+  socket.on('error', () => {}); socket.once('close', () => { closed = true; });
+  const emit = Server.prototype.emit, end = ServerResponse.prototype.end;
+  const observe = t.mock.method(Server.prototype, 'emit', function (event, ...args) {
+    const result = Reflect.apply(emit, this, [event, ...args]);
+    if (event === 'request' && this.address()?.port === f.service.controlPort && args[0].url === '/register') partialAccepted = true;
+    return result;
+  });
+  // Inject only the accepted reply's transport loss, not its request, parsing or
+  // authorization. There must be no 'finish' event to rescue the old stop path.
+  const drop = t.mock.method(ServerResponse.prototype, 'end', function (...args) {
+    if (this.req.url === '/shutdown' && this.statusCode === 202) {
+      dropped = true; this.once('finish', () => { finished = true; });
+      assert.ok(existsSync(join(f.dir, 'worker.lock')));
+      assert.throws(() => acquireRuntimeLock(f.dir), { code: 'LOCK_HELD' });
+      this.destroy(); return this;
+    }
+    return Reflect.apply(end, this, args);
+  });
+  try {
+    await once(socket, 'connect');
+    socket.write(`POST /register HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer ${f.service.key}\r\nContent-Length: 1000\r\n\r\n{`);
+    await untilFixture(() => partialAccepted, { timeoutMs: 5000, label: 'partial body accepted' });
+    await assert.rejects(f.admin('shutdown', {}));
+    assert.equal(dropped, true); assert.equal(finished, false);
+    await untilFixture(() => closed && !existsSync(join(f.dir, 'worker.lock')), {
+      timeoutMs: 5000, label: 'lost shutdown reply must not leave a stopping owner alive',
+    });
+    assert.deepEqual(readFileSync(join(f.dir, 'state.json')), before);
+    assert.equal(existsSync(join(f.dir, 'state.json.tmp')), false);
+    assert.equal(existsSync(join(f.dir, 'recovery')), false);
+    await f.restart();
+    assert.equal((await f.call('get_task', { token: task.token })).structuredContent.status, 'running');
+    assert.equal((await f.admin('tasks')).running, 1);
+  } finally { drop.mock.restore(); observe.mock.restore(); socket.destroy(); }
+}, { closeGraceMs: 50 }));

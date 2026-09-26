@@ -460,8 +460,10 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
       if(stopping)return json(res,503,{error:'worker is stopping',code:'SHUTTING_DOWN',retryable:true});
       if(req.url==='/shutdown'){
         if(!a||typeof a!=='object'||Array.isArray(a)||Object.keys(a).length)throw Error('shutdown requires an empty object');
-        stopping=true;
-        res.once('finish',()=>{setImmediate(()=>{close().catch(()=>{process.exitCode=74;});});});
+        stopping=true;wake();
+        // An accepted stop must not wait for its response to flush: an earlier
+        // pipelined wait or a disconnected client can prevent 'finish' forever.
+        setImmediate(()=>{close().catch(()=>{process.exitCode=74;});});
         json(res,202,{accepted:true});return;
       }
       verifyState();
