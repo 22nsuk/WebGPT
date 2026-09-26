@@ -181,6 +181,15 @@ repair method. Readiness/reconciliation do not authorize task recovery decisions
 
 ## Failure classes and retry budgets
 
+An explicit service stop disables further restarts but does not certify a clean
+worker exit. The supervisor preserves a nonzero child exit code in its own exit
+status and final `service_exited` log; signal-only termination yields 1 and retains
+the original signal in `worker_exited`. A clean child exit, or a stop during backoff
+with no child left to drain, still yields 0. `service.mjs stop` returning
+`accepted:true` confirms only the stop marker, not the eventual supervisor exit.
+A retained worker lock after failed release remains evidence for inspection, not
+permission to delete it or to restart automatically.
+
 The optional launcher owns a single lifetime budget: at most three worker restarts
 after 1, 5 and 15 seconds. Only unexpected exit 1, supported abnormal termination
 signals, and Windows DWORD exit `4294967295` (observed with PowerShell
