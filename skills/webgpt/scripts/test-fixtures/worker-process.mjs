@@ -7,6 +7,7 @@ import { once } from 'node:events';
 import { readFileSync } from 'node:fs';
 import { Server } from 'node:net';
 import { setTimeout as delay } from 'node:timers/promises';
+import { request } from '../client.mjs';
 
 if (new URL(import.meta.url).search === '?ephemeral') {
   const config = JSON.parse(readFileSync(process.env.WEBGPT_CONFIG, 'utf8'));
@@ -64,4 +65,22 @@ export async function untilFixture(predicate, { timeoutMs, label, diagnostic = (
     await delay(10);
   }
   throw Error(label + ': fixture deadline; ' + diagnostic(), { cause: last });
+}
+
+// Listening follows initialization. A ready rejection is evidence, not an
+// instruction to keep probing disk or to abort/retry short HTTP requests.
+export async function readyFixture(config, { timeoutMs, label, listening, diagnostic = () => '', stopped = () => false }) {
+  const deadline = Date.now() + timeoutMs;
+  await untilFixture(listening, { timeoutMs, label, diagnostic, stopped });
+  const remaining = deadline - Date.now();
+  if (remaining <= 0) throw Error(label + ': fixture deadline; ' + diagnostic());
+  try {
+    const result = await request('ready', undefined, config, { timeoutMs: remaining });
+    if (result.ok !== true) throw Error('controller did not confirm readiness');
+    return result;
+  } catch (error) {
+    const evidence = { name: error.name, code: error.code, statusCode: error.statusCode,
+      issues: error.details?.issues, storageCode: error.details?.storage?.code };
+    throw Error(label + ': controller readiness failed; ' + JSON.stringify(evidence) + '; ' + diagnostic(), { cause: error });
+  }
 }

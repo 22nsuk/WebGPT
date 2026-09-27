@@ -10,7 +10,7 @@ import { createHash } from 'node:crypto';
 import { start } from './worker.mjs';
 import { request, reconcileTasks, collectTask } from './client.mjs';
 import { processState } from './runtime.mjs';
-import { observeChild, spawnFixtureWorker, untilFixture } from './test-fixtures/worker-process.mjs';
+import { observeChild, spawnFixtureWorker, untilFixture, readyFixture } from './test-fixtures/worker-process.mjs';
 
 const hash = text => createHash('sha256').update(text).digest('hex');
 async function fixture(run) {
@@ -312,10 +312,14 @@ test('actual supervisor death permits verified drain or dead-owner recovery and 
     diagnostic: () => launches.map(item => item.diagnostic()).join('\n'),
     stopped: () => owner && (owner.parent.exitCode !== null || owner.parent.signalCode !== null),
   });
-  const ready = owner => async () => owner.ports && (await request('ready', undefined, config, { timeoutMs: 250 })).ok;
+  const ready = (owner, label) => readyFixture(config, { timeoutMs: 4000, label,
+    listening: () => owner.ports,
+    diagnostic: () => launches.map(item => item.diagnostic()).join('\n'),
+    stopped: () => owner.parent.exitCode !== null || owner.parent.signalCode !== null,
+  });
   let failed = false;
   try {
-    const first = launch(); await until(ready(first), first, 'initial supervisor readiness');
+    const first = launch(); await ready(first, 'initial supervisor readiness');
     const task = await request('register', { id: 'retained', instructions: '', inputs: {} }, config);
     assert.ok(Number.isSafeInteger(first.workerPid));
     first.parent.kill('SIGKILL'); await first.exit;
@@ -329,7 +333,7 @@ test('actual supervisor death permits verified drain or dead-owner recovery and 
       assert.equal(processState(first.workerPid), 'dead');
       assert.equal(JSON.parse(readFileSync(join(workerLock, 'owner.json'))).pid, first.workerPid);
     }
-    const second = launch(); await until(ready(second), second, 'replacement supervisor readiness');
+    const second = launch(); await ready(second, 'replacement supervisor readiness');
     assert.notEqual(second.workerPid, first.workerPid);
     if (needsRecovery) {
       const archives = readdirSync(dir).filter(name => name.startsWith('worker.lock.stale-'));
