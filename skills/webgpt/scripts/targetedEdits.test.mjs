@@ -163,20 +163,21 @@ test('MCP exact edits advertise optional fields and preserve legacy tools, recei
   const page = await f.call('read_file', { path: 'a.txt', offset: 2, limit: 1 });
   assert.equal(page.isError, false); assert.equal(page.structuredContent.partial, true);
   const sha = page.structuredContent.sha256;
-  const pinned = await f.call('read_file', { path: 'a.txt', offset: 3, expectedSha256: sha });
-  assert.equal(pinned.isError, false); assert.equal(pinned.structuredContent.text, 'last\n');
+  const pinned = await f.call('read_file', { path: 'a.txt', offset: 3, limit: 1, expectedSha256: sha });
+  assert.equal(pinned.isError, false, pinned.content?.[0]?.text); assert.equal(pinned.structuredContent.text, 'last\n');
   for (const args of [{ oldText: null }, { unexpected: 'x' }]) {
     assert.equal((await f.call('write_file', { path: 'a.txt', expectedSha256: sha, text: 'new', ...args })).isError, true);
   }
   const changed = await f.call('write_file', { path: 'a.txt', expectedSha256: sha, oldText: page.structuredContent.text, text: 'changed\r\n' });
-  assert.equal(changed.isError, false);
+  assert.equal(changed.isError, false, changed.content?.[0]?.text);
   const receipt = changed.structuredContent;
   assert.equal(receipt.beforeSha256, sha); assert.equal(receipt.afterSha256, hash('first\r\nchanged\r\nlast\n'));
   assert.equal(fs.readFileSync(receipt.backup, 'utf8'), f.text);
   assert.deepEqual((await f.call('get_task')).structuredContent.changes, [receipt]);
   // Stale reads never return a mixed-revision excerpt; stale edits never apply twice.
-  const stale = await f.call('read_file', { path: 'a.txt', offset: 3, expectedSha256: sha });
+  const stale = await f.call('read_file', { path: 'a.txt', offset: 3, limit: 1, expectedSha256: sha });
   assert.equal(stale.isError, true); assert.equal(stale.structuredContent, undefined);
+  assert.match(stale.content[0].text, /revision conflict/, 'a malformed read must not satisfy stale-revision coverage');
   assert.equal((await f.call('write_file', { path: 'a.txt', expectedSha256: sha, oldText: 'changed', text: 'again' })).isError, true);
   assert.equal((await f.call('write_file', { path: 'new.txt', expectedSha256: null, text: 'legacy create' })).isError, false);
   assert.equal((await f.call('write_file', { path: 'new.txt', expectedSha256: hash('legacy create'), text: 'legacy replace' })).isError, false);
