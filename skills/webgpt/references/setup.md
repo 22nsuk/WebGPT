@@ -80,6 +80,12 @@ browser connector using the host's plugin/tool manager, then recheck. Never copy
 private browser APIs. If sign-in or an extension approval is required, open only that actionable
 screen and ask for that user-only action; resume when it is done.
 
+For attachment tasks, also verify the actual browser's upload capability using
+[file-uploads.md](file-uploads.md). Chrome file-URL permission belongs to the selected extension/profile;
+it is not an upload test, a project grant, or a capability of another browser. A changed permission
+may require a new browser task, but never restart or resend an uncertain WebGPT dispatch to test it.
+Preserve the original task and use a separate harmless, authorized diagnostic when needed.
+
 Once browser access works, inspect ChatGPT's existing connections and any saved WebGPT setup note
 or local tunnel profiles. Reuse a compatible connection and its settings after verifying its tools
 and endpoint; a connection name alone is not proof. Do not request new tunnels, keys or account

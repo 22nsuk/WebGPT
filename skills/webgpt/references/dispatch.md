@@ -132,6 +132,22 @@ The ID must differ from the saved pre-send ID, the predecessor must equal that s
 must match the prepared digest, and target/mode/connector/approval checks must still pass. A cleared
 composer, Send click, assistant response, old matching message or unrelated chat is insufficient.
 
+### Required attachments are a separate parent check
+
+These strict objects and `submissionConfirmed` verify the message body and target, not attachments.
+Before `dispatchPrompt` or CLI `begin`, complete the [upload checks](file-uploads.md) and observe all
+required files ready in that owned composer. Recheck before the send-capable action if the target or
+draft changes. Do not attach during `fillAndSend` or add upload waits between body fill and send.
+A required upload that failed or cannot be observed blocks the send; the helper cannot enforce this
+on a browser adapter's behalf. Text-only tasks need no upload probe.
+
+After sending, match attachment evidence to the exact new user message, not an earlier message or
+the outgoing arguments. Keep valid body confirmation even if attachment acceptance is unverified;
+record that limitation in the same ledger's existing parent work/handoff fields, outside `dispatch`.
+Do not invent extra readiness/confirmation fields, rewrite `submitted`, bypass collection integrity,
+or reset/replay the original task. Inspect the retained message/controller before any explicit follow-up.
+Filenames or UI chips do not prove remote byte integrity or successful document parsing.
+
 ## Observe UI transitions and exact tool calls
 
 For every browser action, establish the owned target and the expected visible transition. After
