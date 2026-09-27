@@ -132,21 +132,29 @@ The ID must differ from the saved pre-send ID, the predecessor must equal that s
 must match the prepared digest, and target/mode/connector/approval checks must still pass. A cleared
 composer, Send click, assistant response, old matching message or unrelated chat is insufficient.
 
-### Required attachments are a separate parent check
+### Required attachments use the split CLI and a deferred confirmation
 
-These strict objects and `submissionConfirmed` verify the message body and target, not attachments.
-Before `dispatchPrompt` or CLI `begin`, complete the [upload checks](file-uploads.md) and observe all
-required files ready in that owned composer. Recheck before the send-capable action if the target or
-draft changes. Do not attach during `fillAndSend` or add upload waits between body fill and send.
-A required upload that failed or cannot be observed blocks the send; the helper cannot enforce this
-on a browser adapter's behalf. Text-only tasks need no upload probe.
+The strict objects and `submissionConfirmed` validate body/target evidence, not uploaded files.
+Follow [file-uploads.md](file-uploads.md) for required attachments: keep their requirements in the
+original private task record and use split CLI `begin` **before any upload-capable action**. Only the
+caller whose locked begin succeeds may upload and continue that uninterrupted attempt. A failed begin
+or resumed `sending`/`uncertain` state permits inspection, not another upload. Do not use the high-level
+`dispatchPrompt` workflow for these tasks; it automatically confirms the body without this separate gate.
 
-After sending, match attachment evidence to the exact new user message, not an earlier message or
-the outgoing arguments. Keep valid body confirmation even if attachment acceptance is unverified;
-record that limitation in the same ledger's existing parent work/handoff fields, outside `dispatch`.
-Do not invent extra readiness/confirmation fields, rewrite `submitted`, bypass collection integrity,
-or reset/replay the original task. Inspect the retained message/controller before any explicit follow-up.
-Filenames or UI chips do not prove remote byte integrity or successful document parsing.
+After begin, upload once and observe all required files ready in the exact owned composer before the
+batched body fill/send. Then verify both body and attachment evidence on the same new user message
+**before** CLI `confirm`. If either check is missing, preserve any valid body observation privately but
+leave `sending`/`uncertain`: this existing durable state marks the post-send check unfinished on resume.
+Do not treat controller completion or `collected:true` as attachment acceptance. Missing original file
+requirements also block claiming the attachment-dependent work verified.
+
+This ordering reuses existing locking and blocked-attempt states, not a new upload protocol or schema.
+`sendingAt` now precedes upload for this workflow, so recorded confirmation time includes attachment
+preparation and review; it is not send latency. Never invent observation fields, edit dispatch state,
+reset/replay the task or bypass collection integrity. Already body-confirmed older records require an
+independent attachment check; do not erase valid confirmation. UI chips do not prove remote byte
+integrity or successful parsing. Parent content review and explicit partial-result disposition remain
+separate; the helper cannot enforce these instructions on arbitrary browser callers.
 
 ## Observe UI transitions and exact tool calls
 

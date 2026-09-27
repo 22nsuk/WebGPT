@@ -60,27 +60,48 @@ Get-Item -LiteralPath 'C:\Users\<user>\Downloads\probe.txt' | Select-Object Name
 Get-FileHash -Algorithm SHA256 -LiteralPath 'C:\Users\<user>\Downloads\probe.txt'
 ```
 
-## Observe attachment readiness before dispatch
+## Bound the whole attachment attempt with existing dispatch state
 
-For required attachments, complete upload preparation in the exact owned chat **before**
-`dispatchPrompt` or CLI `dispatch begin`. Use a supported file-upload control, then a bounded,
-state-based wait for every expected attachment to be ready with no progress/error indicator.
-Respect any exposed processing state. A selected filename, closed chooser, clickable Send button,
-local file hash or successful tool return alone is insufficient. If readiness cannot be observed,
-report that missing evidence and do not send a prompt without its required sources.
+Before beginning, keep the required file list and expected identities in the original private task
+record's allowed-input/work fields, alongside its objective and owned target. Create that record before
+dispatch registration through the existing parent workflow; do not add fields inside strict `dispatch`,
+edit a ledger while a helper owns its lock, or create a competing completion store. Missing requirements
+on resume are missing evidence, not permission to assume a text-only task.
 
-If the target/draft changes, recheck its attachments before the send-capable action. Keep body
-fill/send batched as in [dispatch.md](dispatch.md); do not insert upload work or fixed sleeps
-between them. Afterward, inspect attachments on the **same new user message** used for body
-confirmation, matching count and exposed file identifiers/names. Duplicate names or unavailable
-metadata must remain explicit uncertainty. UI acceptance is not remote byte/hash verification,
-proof of complete parsing, or a guarantee that the model used all content.
+Use the **split Node CLI** for required attachments, not high-level `dispatchPrompt`, which automatically
+confirms only the body. Capture current mode/connector/composer/predecessor evidence, then run
+`client.mjs dispatch begin` **before the first upload-capable browser action**. Its exclusive ledger lock
+publishes `sending` and rejects competing begins. Only the caller whose begin succeeded may continue
+that uninterrupted attempt. A blocked/failed begin authorizes neither upload nor message send.
 
-The helper's strict observation schema and `submissionConfirmed` cover body/target evidence only.
-Keep valid body confirmation and record any separate attachment limitation in existing private
-parent work/handoff fields, not invented fields inside `dispatch` or a second completion store.
-Do not call the whole attachment-dependent request verified when file evidence is missing. Preserve
-results and perform the normal content review; never reset dispatch or resend to repair the label.
+After begin, use the documented upload control once per required file and observe each ready in the
+exact owned composer, with no progress/error indicator. Respect any exposed processing state. A selected
+filename, closed chooser, clickable Send button, local hash or successful tool return alone is insufficient.
+If upload fails or readiness is unavailable, preserve the attempt with `dispatch recover`; do not fill or
+send a source-dependent prompt, repeat the upload, or reset the ledger to make the command pass.
+
+Once every required file is ready, perform the existing batched body fill/send, with no upload work or
+fixed sleep between them. If the target/draft changed after begin, stop and inspect rather than adopting
+a new target or refreshing the saved baseline. After sending, inspect the body **and** attachments on the
+same new user message, matching required count and exposed identifiers/names. Only after both checks
+pass may the parent call CLI `confirm` with the unchanged strict body observation. Keep required-file
+identity and narrow attachment evidence private in the existing task record; UI acceptance does not
+prove remote byte/hash identity, complete parsing or that the model used all content.
+
+If the parent stops after upload, after send, or before attachment inspection, the persisted state is
+still `sending`/`uncertain`. A resumed parent must inspect the original requirements, owned composer/
+message and controller, never call upload or begin again automatically. Preserve valid body evidence
+while withholding confirm when attachment evidence is missing or ambiguous. The same original attempt
+can be confirmed later after actual evidence is recovered. If a prior revision already recorded body-only
+`submitted`, retain it but independently check required attachments before accepting the work; do not
+reset it. Controller completion/collection cannot substitute for this parent review.
+
+The helper does not itself inspect files or enforce this procedure on arbitrary callers. The ordering
+conservatively uses the existing `sending` state even when upload has begun but no body was sent;
+recorded confirmation intervals therefore include upload/review time. A confirmed non-submission
+requiring a new attempt remains an explicit operator decision under [dispatch recovery](dispatch.md#interruption-and-reconciliation),
+not an automatic retry. Preserve partial results and their honest disposition instead of labeling
+attachment-dependent work verified merely to clear a pending check.
 
 ## Isolate a failure with one harmless comparison
 
