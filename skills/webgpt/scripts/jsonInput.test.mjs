@@ -145,9 +145,15 @@ test('a service configuration is decoded and checked for explicit dataDir from o
 for (const marked of [false, true]) test(`service ${marked ? 'BOM' : 'plain'} configuration keeps explicit-directory and stop contracts`, async t => {
   const f = fixture(t);
   fs.writeFileSync(f.file, jsonBytes(f.config, marked ? bom : undefined));
+  let stopped;
   assert.equal(await runService(f.env, { record: () => {}, spawnWorker: () => {
-    assert.deepEqual(requestServiceStop(f.env), { accepted: true }); return exited();
+    const child = new EventEmitter(); child.exitCode = null; child.signalCode = null;
+    stopped = requestServiceStop(f.env).then(reply => {
+      assert.deepEqual(reply, { accepted: true }); child.exitCode = 0; child.emit('exit', 0, null);
+    });
+    return child;
   } }), 0);
+  await stopped;
   assert.equal(fs.existsSync(join(f.dir, 'service.lock')), false);
   fs.writeFileSync(f.file, jsonBytes({}, marked ? bom : undefined));
   await assert.rejects(runService(f.env, { spawnWorker: () => assert.fail('missing explicit directory') }), { code: 'CONFIG_INVALID' });
