@@ -154,7 +154,9 @@ This is the protocol available to the worker, not a sequence to copy into ordina
 - `submit_result(token,status,summary,result)` ends the task with status `completed`, `failed` or
   `cancelled`. Include the deliverable, any changed paths/receipts, checks and limitations;
   unexecuted checks are NOT_RUN. Submission saves the result, closes file access and removes backup
-  checks, after which the worker stops.
+  checks. After submission the worker makes no further project/tool changes and finishes its
+  user-facing final chat answer. The parent collects the result promptly and observes final-answer
+  completion separately before closing the owned tab; see [chat-lifecycle.md](chat-lifecycle.md).
 
 With no workspace grant, only `get_task`, `read_input` and `submit_result` are available to the task.
 

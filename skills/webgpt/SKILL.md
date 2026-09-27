@@ -17,7 +17,8 @@ API models for requested web ChatGPT work. Use only documented, authorized brows
   acceptance criteria; independent duplicate analysis is appropriate only when requested/justified.
 - **Assigned worker:** a current private task token and connector assignment identify this role.
   Read `get_task` through the selected connector, use supplied inputs and the granted project, then
-  submit the actual deliverable and limitations, then stop. Skip the parent-only sections below.
+  submit the actual deliverable and limitations, then finish a user-facing final chat answer.
+  Make no further project/tool changes after submission. Skip the parent-only sections below.
   Do not start a nested parent workflow, invent/reuse
   an old token, or treat missing parent CLI/Git access as proof that granted file work is impossible.
 - **Repository maintenance or explanation:** a mention of WebGPT alone does not require a browser
@@ -91,6 +92,9 @@ Do independent authorized parent work while the worker runs; do not race its fil
    accumulated tool calls once by exact call identity/target, not quoted errors or repeated panel views.
    Collect each finished task promptly, remove terminal tasks from periodic checks, cancel abandoned
    registrations/deadlines and end terminal-batch waits. Preserve partial failures and verification progress.
+   Controller completion and collection do not establish that the final chat answer has finished.
+   Continue observing that owned chat separately until the final answer is complete; do not stop
+   generation merely because the result was submitted or collected. Follow [chat-lifecycle.md](references/chat-lifecycle.md).
 
 Never bypass action-time confirmations, copy cookies, use private browser APIs or touch unrelated tabs.
 Return only bounded owned-target evidence; keep prompts/tokens, IDs, URLs, full transcripts and raw
@@ -111,7 +115,8 @@ overwrite candidates, steal a live/ambiguous lock or retry edits to clear warnin
 retry budgets. Use [backup-safety.md](references/backup-safety.md) for backup/config isolation issues.
 
 A **confirmed terminal** task needing new work uses a new ID/token and its own linked task ledger in
-the same retained chat; do not reuse closed authority. A still-running or uncertain attempt must first
+the same retained chat; do not reuse closed authority. Let the prior final chat answer finish before
+sending the follow-up, unless that generation was explicitly cancelled. A still-running or uncertain attempt must first
 be reconciled, not replaced. Send narrow feedback and actual parent check results, not a complete redo.
 `collect --resume` reverifies retained results and can collect uncollected ones; it is not always read-only
 and does not rerun tests. Already collected work needs no new acknowledgment. Repeated unchanged failure
@@ -129,8 +134,10 @@ Retain task chats by default, including setup tests, failed tasks and recovery c
 in the private ledger. Do not automatically delete/archive or ask about deletion on routine completion.
 Track work separately from cleanup: `PENDING → CHAT_RETAINED → DONE`.
 Retaining a chat is successful cleanup, not a blocker; retained chats must not keep task tokens or
-backup checks active. Close the exact terminal task-owned tabs after collection, not the browser or
-unrelated/repurposed tabs. Read [chat-lifecycle.md](references/chat-lifecycle.md) before closure/deletion.
+backup checks active. Close the exact terminal task-owned tabs after collection and observed final
+chat-answer completion, not the browser or unrelated/repurposed tabs. An explicitly cancelled or
+interrupted chat keeps that disposition instead of being reported as a completed answer.
+Read [chat-lifecycle.md](references/chat-lifecycle.md) before closure/deletion.
 Delete a chat only when the user explicitly requests deletion of that chat or identified set.
 Never open deletion controls on the default retention path. Preserve results; verify exact requested
 deletion and tab absence, or report cleanup `BLOCKED` without erasing successful work.
