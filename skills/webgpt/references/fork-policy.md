@@ -69,9 +69,10 @@ an unattended command can keep running or consume the shared worker's memory.
 
 Keep the file worker as this fork's default and supported mode. The practical
 tradeoff is that WebGPT can edit project text and return evidence, but cannot run
-its own build, test, Git or interactive commands. Codex performs authorized local
-verification and Git integration, then returns relevant results for a correction
-when needed. Scoped waits and collection reduce coordination overhead without
+build, test, Git or interactive commands through this worker. Separately connected
+GitHub tools can support authorized remote publication and CI/review inspection;
+see [GitHub workflow](github-workflow.md). Codex performs needed local verification
+and returns relevant results for a correction. Scoped waits and collection reduce coordination overhead without
 expanding the delegated task's OS authority. No performance saving is promised.
 
 Review changed test/build scripts, package lifecycle hooks and other executable

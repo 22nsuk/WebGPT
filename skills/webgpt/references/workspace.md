@@ -224,8 +224,11 @@ installs, Git or interactive programs through this worker. State checks it could
 not run as NOT_RUN. Codex reviews executable changes and runs relevant checks using
 the project's verified workflow within the user's existing authorization. Return
 the necessary failure output to the retained chat for a focused correction; if the
-previous task has ended, register a new task token in that chat. Git integration
-remains with Codex. Do not add shell access to resolve a missing verification step.
+previous task has ended, register a new task token in that chat. These limits apply
+to this worker, not separately connected GitHub tools. When the user assigns direct
+publication, discover those tools and follow [GitHub workflow](github-workflow.md);
+missing local Git does not establish missing remote write authority. Do not add
+shell access to resolve a missing verification step.
 See [fork-policy.md](fork-policy.md) for execution risks and isolation requirements.
 
 ## Completion and lifecycle

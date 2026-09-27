@@ -8,7 +8,10 @@ WebGPT는 로그인된 웹 ChatGPT가 연결된 프로젝트 파일을 직접 �
 프로젝트를 연결한다는 설명은 [참고 프로젝트](https://github.com/faithforone/WebGPT)의
 사용 방식과 같습니다. 다만 이 포크는 프로젝트 범위의 텍스트 파일 도구를 유지합니다.
 참고 커밋 `b8206c57866cf574fdb65aa2aadc146a4ad2e469`의 터미널 실행 권한이나
-`webgpt open` 명령을 가져오지 않습니다. 테스트·빌드·Git은 Codex가 로컬에서 담당합니다.
+`webgpt open` 명령을 가져오지 않습니다. 필요한 로컬 테스트·빌드는 Codex가 담당합니다.
+직접 PR 게시·CI·리뷰 후속 작업을 맡겼다면 웹 ChatGPT의 별도 GitHub 앱에서 현재 제공되는
+도구를 탐색해 사용합니다. MCP의 셸 부재를 GitHub 쓰기 불가로 해석하지 않습니다.
+기능 확인과 완료 기준은 [GitHub 작업 안내](github-workflow.md)를 따릅니다.
 
 ## 부모가 먼저 해야 할 일
 
