@@ -1,4 +1,4 @@
 interface:
   display_name: "WebGPT"
   short_description: "Delegate useful web ChatGPT work; verify and integrate"
-  default_prompt: "Use $webgpt to delegate the substantive task to signed-in web ChatGPT, then verify and integrate its actual contribution."
+  default_prompt: "Use $webgpt. Route the request first: token-assigned workers execute the current task; WebGPT repository maintenance is direct work; otherwise delegate a substantive task to signed-in web ChatGPT, then verify and integrate its actual contribution."
