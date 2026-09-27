@@ -170,10 +170,16 @@ for (const source of ['ledger', 'payload']) {
     assert.equal(grown, true);
     assert.ok(consumed <= limit + 1, `read ${consumed} bytes beyond the private-file ceiling`);
     assert.equal(consumed, limit + 1, 'measurement must include the overflow sentinel');
-    assert.equal(error?.code, 'DISPATCH_LEDGER');
+    const expected = source === 'ledger'
+      ? { code: 'DISPATCH_LEDGER', stage: 'ledger_validate', reason: 'invalid_ledger' }
+      : { code: 'DISPATCH_INPUT', stage: 'payload_read', reason: 'register_payload_file_invalid' };
+    assert.equal(error?.code, expected.code);
+    const diagnostic = dispatchDiagnostic(error);
+    for (const [key, value] of Object.entries(expected)) assert.equal(diagnostic[key], value);
     redacted(error, f);
     assert.deepEqual(fs.readFileSync(file), grownBytes);
     assert.equal(fs.existsSync(destination), false);
+    assert.equal(fs.existsSync(destination + '.dispatch.lock'), false);
     assert.equal(fs.existsSync(f.file + '.dispatch.lock'), false);
   });
 }
