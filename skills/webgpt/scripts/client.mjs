@@ -78,7 +78,18 @@ export async function request(action, payload, config = configuration(), { signa
     body: read ? undefined : JSON.stringify(payload),
     signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
   });
-  const result = await response.json();
+  let result;
+  try { result = await response.json(); }
+  catch (error) {
+    signal?.throwIfAborted();
+    // Received rejection headers remain authoritative even if their body is
+    // broken. Do not turn a known rejection into a retry or collection probe.
+    // Successful responses keep transport uncertainty for post-commit checks.
+    if (response.ok) throw error;
+    throw Object.assign(Error('controller request failed: ' + response.status, { cause: error }), {
+      statusCode: response.status, retryable: false,
+    });
+  }
   if (!response.ok) throw Object.assign(Error(result?.error ?? 'controller request failed: ' + response.status), {
     statusCode: response.status, code: result?.code, details: result,
     retryable: response.status === 503 && result?.code === 'SHUTTING_DOWN' && result?.retryable === true,

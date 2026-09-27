@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { request, collectTask, retryableControllerError } from './client.mjs';
+import { request, waitForTasks, collectTask, retryableControllerError } from './client.mjs';
 import { start } from './worker.mjs';
 import { callTool, controllerProxy, replyJson as reply } from './test-fixtures/worker-http.mjs';
 
@@ -148,6 +148,63 @@ for (const resume of [false, true]) test(`${resume ? 'resumed' : 'ordinary'} col
   assert.deepEqual(readFileSync(f.stateFile), before);
   assert.equal(f.state().collected, false); assert.equal(f.state().token, f.task.token);
   assert.equal(readFileSync(f.artifact, 'utf8'), resultText);
+});
+
+// Disconnect only after the real fetch has received the HTTP headers. The
+// status and stream error remain native; no sleeps or synthetic fetch failures.
+async function interruptedBodyFixture(t, action, status, { committed = false, abort } = {}) {
+  let outgoing;
+  const f = await fixture(t, async ({ req, res, phase }) => {
+    if (req.url === action && phase === (committed ? 'after' : 'before')) {
+      outgoing = res;
+      res.writeHead(status, { 'content-type': 'application/json' }); res.write('{');
+      return true;
+    }
+  });
+  const fetch = globalThis.fetch, target = `http://127.0.0.1:${f.config.controlPort}${action}`;
+  t.mock.method(globalThis, 'fetch', async (...args) => {
+    const response = await fetch(...args);
+    if (args[0] === target) { abort?.(); outgoing.destroy(); }
+    return response;
+  });
+  return f;
+}
+
+test('a disconnected HTTP 401 body preserves rejection and does not consume wait retries', async t => {
+  const f = await interruptedBodyFixture(t, '/wait?id=owned', 401);
+  const before = readFileSync(f.stateFile);
+  await assert.rejects(waitForTasks(['owned'], f.config, { retryDelays: [0, 0, 0] }), error => {
+    assert.equal(error.statusCode, 401); assert.equal(retryableControllerError(error), false); return true;
+  });
+  assert.deepEqual(f.actions, ['/wait?id=owned']);
+  assert.deepEqual(readFileSync(f.stateFile), before);
+});
+
+for (const resume of [false, true]) test(`${resume ? 'resumed' : 'ordinary'} collection does not probe after HTTP 503 headers and a disconnected body`, async t => {
+  const f = await interruptedBodyFixture(t, '/collect', 503);
+  const before = readFileSync(f.stateFile);
+  await assert.rejects(collectTask('owned', f.config, { resume }), { statusCode: 503, retryable: false });
+  assert.deepEqual(f.actions, [...collectionStart(resume), '/collect']);
+  assert.deepEqual(readFileSync(f.stateFile), before);
+  assert.equal(f.state().token, f.task.token);
+  assert.equal(readFileSync(f.artifact, 'utf8'), resultText);
+});
+
+test('a disconnected successful ack body still permits one authoritative collection observation', async t => {
+  const f = await interruptedBodyFixture(t, '/collect', 200, { committed: true });
+  assert.equal((await collectTask('owned', f.config)).collected, true);
+  assert.deepEqual(f.actions, expectedCalls);
+  assert.equal(f.state().collected, true); assert.equal(f.state().token, undefined);
+  assert.equal(readFileSync(f.artifact, 'utf8'), resultText);
+});
+
+test('explicit abort after rejection headers retains its reason without probing collection', async t => {
+  const controller = new AbortController(), reason = Error('parent stopped this collection');
+  const f = await interruptedBodyFixture(t, '/collect', 503, { abort: () => controller.abort(reason) });
+  const before = readFileSync(f.stateFile);
+  await assert.rejects(collectTask('owned', f.config, { signal: controller.signal }), error => error === reason);
+  assert.deepEqual(f.actions, [...collectionStart(false), '/collect']);
+  assert.deepEqual(readFileSync(f.stateFile), before);
 });
 
 test('an explicit abort during ack stops collection without another HTTP request', async t => {
