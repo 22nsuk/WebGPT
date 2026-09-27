@@ -7,7 +7,10 @@ lack of shell access do not describe the capabilities of a separately connected 
 ## Discover the current operation, not a presumed limitation
 
 Select the existing GitHub app in the same task chat alongside the project connector when both are
-needed. Inspect the available tools or the host's supported tool search before reporting a missing
+needed. Before dispatch begins, observe each required app selected and record their identities in
+the existing private task ledger's parent-owned fields. The dispatch boolean `connectorSelected`
+does not identify or prove selection of both apps; do not extend its strict observation schema.
+Inspect the available tools or the host's supported tool search before reporting a missing
 capability. A plugin title, old skill description, user report or parent-session tool inventory is
 useful context; the worker must still discover its own callable operations. Do not treat missing
 local `git`/`gh` as a failed GitHub authorization check.
@@ -43,6 +46,14 @@ or a branch has advanced, inspect the existing ref/commit/PR before another muta
 the write failed or overwrite concurrent work. A local workspace receipt does not prove remote
 publication: compare the final remote diff with the intended files and record the commit SHA.
 
+When the worker also edited a local checkout through MCP, remote commits do not update that
+checkout's HEAD or index. The parent must fetch the published ref and compare HEAD, index, current
+files and task receipts against the remote commit, preserving unrelated staged and unstaged work.
+Reconcile a matching task-owned checkout through authorized local Git operations, or record an
+explicit retained-work disposition and the authoritative published checkout. Do not blindly reset,
+clean or duplicate-commit the edits. Record the resulting local/remote revisions and any remaining
+changes before reporting integration complete; remote publication alone is not local reconciliation.
+
 The WebGPT task token grants no GitHub rights. Collection retires that local token; it does not
 revoke the separately connected GitHub account. Stay within the assigned repository/actions and
 stop all assigned changes at task completion. PR creation does not authorize merging, deployment,
@@ -56,7 +67,10 @@ because an initial patch exists. Mark a PR ready when the user's review request 
 candidate is ready, then inspect review activity rather than treating an untriggered review as clear.
 
 Check the actual final head SHA, required CI runs/jobs and conclusions, review completion, comments
-and unresolved threads. Observe each tool's first-page/attempt/filter limits; an empty response or
+and unresolved threads. Also inspect required check runs/status contexts or authoritative PR check
+and merge state: external checks and legacy commit statuses may not be Actions jobs. If required
+status evidence is inaccessible, report that limitation rather than calling Actions green a complete
+CI verdict. Observe each tool's first-page/attempt/filter limits; an empty response or
 absence of inline comments alone does not prove completion. Address actionable findings, preserve
 failure evidence, and check the new head after a fix. Do not weaken checks or repeatedly rerun an
 unchanged failure to obtain green results. If reviews are still pending or inaccessible, keep that
@@ -65,5 +79,7 @@ condition explicit instead of reporting no findings.
 Report the PR URL, head SHA, actual CI and review evidence, changes made for findings, and remaining
 limitations. Submit the saved result once the assigned work is complete or a concrete blocker has a
 recorded disposition, then finish the user-facing answer. Follow [chat-lifecycle.md](chat-lifecycle.md):
-result collection and token retirement do not justify stopping an unfinished final answer. If new
-file work is needed after submission, use a genuine follow-up assignment in the retained chat.
+result collection and token retirement do not justify stopping an unfinished final answer. Any new
+project or GitHub mutation after submission requires a genuine follow-up assignment in the retained
+chat, including GitHub-only corrections or review-thread changes. Use new task authority for local
+bridge access; a still-connected GitHub account does not extend the completed assignment.
