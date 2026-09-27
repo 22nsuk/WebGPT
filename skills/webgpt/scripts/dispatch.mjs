@@ -16,6 +16,7 @@ const messages = {
   CONFLICT: 'dispatch ledger changed outside its lock; preserve it for inspection',
   BLOCKED: 'dispatch already attempted; inspect the retained chat and controller, do not resend',
   NOT_READY: 'dispatch UI is not ready or does not match the owned target',
+  ATTACHMENTS: 'required attachments need split begin/upload/send/confirm; no browser action was attempted',
   RUNTIME: 'dispatch requires ordinary Node CLI; keep browser operations in authorized browser tools',
   INTERNAL: 'dispatch operation failed; preserve the ledger and inspect before continuing',
 };
@@ -24,6 +25,7 @@ const defaults = {
   LEDGER: ['ledger_validate', 'invalid_ledger'], STORAGE: ['ledger_read', 'io_failed'],
   LOCKED: ['lock_acquire', 'lock_exists'], CONFLICT: ['ledger_update', 'ledger_changed'],
   BLOCKED: ['ledger_update', 'resend_blocked'], NOT_READY: ['observation', 'ui_not_ready'],
+  ATTACHMENTS: ['input', 'attachment_workflow_required'],
   RUNTIME: ['runtime_preflight', 'node_cli_required'], INTERNAL: ['ledger_update', 'unexpected_failure'],
 };
 const storageStages = ['payload_read', 'ledger_path', 'lock_acquire', 'ledger_read', 'ledger_write',
@@ -91,8 +93,19 @@ function target(value, code = 'INPUT') {
 }
 const sameTarget = (a, b) => a.tabId === b.tabId && a.chatUrl === b.chatUrl;
 
+// Visible basenames, not local paths or byte-integrity claims. These are local
+// evidence bounds, not a statement of any browser/provider upload limit.
+function attachmentNames(value, code, required = false) {
+  if (!Array.isArray(value) || value.length > 32 || (required && !value.length)
+      || Array.from(value).some(name => typeof name !== 'string' || !name.isWellFormed() || !name.trim()
+        || name !== name.trim() || Buffer.byteLength(name) > 255 || /[\/\\\x00-\x1f\x7f]/.test(name)
+        || name === '.' || name === '..') || new Set(value).size !== value.length) fail(code);
+  return [...value].sort();
+}
+const sameAttachments = (a, b) => a.length === b.length && a.every(name => b.includes(name));
+
 // Unknown fields fail rather than allowing a transcript, raw error or arbitrary metadata to escape.
-function validateObservation(value, confirmation = false) {
+function validateObservation(value, confirmation = false, attachmentsRequired = false) {
   const fields = ['target', 'mode', 'connectorSelected', 'approvalPending', 'composerSha256', 'lastUserMessageId'];
   keys(value, confirmation ? [...fields, 'userMessage'] : fields, [], 'OBSERVATION');
   target(value.target, 'OBSERVATION');
@@ -101,7 +114,8 @@ function validateObservation(value, confirmation = false) {
       || (value.composerSha256 !== null && !digest(value.composerSha256))) fail('OBSERVATION');
   if (confirmation) {
     const message = value.userMessage;
-    keys(message, ['id', 'previousId', 'role', 'bodySha256'], [], 'OBSERVATION');
+    keys(message, ['id', 'previousId', 'role', 'bodySha256', ...(attachmentsRequired ? ['attachmentNames'] : [])], [], 'OBSERVATION');
+    if (attachmentsRequired) attachmentNames(message.attachmentNames, 'OBSERVATION');
     if (!opaque(message.id) || !messageId(message.previousId) || message.role !== 'user'
         || !digest(message.bodySha256)) fail('OBSERVATION');
   }
@@ -111,11 +125,13 @@ function validateObservation(value, confirmation = false) {
 
 function validateDispatch(d) {
   keys(d, ['version', 'taskId', 'mode', 'connectorRequired', 'promptSha256', 'target', 'state', 'registeredAt'],
-    ['before', 'preparedAt', 'sendingAt', 'uncertainAt', 'submittedAt', 'confirmation', 'reason'], 'LEDGER');
-  if (d.version !== 1 || typeof d.taskId !== 'string' || !/^[a-zA-Z0-9_-]{1,80}$/.test(d.taskId)
+    ['before', 'preparedAt', 'sendingAt', 'uncertainAt', 'submittedAt', 'confirmation', 'reason', 'requiredAttachments'], 'LEDGER');
+  if (![1, 2].includes(d.version) || (d.version === 2) !== Object.hasOwn(d, 'requiredAttachments')
+      || typeof d.taskId !== 'string' || !/^[a-zA-Z0-9_-]{1,80}$/.test(d.taskId)
       || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(d.taskId)
       || !['pro', 'xhigh'].includes(d.mode) || typeof d.connectorRequired !== 'boolean'
       || !digest(d.promptSha256) || !phases.includes(d.state)) fail('LEDGER');
+  if (d.version === 2) attachmentNames(d.requiredAttachments, 'LEDGER', true);
   target(d.target, 'LEDGER');
   for (const key of ['registeredAt', 'preparedAt', 'sendingAt', 'uncertainAt', 'submittedAt']) {
     if (key in d && (typeof d[key] !== 'string' || !Number.isFinite(Date.parse(d[key])))) fail('LEDGER');
@@ -128,7 +144,7 @@ function validateDispatch(d) {
   if (d.reason !== undefined && !reasons.includes(d.reason)) fail('LEDGER');
   try {
     if (Object.hasOwn(d, 'before')) assertReady(d, validateObservation(d.before));
-    if (Object.hasOwn(d, 'confirmation')) assertEvidence(d, validateObservation(d.confirmation, true));
+    if (Object.hasOwn(d, 'confirmation')) assertEvidence(d, validateObservation(d.confirmation, true, d.version === 2));
   } catch { fail('LEDGER'); }
   return d;
 }
@@ -137,7 +153,9 @@ function safeSummary(d) {
   return { state: d.state, mode: d.mode, connectorRequired: d.connectorRequired,
     uiPrepared: Boolean(d.before), submissionConfirmed: d.state === 'submitted',
     resendBlocked: ['sending', 'uncertain', 'submitted'].includes(d.state),
-    needsInspection: ['sending', 'uncertain'].includes(d.state), reason: d.reason ?? null };
+    needsInspection: ['sending', 'uncertain'].includes(d.state), reason: d.reason ?? null,
+    ...(d.version === 2 ? { requiredAttachmentCount: d.requiredAttachments.length,
+      attachmentEvidenceConfirmed: d.state === 'submitted' } : {}) };
 }
 
 function fileInfo(file) {
@@ -241,14 +259,18 @@ const getDispatch = ledger => ledger.dispatch ?? fail('LEDGER');
 
 export async function registerDispatch(file, spec) {
   return withLedger(file, (ledger, save) => {
-    keys(spec, ['taskId', 'mode', 'prompt', 'target'], ['connectorRequired']);
+    keys(spec, ['taskId', 'mode', 'prompt', 'target'], ['connectorRequired', 'requiredAttachments']);
     if (Object.hasOwn(spec, 'connectorRequired') && typeof spec.connectorRequired !== 'boolean') fail('INPUT');
-    const d = { version: 1, taskId: spec.taskId, mode: spec.mode, connectorRequired: spec.connectorRequired ?? true,
+    const required = Object.hasOwn(spec, 'requiredAttachments') ? attachmentNames(spec.requiredAttachments, 'INPUT', true) : null;
+    const d = { version: required ? 2 : 1, ...(required ? { requiredAttachments: required } : {}),
+      taskId: spec.taskId, mode: spec.mode, connectorRequired: spec.connectorRequired ?? true,
       promptSha256: textDigest(spec.prompt), target: target(spec.target), state: 'registered', registeredAt: now() };
     validateDispatch(d);
     if (Object.hasOwn(ledger, 'dispatch')) {
       const prior = ledger.dispatch;
-      if (['taskId', 'mode', 'connectorRequired', 'promptSha256'].some(k => prior[k] !== d[k]) || !sameTarget(prior.target, d.target)) fail('CONFLICT');
+      if (['version', 'taskId', 'mode', 'connectorRequired', 'promptSha256'].some(k => prior[k] !== d[k])
+          || !sameTarget(prior.target, d.target)
+          || (required && !sameAttachments(prior.requiredAttachments, required))) fail('CONFLICT');
       return safeSummary(prior); // Registration idempotency never resets a send attempt.
     }
     ledger.dispatch = d;
@@ -299,7 +321,8 @@ function assertEvidence(d, observed) {
       || observed.mode !== d.mode || observed.approvalPending || (d.connectorRequired && !observed.connectorSelected)
       || observed.composerSha256 !== null || observed.lastUserMessageId !== message.id
       || message.id === d.before.lastUserMessageId || message.previousId !== d.before.lastUserMessageId
-      || message.bodySha256 !== d.promptSha256) fail('OBSERVATION');
+      || message.bodySha256 !== d.promptSha256
+      || (d.version === 2 && !sameAttachments(d.requiredAttachments, message.attachmentNames))) fail('OBSERVATION');
 }
 function uncertain(d, save, reason) {
   d.state = 'uncertain';
@@ -311,7 +334,7 @@ function uncertain(d, save, reason) {
 function confirm(d, save, observation) {
   if (!['sending', 'uncertain', 'submitted'].includes(d.state)) fail('BLOCKED');
   let observed;
-  try { observed = validateObservation(observation, true); assertEvidence(d, observed); }
+  try { observed = validateObservation(observation, true, d.version === 2); assertEvidence(d, observed); }
   catch {
     if (d.state === 'submitted') fail('BLOCKED');
     return uncertain(d, save, 'evidence_unconfirmed');
@@ -367,6 +390,8 @@ export async function dispatchPrompt(file, prompt, adapter) {
     const d = getDispatch(ledger);
     if (!['registered', 'prepared'].includes(d.state)) fail('BLOCKED');
     if (textDigest(prompt) !== d.promptSha256) fail('INPUT');
+    // Uploads must follow a durable split begin, never this body's auto-send path.
+    if (d.version === 2) fail('ATTACHMENTS');
     let before;
     try { before = await adapter.observeReady(); } catch { fail('OBSERVATION'); }
     begin(ledger, save, prompt, before);

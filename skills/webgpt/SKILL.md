@@ -14,6 +14,7 @@ Do not substitute an upstream terminal worker for missing file access. The maint
 and update rules are in [fork-policy.md](references/fork-policy.md).
 For everyday project connection, review/edit/research prompts and follow-ups, read
 [usage.md](references/usage.md). Real code tasks need direct project access, not a text-only substitute.
+For tradeoffs against direct browser/Chrome use, see [the comparison guide](references/browser-use-comparison.md).
 
 Run local ledger, lock, controller and hashing operations with ordinary Node through the local
 command tool. Use CUA only for its documented browser controls; its managed runtime is not a
@@ -62,8 +63,8 @@ complete the separate UI/quality review before collection. Do not run them on ev
 
 Prepare prompt, mode and any callback registration before typing. For required attachments, follow
 [file-uploads.md](references/file-uploads.md): retain their requirements in the original private task
-record, verify the browser/profile and source host, and use split CLI `dispatch begin` **before the first
-upload**. Only the parent whose begin succeeds may continue that attempt. Observe all required files
+record and declare `requiredAttachments` in the initial dispatch registration. Verify the browser/profile
+and source host, and use split CLI `dispatch begin` **before the first upload**. Only the parent whose begin succeeds may continue that attempt. Observe all required files
 ready before filling the body; missing or unobservable files block sending. Preserve uncertain attempts,
 never omit required files, substitute project access, or retry uploads on resume. For text-only work,
 `dispatchPrompt` or CLI `begin` persists `sending` before the send-capable call. Fill and immediately
@@ -76,7 +77,9 @@ transcripts, prompt/token text or raw browser errors. Do not bypass action-time 
 A click, cleared composer or assistant activity is not submission proof. Confirm the actual new user
 message against the saved baseline and full prepared body. For required files, verify attachments on
 that same message **before** CLI `confirm`; otherwise keep `sending`/`uncertain` and retain any valid body
-evidence for recovery. The helper itself validates only body/target evidence, not files. On timeout,
+evidence for recovery. New attachment-aware records also require observed `userMessage.attachmentNames`;
+the helper checks names/count, not uploaded bytes or parsing. Legacy records still need independent
+attachment review; never reset or silently upgrade them. On timeout,
 missing evidence or interruption, inspect the original requirements, chat and controller; never
 automatically re-upload, type the remainder, resend, or create replacement work.
 For navigation, mode/connector selection and panel actions, observe the expected URL, menu or

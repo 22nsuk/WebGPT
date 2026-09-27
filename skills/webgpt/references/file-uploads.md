@@ -63,13 +63,15 @@ Get-FileHash -Algorithm SHA256 -LiteralPath 'C:\Users\<user>\Downloads\probe.txt
 ## Bound the whole attachment attempt with existing dispatch state
 
 Before beginning, keep the required file list and expected identities in the original private task
-record's allowed-input/work fields, alongside its objective and owned target. Create that record before
-dispatch registration through the existing parent workflow; do not add fields inside strict `dispatch`,
-edit a ledger while a helper owns its lock, or create a competing completion store. Missing requirements
-on resume are missing evidence, not permission to assume a text-only task.
+record's allowed-input/work fields, alongside its objective and owned target. For a new task, also pass
+`requiredAttachments` (unique visible basenames) to the initial `dispatch register` specification, as
+defined in [dispatch.md](dispatch.md#required-attachments-use-the-split-cli-and-a-deferred-confirmation).
+The helper records them immutably in version 2; do not edit strict dispatch fields yourself, mutate a
+locked ledger or create a competing store. Missing original requirements on resume are missing
+evidence, not permission to assume a text-only task. Existing version-1 records are not auto-upgraded.
 
-Use the **split Node CLI** for required attachments, not high-level `dispatchPrompt`, which automatically
-confirms only the body. Capture current mode/connector/composer/predecessor evidence, then run
+Use the **split Node CLI** for required attachments. High-level `dispatchPrompt` refuses declared
+attachment tasks before any browser callback; its text-only flow still confirms only the body. Capture current mode/connector/composer/predecessor evidence, then run
 `client.mjs dispatch begin` **before the first upload-capable browser action**. Its exclusive ledger lock
 publishes `sending` and rejects competing begins. Only the caller whose begin succeeded may continue
 that uninterrupted attempt. A blocked/failed begin authorizes neither upload nor message send.
@@ -84,8 +86,10 @@ Once every required file is ready, perform the existing batched body fill/send, 
 fixed sleep between them. If the target/draft changed after begin, stop and inspect rather than adopting
 a new target or refreshing the saved baseline. After sending, inspect the body **and** attachments on the
 same new user message, matching required count and exposed identifiers/names. Only after both checks
-pass may the parent call CLI `confirm` with the unchanged strict body observation. Keep required-file
-identity and narrow attachment evidence private in the existing task record; UI acceptance does not
+pass may the parent call CLI `confirm`. For version 2, add `attachmentNames` inside the observed
+`userMessage`: the exact names of all ready attachments on that same message, not a copy of the
+requirement list or names taken from the draft/another message. Missing, duplicate, extra or mismatched
+names keep the attempt uncertain. Keep source identities and evidence private; UI acceptance does not
 prove remote byte/hash identity, complete parsing or that the model used all content.
 
 If the parent stops after upload, after send, or before attachment inspection, the persisted state is
@@ -96,7 +100,8 @@ can be confirmed later after actual evidence is recovered. If a prior revision a
 `submitted`, retain it but independently check required attachments before accepting the work; do not
 reset it. Controller completion/collection cannot substitute for this parent review.
 
-The helper does not itself inspect files or enforce this procedure on arbitrary callers. The ordering
+The helper enforces declared name/count evidence at confirmation, not the truth of browser reports,
+pre-send readiness, remote bytes or this procedure on callers bypassing it. The ordering
 conservatively uses the existing `sending` state even when upload has begun but no body was sent;
 recorded confirmation intervals therefore include upload/review time. A confirmed non-submission
 requiring a new attempt remains an explicit operator decision under [dispatch recovery](dispatch.md#interruption-and-reconciliation),
