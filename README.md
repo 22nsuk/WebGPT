@@ -1,207 +1,226 @@
 # WebGPT
 
-<img width="871" height="40" alt="image" src="https://github.com/user-attachments/assets/97d758f5-4666-4d21-9cc0-68a3f0fbcc88" />
+**English** · [한국어](README.ko.md)
 
-**Delegate selected work to web ChatGPT.** A Codex skill for task handoff, saved results
-and verification. Quota savings depend on the task and coordination overhead.
+Delegate a bounded task to your signed-in web ChatGPT, give it scoped access to
+project text files, and collect a saved result for review. The parent agent owns
+scope, permissions and integration; web ChatGPT owns the assigned work.
 
-## Install
+This is the **file-scoped fork** of [Nhahan/WebGPT](https://github.com/Nhahan/WebGPT).
+It is a local Codex skill plus a small Node.js worker, not a model API client or a
+browser extension. It uses your available ChatGPT modes; it does not provide a
+subscription, bypass usage limits or guarantee quota savings.
 
-Paste this into Codex:
+## Choose an installation route
+
+| Route | Start here |
+| --- | --- |
+| Have an agent install and verify it | [Agent-assisted installation](#agent-assisted-installation) |
+| Install it yourself on Windows, macOS or Linux | [Manual installation](skills/webgpt/references/install-manual.md) |
+| Already have a working installation | [Safe updates](#updates-and-recovery), not the fresh-install commands |
+| Compare this fork with upstream | [Revision-pinned comparison](skills/webgpt/references/upstream-review-2026-09-28.md) (Korean) |
+
+## What it does—and does not do
+
+| Capability | This fork |
+| --- | --- |
+| Research, analysis and writing | Web ChatGPT's reasoning and separately available, authorized tools |
+| Local project review | A task-scoped `read` grant |
+| Local implementation | An `edit` grant for direct UTF-8 file creation, replacement and deletion |
+| Conflict protection | Whole-file SHA-256 preconditions; stale writes are rejected |
+| Completion and recovery | Saved results, scoped waits, integrity-checked collection and retained evidence |
+| Shell, local Git, test execution through the file worker | **Not provided.** The parent runs local checks |
+| Remote branch/commit/PR operations | Possible through **separately connected GitHub tools** and their permissions |
+| Arbitrary binary files or recursive deletion | Not supported by the file tools |
+
+The worker exposes seven MCP tools: `get_task`, `read_input`, `list_files`,
+`read_file`, `write_file`, `delete_file`, `submit_result`. Text/research tasks can
+omit a project grant; browser-only delegation can omit the worker, but then has no
+worker completion event or saved-result collection.
+
+File grants exclude Git metadata, the running installation, operational
+configuration and private runtime. They are **not a general secret filter**:
+ordinary files such as a project's `.env` can be accessible inside a granted root.
+Choose a project that is safe to share. Do not grant your home directory.
+
+## Prerequisites
+
+Use Node.js **22 or newer**, a local Codex environment that discovers skills, and
+an available signed-in ChatGPT account/mode. Agent-controlled delegation also
+needs a supported browser-control tool connected to that signed-in browser.
+Installing this skill does not install a browser extension or establish browser
+control automatically. Git is used by the manual download recipe.
+
+For ChatGPT to access the local worker, you also need permission to configure a
+remote MCP connection and an authorized HTTPS forwarding service. An existing
+compatible connection is preferable; the manual guide includes a Cloudflare
+Quick Tunnel option. No OpenAI Platform API key or model API billing is required
+by this worker. Account/workspace restrictions and action-time confirmations
+still apply.
+
+The file worker uses Node built-ins: **no `npm install`, `npm ci`, `node-pty` or
+native terminal build is required for this fork**. Upstream terminal installation
+instructions are not interchangeable with these instructions.
+
+## Agent-assisted installation
+
+Paste this into your **local Codex agent**, not into a WebGPT worker that has yet
+to be installed. Read the authorization before sending it; narrow it when needed.
 
 ```text
-Install https://github.com/22nsuk/WebGPT/tree/main/skills/webgpt
-Follow the included references/setup.md and set up everything needed.
-Handle installation, configuration and verification yourself; assume no setup knowledge.
-I authorize the local worker and HTTPS forwarding, sharing its private connection
-URL with my signed-in ChatGPT, and granting WebGPT read/create/edit/delete access
-to projects I assign. Run the setup test, retain its test chats, and close its tabs
-after saving results. Do not delete or archive chats unless I explicitly request it.
-Do not ask again for the approved setup actions.
-Ask only for sign-in or another action that genuinely requires me; continue afterward.
+Install the file-scoped WebGPT skill from https://github.com/22nsuk/WebGPT.
+Resolve main to a commit, record it, and install the complete skills/webgpt directory
+from that same revision. Read SKILL.md, references/install-manual.md and
+references/setup.md before changing anything. Do not install the upstream terminal worker.
+
+Check for an existing installation, custom paths, running tasks and working connections
+first. Preserve them; use the stopped-update procedure instead of overwriting a live install.
+For a fresh installation, use the host's supported user skill directory and keep the
+installed copy, private configuration/runtime and editable projects separate.
+
+I authorize the local worker and HTTPS forwarding, transferring its private connection
+URL only into my signed-in ChatGPT connection settings, and read/create/edit/delete
+access only to projects I explicitly assign. Set up supported missing prerequisites.
+Do not create paid services, publish a plugin, expose the controller or grant shell access.
+Ask only for sign-in, required approvals or unresolved choices that genuinely require me.
+This authorization does not bypass mandatory action-time confirmations.
+
+Run the installed tests and a real browser/connector probe on an owned temporary project.
+Verify create/read/edit/delete, actual stale-revision rejection, saved-result integrity,
+collection and retired task access. Retain the test chat, let its final answer finish,
+then close only its owned tabs. Never delete or archive chats without my explicit request.
+Record the installed path/revision, start/stop method and PASS/FAIL/NOT_RUN evidence
+without credentials. Report file installation, local readiness, browser access and live
+end-to-end verification separately; do not call partial setup complete.
 ```
+
+The agent procedure is in [setup.md](skills/webgpt/references/setup.md). It covers
+reuse of existing connections, tool discovery, user-only approvals and resuming
+the **same** interrupted installation. A local `/health` response is not proof of
+browser control, ChatGPT connectivity or successful delegation.
+
+## Manual installation
+
+The [English manual](skills/webgpt/references/install-manual.md) and
+[한국어 설치 안내](skills/webgpt/references/install-manual.ko.md) include copyable
+POSIX-shell and PowerShell commands, prerequisites, private-directory permissions,
+UTF-8 configuration, worker startup, HTTPS connection setup and a live acceptance
+exercise. They also distinguish a fresh install from an update.
+
+The sequence is: download and record one revision → copy the **entire** skill →
+configure private storage → start and check the worker → connect ChatGPT → verify
+one disposable project task. File copying alone completes only the first part.
 
 ## Use
 
-Tell Codex:
+In a local Codex session that has loaded this skill:
 
 ```text
-webgpt p 이 저장소 전체를 읽고 오류 가능성과 개선 우선순위를 검토해줘.
-파일은 수정하지 말고 근거가 되는 파일과 위치를 알려줘.
+webgpt p Review this repository for likely defects and prioritize improvements.
+Use read-only access. Do not change files; cite the relevant paths and evidence.
 ```
 
 ```text
-webgpt xh 이 프로젝트의 검색 필터를 구현해줘. 기존 동작을 유지하고 관련 테스트도 수정해줘.
-Codex는 변경 내용을 검토하고 로컬 테스트 결과를 확인해줘.
+webgpt xh Implement the search filter in this project and update relevant tests.
+Preserve unrelated behavior. Codex should review the diff and run the necessary local checks.
 ```
 
-`xh` = Extra High · `p` = Pro.
+`xh` / `xhigh` = **Extra High** (default); `p` / `pro` = **Pro**. Verify the
+requested mode in the actual UI; do not silently substitute another mode. Upstream's
+`m`, `h` and `webgpt open` routes are not implemented by this fork's skill.
 
-For repository work, WebGPT reads the assigned project directly through a `read` or `edit`
-grant; it can choose relevant files without repeated copy/paste or per-file permission requests.
-WebGPT edits project text, and Codex reviews the changes and runs needed local checks.
-When assigned direct publication, web ChatGPT can use separately connected GitHub tools for
-supported branch/commit/PR operations and CI/review follow-through. Discover the actual tools;
-the file worker's lack of shell access does not establish that GitHub writes are unavailable.
-See the [GitHub workflow](skills/webgpt/references/github-workflow.md).
-Research that needs no local files can use a text-only task. The
-[practical usage guide (한국어)](skills/webgpt/references/usage.md) covers review, implementation,
-research, follow-ups, parallel ownership and interruption recovery with example prompts.
+Assign one coherent outcome, relevant context, ownership and acceptance criteria;
+let the worker choose the investigation and edits within that scope. Use disjoint
+write ownership for parallel tasks. Do not upload a repository to replace working
+file access. Required images/binaries use the separate
+[attachment workflow](skills/webgpt/references/file-uploads.md).
 
-## Safety defaults in this fork
+For publication, explicitly assign the target repository and PR outcome. Discover
+the available GitHub tools before deciding which participant publishes. The file
+worker's lack of shell/Git is **not** evidence that remote GitHub writes are
+unavailable. Publication also requires checking the final head's CI and relevant
+reviews; see [GitHub workflow](skills/webgpt/references/github-workflow.md).
 
-Retain task chats by default, including setup tests, failed tasks and recovery chats.
-After collecting results, close only task-owned tabs; closing a tab does not delete its chat.
+## Safety and completion
+
+Retain task chats by default, including setup tests, failures and recovery chats.
 Delete a chat only when the user explicitly requests deletion of that chat.
+Closing a task-owned tab does not delete its chat or retire a task token.
 
-Git metadata is blocked in file operations and directory listings, including Windows
-case variants, trailing dots/spaces, `GIT~1` and NTFS stream aliases. Ordinary project
-files such as `.gitignore`, `.gitattributes` and `.github` remain accessible.
-Existing path components are checked using their native filesystem names, so other Windows
-short aliases of `.git` are blocked too. Project/runtime overlap checks use native paths as well.
+The parent verifies the result and relevant changes, then collects the saved
+artifact with SHA-256 verification. **Integrity is not correctness** and does not
+prove reported tests ran. Observe final chat-answer completion separately before
+closing the owned tab. Use `read` grants for reviews; do not upgrade them silently.
 
+Keep task tokens private to their assigned conversations. Never publish the full
+MCP URL, `mcp-path.key`, `controller.key`, service credentials or recovery copies.
+Forward only the MCP listener, **never** the controller or service-control port.
+Quick Tunnels are public development forwarding, not a private network or a
+permanent endpoint. A project grant is not hostile-process/OS isolation.
 
-## Scoped task lifecycle
+## Updates and recovery
 
-This file-scoped fork selectively adapts upstream's task-ID waits and result collection,
-not its full-OS terminal or `webgpt open` modes. No shell or native PTY dependency is added.
-The existing seven MCP tools, read/edit grants, revision checks and recovery records remain.
+Before updating, inspect `client.mjs tasks`; an empty `status` event queue does
+not establish idleness. Collect or explicitly resolve outstanding work, stop the
+identified worker **and** its restart owner, verify exit, preserve a consistent
+private backup, and replace the complete installation with a matching revision.
+Keep a healthy existing tunnel/connection during a code-only update. Follow the
+[transition and rollback procedure](skills/webgpt/references/operations-windows.md#parent-resume-transition-and-rollback).
 
-The controller supports `wait <task-id> [task-id ...]` with quiet HTTP renewal and
-`collect <task-id>` with SHA-256 verification before acknowledgment. No-argument `wait`
-keeps its bounded, global behavior; existing registration JSON is unchanged.
-Collection verifies saved bytes, not code correctness or test claims. Codex reviews evidence
-and performs relevant integration checks. See [workspace.md](skills/webgpt/references/workspace.md)
-for commands and [fork policy](skills/webgpt/references/fork-policy.md) for the integration boundary.
+Run these with `<skill>` replaced by the installed directory:
 
-## Practical operation
+```text
+node <skill>/scripts/client.mjs ready
+node <skill>/scripts/client.mjs tasks
+node <skill>/scripts/client.mjs dispatch preflight
+node <skill>/scripts/client.mjs reconcile <task-id>
+node <skill>/scripts/client.mjs collect --resume <task-id>
+```
 
-Use `node <skill>/scripts/client.mjs tasks` to inspect running tasks and uncollected results
-before an update or recovery. An empty `status` event queue alone does not mean the worker is idle.
-The inventory is controller-only and omits task tokens, instructions and input contents.
+These commands have different purposes: `ready` checks authenticated local
+readiness; `tasks` inventories work; `dispatch preflight` checks the parent helper
+runtime; `reconcile` inspects retained evidence. `collect --resume` can acknowledge
+an eligible uncollected result—it is not always read-only. None resends a browser
+message or proves live browser readiness. Preserve uncertain sends, locks,
+journals and result candidates; never reset them to manufacture a PASS.
 
-Run `node <skill>/scripts/client.mjs dispatch preflight` in ordinary Node before task registration.
-Node owns the private ledger, lock, controller and hashes; documented browser tools own UI actions.
-Dispatch errors expose only fixed `code`, `stage`, `reason` and `message` fields, making runtime
-and storage failures distinguishable without printing paths, prompts or tokens. See
-[dispatch.md](skills/webgpt/references/dispatch.md) for the staged commands and UI evidence rules.
+| Symptom | First distinction to make |
+| --- | --- |
+| Skill is not discovered | Actual host skill directory, duplicate installs, new session/restart |
+| `/health` works but tools fail | Authenticated `ready`, actual endpoint, selected connector, task grant |
+| Upload fails despite file-URL access | Correct extension/profile and actual upload capability, not the toggle alone |
+| Connection stops after tunnel restart | Changed HTTPS origin; repair the existing connection before new work |
+| Result exists after an interruption | Reconcile the original task; do not re-register or resend blindly |
+| Local test PASS but no live proof | Report live verification as `NOT_RUN`, not successful installation |
 
-Use `collect --resume <task-id>` after an interrupted verification. It verifies retained bytes,
-recognizes already collected or discarded results, and acknowledges only an eligible uncollected
-result. Recovery warnings require inspection; this does not reopen chats, resend work or reset state.
-Keep the original private setup record so browser verification and tab cleanup can resume separately.
+## Documentation and development
 
-`list_files` supports optional `limit` (1–500) and `cursor` arguments. Follow `nextCursor` until
-`truncated:false`; a changed directory invalidates the cursor instead of silently skipping entries.
-`read_file` also accepts optional `offset`, `limit` and `maxChars` for complete-line windows with
-range metadata and the **whole-file** SHA. Calls without them still return the full file. Compare
-revisions between windows, and read the whole file before replacing it; an excerpt is not a new
-file body. This adapts the bounded-read idea from
-[faithforone/WebGPT](https://github.com/faithforone/WebGPT/tree/b8206c57866cf574fdb65aa2aadc146a4ad2e469)
-to this fork's revision and recovery contracts.
-`read_input` accepts the same optional line-window arguments for long explicitly
-supplied text. Its no-argument full response remains `{name,text}`; bounded responses
-include the whole-input SHA and continuation metadata. Reuse only the required context,
-not an excerpt presented as a complete source. See [workspace.md](skills/webgpt/references/workspace.md)
-for limits and schema refresh; supplied names remain input keys, not file paths.
+| Topic | Guide |
+| --- | --- |
+| Human installation / agent setup | [English manual](skills/webgpt/references/install-manual.md) · [한국어](skills/webgpt/references/install-manual.ko.md) · [Agent setup](skills/webgpt/references/setup.md) |
+| Practical prompts and task design | [Usage (한국어)](skills/webgpt/references/usage.md) · [Parent workflow](skills/webgpt/references/parent-workflow.md) |
+| Tool contracts and limits | [Workspace](skills/webgpt/references/workspace.md) |
+| Sending, attachments and cleanup | [Dispatch](skills/webgpt/references/dispatch.md) · [Uploads](skills/webgpt/references/file-uploads.md) · [Chat lifecycle](skills/webgpt/references/chat-lifecycle.md) |
+| Results, recovery and deployment | [Collection](skills/webgpt/references/collection-details.md) · [Recovery integrity](skills/webgpt/references/recovery-integrity.md) · [Backup safety](skills/webgpt/references/backup-safety.md) · [Windows operations](skills/webgpt/references/operations-windows.md) |
+| Diagnosis and acceptance | [Diagnostics](skills/webgpt/references/diagnostics.md) · [Verification](skills/webgpt/references/verification.md) · [Parent acceptance](skills/webgpt/references/parent-acceptance.md) |
+| Architecture and upstream policy | [Browser-use comparison](skills/webgpt/references/browser-use-comparison.md) · [Fork policy](skills/webgpt/references/fork-policy.md) · [Upstream comparison](skills/webgpt/references/upstream-review-2026-09-28.md) |
 
-Follow the [update procedure](skills/webgpt/references/operations-windows.md#parent-resume-transition-and-rollback):
-confirm idle, stop the identified worker and restart owner, verify exit, preserve a consistent
-private backup, then replace the matching worker/client/helpers. Keep a healthy existing tunnel
-and ChatGPT connection during a code-only update; verify its settings and refresh stale schemas.
+From a source checkout, run:
 
-After an uncertain registration response, repeat the exact registration with the same ID.
-Only an identical, still-running task returns the original token; changed or finished tasks are
-rejected. This never authorizes resending a browser message. IDs cannot differ only by case or use
-Windows device names. Task IDs take precedence over same-named local files in CLI commands;
-use `--file <json-file>` when explicitly reading a payload file.
+```sh
+node tests/run.mjs
+```
 
-A project grant cannot overlap the worker's private data directory in either direction, including
-its recovery subdirectories. Keep projects and runtime data separate. State-save failures do not
-report successful completion or retire task access; an unrecorded file change blocks further edits
-until inspected. See workspace.md for recovery limits.
+This runs the repository suite, then a standalone installed-skill copy. CI covers
+Windows, macOS and Linux with Node 22, 24 and 26; these are local automated tests,
+not signed-in ChatGPT acceptance tests. See [CI maintenance](.github/ci-maintenance.md).
+Keep both READMEs and manual guides aligned; documentation tests check local links,
+anchors and matching installation command blocks. No production service, browser
+session or public tunnel is required for those documentation tests.
 
-If a terminal result cannot be collected, inspect and preserve its evidence before explicitly
-cancelling the abandoned registration. Cancellation revokes its token and retires the event,
-preserving the original status and files with `discarded:true` instead of certifying collection.
+## Attribution and license
 
-## Request and recovery checks
-
-The worker validates MCP request IDs, protocol headers and tool arguments before execution.
-It handles `ping` and negotiates the implemented `2025-03-26` / `2025-06-18` versions instead
-of echoing an unknown version. This does not establish browser/ChatGPT end-to-end readiness.
-
-Invalid UTF-8 and lone-surrogate tool strings are rejected instead of changing file contents.
-The MCP wire-body limit is 8 MiB to accommodate JSON escaping; decoded files/results still have
-an independent 1 MiB limit, and controller request bodies remain limited to 2 MiB.
-Malformed or conflicting recovery journals block the affected task without replaying its changes
-or preventing unrelated tasks from starting. Preserve the journal and inspect it before recovery.
-
-## Recovery and readiness
-
-The authenticated local controller provides `ready`, `reconcile` and `shutdown` commands.
-Readiness checks storage, state consistency, active recovery journals and workspace access;
-the public `/health` endpoint reports only liveness. Reconciliation includes retired tasks
-and verifies retained result hashes without acknowledging results or resending browser work.
-
-For an owned batch, use `node <skill>/scripts/client.mjs reconcile <task-id> [task-id ...]`
-or `reconcileTasks(config, { ids: [...] })`. This limits retained task-detail inspection
-and returned task records to those IDs; `health` still describes the entire worker and
-checks active work globally. No-argument reconciliation remains the full retained-evidence
-audit. Collection and resume select their task automatically, preserving pre-commit and
-post-commit verification. Invalid/unknown IDs or unconfirmed response scopes fail rather
-than widening the request. Update the identified idle worker and client together; an old
-worker may reject scoped queries. Shared state validation and active-workspace health
-checks are not constant-time. This adds no automatic repair, resend or acknowledgment to
-reconciliation, and no browser actions.
-
-Interrupted result files remain visible as uncommitted candidates. Conflicting resubmissions
-cannot overwrite them, and terminal retries verify the saved artifact before reporting success.
-Missing recorded journals block only the affected task. See
-[result and recovery integrity](skills/webgpt/references/recovery-integrity.md) before resuming
-interrupted work or rolling back to an older worker.
-
-Confirmed dead local lock owners can be recovered with the old lock preserved. An optional
-local `service.mjs` launcher restarts only its own worker within a finite retry budget and
-supports graceful shutdown. These commands do not add MCP tools or shell access. Keep the
-running installation separate from editable source checkouts; workspace grants cannot overlap
-the running scripts directory, sibling deployment files or private runtime.
-
-Operational configuration is also excluded from read/edit workspace grants, including
-canonical aliases and future configuration paths. Recovery checks verify original backup
-bytes against edit/delete receipts, and applied journal publication preserves the prepared
-record if interrupted. See [backup safety](skills/webgpt/references/backup-safety.md).
-
-See [Windows operation and recovery](skills/webgpt/references/operations-windows.md) for failure
-classes, migration, rollback and the review-only WinSW template. Service registration, accounts,
-ACLs, fixed tunnel addresses and browser/Codex resumption are separate deployment work.
-
-## Operational verification
-
-For an opt-in check of actual delegation after an update, use the
-[parent verification workflow and feature map](skills/webgpt/references/verification.md).
-`verification.mjs prepare` creates one fresh text/read/edit/resume exercise;
-`verification.mjs check` inspects owned local evidence without registering, sending or
-acknowledging tasks. Browser mode/message proof, real conflict rejection, retained-chat
-review and parent acceptance remain separate. A local PASS never becomes a live PASS,
-and unobserved usage metrics remain unknown. Version 2 check reports keep global readiness
-and dispatch observations separate from local acceptance; a missing current-state or
-recorded-grant proof blocks acceptance. Update the matching worker and checker together.
-This adds no Worker tool or authority.
-
-## CI maintenance
-
-Run `node tests/run.mjs` from the repository to test the checkout and then a complete
-standalone skill copy. Each phase runs at most two test files concurrently; real
-worker/process concurrency inside individual tests remains enabled. The phases do
-not compete with each other for CPU, filesystem or process startup resources.
-
-See [CI dependency maintenance](.github/ci-maintenance.md) for GitHub Actions version
-updates, pinned action revisions and test-workflow safeguards.
-
-The optional service supervisor uses an instance-authenticated, loopback-only stop
-channel instead of a mutable stop-request file. Update the service/runtime/control
-scripts together while stopped; old and new stop clients are not interchangeable.
-Keep the private service owner record secret and never forward this control port.
-See [operations-windows.md](skills/webgpt/references/operations-windows.md) for
-response-loss handling, migration and the remaining runtime ownership boundary.
+Based on [Nhahan/WebGPT](https://github.com/Nhahan/WebGPT), with selected ideas from
+[faithforone/WebGPT](https://github.com/faithforone/WebGPT) as documented in the fork
+references. See [LICENSE](LICENSE). Upstream and this fork intentionally have
+different authority and retention policies; do not mix their live runtime state.
