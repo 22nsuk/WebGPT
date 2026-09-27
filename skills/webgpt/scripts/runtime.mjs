@@ -30,10 +30,16 @@ export function processState(pid) {
   }
 }
 
-export function acquireRuntimeLock(dir, { host = hostname(), probe = processState, name = 'worker' } = {}) {
+export function acquireRuntimeLock(dir, { host = hostname(), probe = processState, name = 'worker', serviceControl } = {}) {
   if (!['worker', 'service'].includes(name)) throw Error('invalid runtime lock kind');
   const lock = resolve(dir, name + '.lock'), guard = resolve(dir, name + '.recovery.lock');
-  const owner = { pid: process.pid, host, instanceId: randomUUID() };
+  if (serviceControl !== undefined && (name !== 'service' || !record(serviceControl)
+      || Object.keys(serviceControl).sort().join(',') !== 'key,port,runtime,version' || serviceControl.version !== 1
+      || !Number.isInteger(serviceControl.port) || serviceControl.port < 1 || serviceControl.port > 65535
+      || !/^[a-f0-9]{64}$/.test(serviceControl.key) || !/^[a-f0-9]{64}$/.test(serviceControl.runtime)))
+    throw fault('CONFIG_INVALID', 'invalid private service control descriptor');
+  const owner = { pid: process.pid, host, instanceId: randomUUID(),
+    ...(serviceControl === undefined ? {} : { serviceControl: { ...serviceControl } }) };
   const create = () => {
     mkdirSync(lock, { mode: 0o700 });
     try { writeFileSync(resolve(lock, 'owner.json'), JSON.stringify(owner), { mode: 0o600, flag: 'wx', flush: true }); }

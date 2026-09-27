@@ -343,7 +343,7 @@ for (const entry of ['worker', 'service']) test(`${entry} CLI retains scripts-ju
       if (entry === 'worker' && observed.child.connected) observed.child.send({ type: 'shutdown' });
       else {
         const { requestServiceStop } = await import(pathToFileURL(join(f.scripts, 'service.mjs')).href);
-        requestServiceStop({ ...process.env, WEBGPT_CONFIG: f.configFile, WEBGPT_DATA_DIR: f.dir });
+        await requestServiceStop({ ...process.env, WEBGPT_CONFIG: f.configFile, WEBGPT_DATA_DIR: f.dir });
       }
     }
     assert.deepEqual(await observed.exit, [0, null], observed.diagnostic());

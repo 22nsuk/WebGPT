@@ -194,3 +194,10 @@ not compete with each other for CPU, filesystem or process startup resources.
 
 See [CI dependency maintenance](.github/ci-maintenance.md) for GitHub Actions version
 updates, pinned action revisions and test-workflow safeguards.
+
+The optional service supervisor uses an instance-authenticated, loopback-only stop
+channel instead of a mutable stop-request file. Update the service/runtime/control
+scripts together while stopped; old and new stop clients are not interchangeable.
+Keep the private service owner record secret and never forward this control port.
+See [operations-windows.md](skills/webgpt/references/operations-windows.md) for
+response-loss handling, migration and the remaining runtime ownership boundary.

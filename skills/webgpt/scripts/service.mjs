@@ -2,14 +2,14 @@
 // WinSW must use onfailure=none: this launcher owns the finite retry budget.
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, realpathSync } from 'node:fs';
 import { resolve, isAbsolute, dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { configuration } from './client.mjs';
 import { acquireRuntimeLock, startupExitCode, fault } from './runtime.mjs';
 import { validatedEntryPath } from './installation.mjs';
-import { readBytesUpTo } from './bounded-read.mjs';
+import { listenServiceControl, readServiceControl, sendServiceStop } from './service-control.mjs';
 
 const backoff = [1000, 5000, 15000];
 const report = entry => console.error(JSON.stringify(entry));
@@ -28,59 +28,23 @@ function serviceConfig(env) {
     return configuration(env, { requireExplicitDataDir: true });
   } catch { throw fault('CONFIG_INVALID', 'service configuration requires an explicit absolute dataDir and valid ports'); }
 }
-function ownsStopRequest(file, instanceId, { strict = false } = {}) {
-  try {
-    const info = lstatSync(file, { throwIfNoEntry: false });
-    if (!info?.isFile() || info.isSymbolicLink() || info.nlink !== 1 || info.size !== 36) return false;
-    // Verify the opened object, not a second path-based read. NONBLOCK avoids
-    // parking the supervisor if a FIFO replaces the inspected regular file.
-    const fd = openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
-    try {
-      const opened = fstatSync(fd);
-      if (!opened.isFile() || opened.nlink !== 1 || opened.size !== 36
-          || opened.dev !== info.dev || opened.ino !== info.ino) return false;
-      // Also inspect the current entry on platforms without O_NOFOLLOW.
-      const current = lstatSync(file);
-      if (!current.isFile() || current.isSymbolicLink() || current.nlink !== 1
-          || current.dev !== opened.dev || current.ino !== opened.ino) return false;
-      return readBytesUpTo(fd, 37).equals(Buffer.from(instanceId));
-    } finally { closeSync(fd); }
-  } catch (error) {
-    // A poll cannot authorize a stop from unreadable evidence. An explicit
-    // requester must receive the actual I/O failure, not a fabricated EEXIST.
-    if (strict) throw error;
-    return false;
-  }
-}
-export function requestServiceStop(env = process.env) {
-  const config = serviceConfig(env), lock = resolve(config.dataDir, 'service.lock');
-  const info = lstatSync(lock), ownerFile = resolve(lock, 'owner.json'), ownerInfo = lstatSync(ownerFile);
-  if (!info.isDirectory() || info.isSymbolicLink() || !ownerInfo.isFile() || ownerInfo.isSymbolicLink()
-      || ownerInfo.nlink !== 1 || ownerInfo.size > 4096) throw Error('invalid service owner');
-  const owner = JSON.parse(readFileSync(ownerFile, 'utf8'));
-  if (typeof owner.instanceId !== 'string' || !/^[a-f0-9-]{36}$/.test(owner.instanceId)) throw Error('invalid service owner');
-  const file = resolve(lock, 'stop-request');
-  try {
-    // Refuse known entries before a creation-capable open, including dangling
-    // links. Keep exclusive creation for an entry arriving after this check.
-    if (lstatSync(file, { throwIfNoEntry: false }))
-      throw Object.assign(Error('service stop marker already exists'), { code: 'EEXIST' });
-    writeFileSync(file, owner.instanceId, { flag: constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL
-      | (constants.O_NOFOLLOW ?? 0), mode: 0o600, flush: true });
-  } catch (error) {
-    if (error.code !== 'EEXIST' || !ownsStopRequest(file, owner.instanceId, { strict: true })) throw error;
-  }
-  return { accepted: true }; // No PID kill, secrets, SCM changes or installation.
+export async function requestServiceStop(env = process.env) {
+  const config = serviceConfig(env);
+  return sendServiceStop(readServiceControl(config.dataDir));
 }
 
 export async function runService(env = process.env, { spawnWorker = spawn, pause = delay, record = report, entryPath } = {}) {
   const entryRoot = dirname(validatedEntryPath(import.meta.url, entryPath));
   const config = serviceConfig(env);
   mkdirSync(config.dataDir, { recursive: true, mode: 0o700 });
-  const ownership = acquireRuntimeLock(config.dataDir, { name: 'service' });
+  // Bind a kernel-owned loopback port first, but reject connections until the
+  // private owner record is published and the in-memory instance is activated.
+  const channel = await listenServiceControl(config.dataDir);
+  let ownership;
+  try { ownership = acquireRuntimeLock(config.dataDir, { name: 'service', serviceControl: channel.descriptor }); }
+  catch (error) { await channel.close(); throw error; }
   const log = (event, details = {}) => record({ time: new Date().toISOString(), event,
     supervisorPid: process.pid, parentPid: process.ppid, instanceId: ownership.instanceId, ...details });
-  const stopPath = resolve(config.dataDir, 'service.lock', 'stop-request');
   const controller = new AbortController();
   let child, killTimer, stopping = false;
   let stopReason = null, result = 1;
@@ -100,10 +64,7 @@ export async function runService(env = process.env, { spawnWorker = spawn, pause
   const signals = ['SIGINT', 'SIGTERM', ...(process.platform === 'win32' ? ['SIGBREAK'] : [])];
   const handlers = signals.map(signal => [signal, () => stop(signal)]);
   for (const [signal, handler] of handlers) process.on(signal, handler);
-  const poll = setInterval(() => {
-    // A delayed stop writer for an older instance must not stop its replacement.
-    if (ownsStopRequest(stopPath, ownership.instanceId)) stop('stop_request');
-  }, 250);
+  channel.activate(ownership.instanceId, () => stop('stop_request'));
   try {
     log('service_started', { restartBudget: backoff.length });
     for (let attempt = 0; !stopping; attempt++) {
@@ -144,10 +105,9 @@ export async function runService(env = process.env, { spawnWorker = spawn, pause
       stop();
       await once(child, 'exit');
     }
-    clearInterval(poll);clearTimeout(killTimer);
+    clearTimeout(killTimer);
     for (const [signal, handler] of handlers) process.off(signal, handler);
-    // A stop request is not recovery evidence; remove only our own regular marker.
-    if (ownsStopRequest(stopPath, ownership.instanceId)) unlinkSync(stopPath);
+    await channel.close(); // No listener may retain this instance after lock release.
     ownership.release();
     log('service_exited', { exitCode: result, stopReason });
   }
@@ -155,7 +115,7 @@ export async function runService(env = process.env, { spawnWorker = spawn, pause
 if (process.argv[1] && process.argv[1] !== '-' && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   try {
     if (process.argv.length !== 3 || !['run', 'stop'].includes(process.argv[2])) throw fault('CONFIG_INVALID', 'usage: service.mjs run|stop');
-    if (process.argv[2] === 'stop') console.log(JSON.stringify(requestServiceStop()));
+    if (process.argv[2] === 'stop') console.log(JSON.stringify(await requestServiceStop()));
     else process.exitCode = await runService(process.env, { entryPath: resolve(process.argv[1]) });
   } catch (error) {
     report({ time: new Date().toISOString(), event: 'service_failed', supervisorPid: process.pid,

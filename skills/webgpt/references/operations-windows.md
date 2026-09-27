@@ -101,14 +101,15 @@ failure, cancel retained tasks, or retry the bind automatically. A returned star
 error is not a promise that no earlier startup work occurred. Inspect retained state
 and use the established explicit retry/update procedure after fixing the cause.
 
-For a supervised worker, `service.mjs stop` is the preferred wrapper stop command:
-it writes an instance-scoped request inside the private supervisor lock directory.
-The launcher accepts only a regular single-link marker matching its instance ID,
-observes it within its 250 ms polling interval, aborts pending backoff
-and sends shutdown over its owned child's IPC channel. After ten seconds it may
-force-stop that still-owned child, leaving crash evidence for subsequent recovery.
-No PID from a foreign lock or HTTP port is killed. A foreign or malformed stop
-marker is preserved for inspection; it cannot stop a replacement instance.
+For a supervised worker, `service.mjs stop` is the preferred wrapper stop command.
+The supervisor owns an ephemeral TCP listener bound only to `127.0.0.1`, independent
+of the Worker's two configured ports and alive throughout restart backoff. An
+instance-authenticated stop aborts pending backoff and signals only its owned child
+through existing IPC. After ten seconds it may force-stop that still-owned child,
+leaving crash evidence for subsequent recovery. No foreign PID or HTTP port is killed.
+The control listener closes before service ownership is released, with at most 250 ms
+for its existing connections. Worker drain/restart deadlines are otherwise unchanged.
+
 Windows SIGINT/SIGTERM semantics alone are not the graceful-stop contract.
 WinSW v2.12.0 waits without a deadline when `stoparguments` is configured: its
 `stoptimeout` setting applies only to the alternate process-tree shutdown path.
@@ -181,42 +182,59 @@ repair method. Readiness/reconciliation do not authorize task recovery decisions
 
 ## Failure classes and retry budgets
 
-`service.mjs stop` inspects an existing stop marker before attempting creation.
-Known foreign/partial markers, directories and links are refused and preserved;
-an identical single-link regular marker is accepted without another write.
-A missing marker is created with `O_WRONLY | O_CREAT | O_EXCL`, mode 0600 and
-flush, plus `O_NOFOLLOW` where Node exposes it. Exclusive creation is retained
-for a competing creator after the first inspection. POSIX `O_CREAT | O_EXCL`
-already refuses a final symlink, including a dangling one: adding `O_NOFOLLOW`
-is not evidence that `wx` previously followed such links on POSIX. Node's Windows
-builds do not expose `O_NOFOLLOW`; its omission is explicit, not an emulated
-Win32 reparse-point guarantee. The earlier check still protects only entries
-already observed. No Windows late-link target-creation guarantee is added.
+The stop-file protocol is removed: no `stop-request` creation, polling, content
+check or deletion remains. Each service incarnation creates a fresh 256-bit key and
+kernel-assigned loopback port. The private 0600 `service.lock/owner.json` publishes
+these once in `serviceControl: {version,port,key,runtime}`; it is discovery and a
+local capability, not an instruction file. Never copy that record into ordinary
+logs or reports. The running listener retains its credentials in memory, not by
+rereading changing disk contents. The scope hashes the canonical runtime path and
+its device/inode; credentials from another runtime or incarnation cannot authorize
+this listener. No controller key or task token is reused or sent over this channel.
 
-Existing markers are read through a read-only descriptor, with no-follow and
-nonblocking flags where available. The opened object's type, single link, size,
-device/inode and current directory entry must match the inspected regular file
-before reading. The existing bounded reader consumes at most 37 bytes for a
-36-byte marker, rejecting growth rather than accepting a truncated prefix.
-Every opened descriptor is closed, including failed verification paths.
-An explicit stop request preserves metadata/open/read/close errors instead of
-masking them as `EEXIST`; for example, an unreadable marker yields `EACCES` and
-the existing storage-failure exit 74. A verified nonmatching/invalid marker still
-fails with `EEXIST`. The supervisor's polling and cleanup checks remain quiet on
-unreadable evidence: they cannot authorize shutdown or marker removal from it.
+The client captures discovery once, then uses one connection with a two-second
+absolute deadline and no retry, redirect, port scan, marker fallback or PID kill.
+Before sending its stop authorization it verifies the server's HMAC-SHA256 proof.
+Fresh nonces on both sides and separate server/stop/accepted proof domains bind
+messages to this runtime, instance and connection. Replayed messages on another
+connection are rejected. The first valid authorization sets in-memory stop intent;
+explicit duplicate valid requests during drain are idempotent, not additional stops.
+Acceptance does not depend on delivering the authenticated acknowledgment.
 
-These checks are not atomic with creation, reads or cleanup. Same-inode content
-changes, parent-directory replacement and changes after the last check remain
-outside this guarantee. Keep the runtime private and locally owned; refusal does
-not authorize marker deletion, ownership takeover or automatic retry. Owner-file
-reading and runtime-lock recovery are unchanged by this stop-marker check.
+Invalid/missing/old discovery yields `SERVICE_CONTROL_UNAVAILABLE`; failed transport,
+authentication or a lost acknowledgment yields `SERVICE_STOP_UNCONFIRMED`, exit 1.
+No successful result is emitted on uncertainty. Inspect the instance and existing
+logs before any explicit retry; do not assume failure means the command did not run.
+The internal `requestServiceStop()` helper is now asynchronous and must be awaited;
+the CLI retains `service.mjs stop` and `{accepted:true}` for a verified acknowledgment.
+
+The listener caps connections at 16 and each connection at 4096 received bytes,
+1024 bytes per JSON frame and a two-second absolute lifetime. These are local
+resource bounds, not a guarantee against local denial of service or OS hangs.
+The channel is not HTTP/MCP, must never be proxied by a tunnel or exposed remotely,
+and changes neither browser delegation nor the public MCP transport.
+
+Install matching service/runtime/control scripts only after stopping the old
+supervisor with its matching old command or permitted wrapper. New clients fail
+closed for old owner records; old marker writers cannot stop a new service. Any
+legacy marker left in a lock is untouched, and existing release checks may refuse
+that unexpected evidence rather than delete it. No state migration is needed.
+
+Removing the stop file eliminates its create/read/unlink races, including Windows
+late links and same-inode edits of that file. It does NOT eliminate the separate
+runtime ownership/discovery file trust boundary. Lock creation/recovery/release,
+private directory ACLs, canonical configuration intent and same-account capability
+access remain requirements. A process that reads the private key can authorize
+control; hostile users with that access, administrator privilege or process memory
+access are not isolated. Forged/stale discovery cannot change the live key, but can
+deny access. Do not delete evidence, replace locks or downgrade to files on failure.
 
 An explicit service stop disables further restarts but does not certify a clean
 worker exit. The supervisor preserves a nonzero child exit code in its own exit
 status and final `service_exited` log; signal-only termination yields 1 and retains
 the original signal in `worker_exited`. A clean child exit, or a stop during backoff
 with no child left to drain, still yields 0. `service.mjs stop` returning
-`accepted:true` confirms only the stop marker, not the eventual supervisor exit.
+`accepted:true` confirms authenticated stop acceptance, not the eventual supervisor exit.
 A retained worker lock after failed release remains evidence for inspection, not
 permission to delete it or to restart automatically.
 

@@ -340,7 +340,7 @@ test('actual supervisor death permits verified drain or dead-owner recovery and 
       jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'get_task', arguments: { token: task.token } },
     }) });
     assert.equal((await reply.json()).result.structuredContent.status, 'running');
-    requestServiceStop(env); await second.exit;
+    await requestServiceStop(env); await second.exit;
     assert.equal(existsSync(join(dir, 'worker.lock')), false);
     assert.equal(existsSync(join(dir, 'service.lock')), false);
   } catch (error) {

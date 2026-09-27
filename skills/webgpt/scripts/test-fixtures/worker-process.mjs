@@ -14,6 +14,11 @@ if (new URL(import.meta.url).search === '?ephemeral') {
   const listen = Server.prototype.listen;
   let index = 0;
   Server.prototype.listen = function(port, host, callback) {
+    // The supervisor's separate control listener already requests a kernel port.
+    // Do not count it as either of the child's two configured HTTP listeners.
+    if (arguments.length === 1 && port?.host === '127.0.0.1' && port.port === 0
+        && port.exclusive === true && Object.keys(port).sort().join(',') === 'exclusive,host,port')
+      return listen.call(this, port);
     if (arguments.length !== 3 || !Number.isInteger(port) || port !== expected[index++]
         || host !== '127.0.0.1' || typeof callback !== 'function')
       throw Error('unexpected worker fixture listener');
