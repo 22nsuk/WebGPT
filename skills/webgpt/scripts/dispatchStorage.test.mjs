@@ -6,7 +6,7 @@ import crypto from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { syncBuiltinESMExports } from 'node:module';
-import { registerDispatch, prepareDispatch, dispatchPrompt, inspectDispatch, dispatchCli,
+import { registerDispatch, prepareDispatch, beginDispatch, dispatchPrompt, inspectDispatch, dispatchCli,
   dispatchDiagnostic, textDigest } from './dispatch.mjs';
 
 const limit = 2 * 1024 * 1024;
@@ -43,6 +43,66 @@ function redacted(error, f) {
   const value = JSON.stringify(dispatchDiagnostic(error));
   for (const privateText of [f.dir, prompt, 'PRIVATE_FIXTURE_ONLY', target.tabId]) assert.ok(!value.includes(privateText));
 }
+
+for (const held of [true, false]) test(`pre-lock displaced inode metadata does not bypass ${held ? 'the current owner' : 'the committed send barrier'}`, async t => {
+  const f = await fixture(t), lock = f.file + '.dispatch.lock';
+  if (held) fs.writeFileSync(lock, 'another parent owns publication', { mode: 0o600 });
+  else await beginDispatch(f.file, { prompt, observation: ready() });
+  const bytes = fs.readFileSync(f.file), lstat = fs.lstatSync;
+  let observed = false;
+  await patched(t, { lstatSync(file, ...args) {
+    const info = lstat(file, ...args);
+    if (file === f.file && !observed) {
+      observed = true;
+      // Model a path lookup returning metadata for an inode displaced by the
+      // owner's atomic publication. The locked read must inspect the live file.
+      info.nlink = 0;
+    }
+    return info;
+  } }, () => assert.rejects(prepareDispatch(f.file, ready()), {
+    code: held ? 'DISPATCH_LOCKED' : 'DISPATCH_BLOCKED',
+  }));
+  assert.equal(observed, true);
+  assert.deepEqual(fs.readFileSync(f.file), bytes);
+  if (held) assert.equal(fs.readFileSync(lock, 'utf8'), 'another parent owns publication');
+  else assert.equal(fs.existsSync(lock), false);
+});
+
+test('an actual displaced POSIX inode cannot preempt the active publication lock', {
+  skip: process.platform === 'win32' && 'Windows refuses replacement of this open fixture file',
+}, async t => {
+  const f = await fixture(t), fd = fs.openSync(f.file, 'r'), replacement = join(f.dir, 'replacement.json');
+  try {
+    fs.writeFileSync(replacement, f.before, { mode: 0o600 });
+    fs.renameSync(replacement, f.file);
+    const displaced = fs.fstatSync(fd);
+    assert.equal(displaced.nlink, 0);
+    const lock = f.file + '.dispatch.lock';
+    fs.writeFileSync(lock, 'publishing owner', { mode: 0o600 });
+    const lstat = fs.lstatSync;
+    let observed = false;
+    await patched(t, { lstatSync(file, ...args) {
+      if (file === f.file && !observed) { observed = true; return displaced; }
+      return lstat(file, ...args);
+    } }, () => assert.rejects(prepareDispatch(f.file, ready()), { code: 'DISPATCH_LOCKED' }));
+    assert.equal(observed, true);
+    assert.deepEqual(fs.readFileSync(f.file), f.before);
+    assert.equal(fs.readFileSync(lock, 'utf8'), 'publishing owner');
+  } finally { fs.closeSync(fd); }
+});
+
+test('unlinked ledger metadata is still rejected by the locked read', async t => {
+  const f = await fixture(t), lstat = fs.lstatSync;
+  let reads = 0;
+  await patched(t, { lstatSync(file, ...args) {
+    const info = lstat(file, ...args);
+    if (file === f.file) { reads++; info.nlink = 0; }
+    return info;
+  } }, () => assert.rejects(prepareDispatch(f.file, ready()), { code: 'DISPATCH_LEDGER' }));
+  assert.ok(reads >= 2, 'validation includes a fresh lookup after acquiring the lock');
+  assert.deepEqual(fs.readFileSync(f.file), f.before);
+  assert.equal(fs.existsSync(f.file + '.dispatch.lock'), false);
+});
 
 for (const kind of ['regular', 'directory', 'symlink', 'dangling', 'hardlink']) {
   test(`dispatch preserves an existing ${kind} stage instead of cleaning unowned evidence`, async t => {

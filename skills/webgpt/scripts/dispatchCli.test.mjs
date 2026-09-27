@@ -157,8 +157,9 @@ for (const attachments of [false, true]) test(`CLI v${attachments ? 2 : 1} seque
   assert.deepEqual(Object.keys(registered.value), expectedKeys);
   fs.writeFileSync(f.payload, JSON.stringify({ prompt, observation: ready() }));
   const begins = await Promise.all([cli(['begin', f.file, f.payload]), cli(['begin', f.file, f.payload])]);
-  assert.equal(begins.filter(value => value.code === 0).length, 1);
-  assert.ok(begins.filter(value => value.code !== 0).every(value => ['DISPATCH_LOCKED', 'DISPATCH_BLOCKED'].includes(value.value.code)));
+  const evidence = JSON.stringify(begins.map(result => ({ exitCode: result.code, result: safe(result.value, f) })));
+  assert.equal(begins.filter(value => value.code === 0).length, 1, evidence);
+  assert.ok(begins.filter(value => value.code !== 0).every(value => ['DISPATCH_LOCKED', 'DISPATCH_BLOCKED'].includes(value.value.code)), evidence);
   const sending = fs.readFileSync(f.file);
   fs.writeFileSync(f.payload, '{"bad":"' + secret);
   const invalid = await cli(['confirm', f.file, f.payload]);

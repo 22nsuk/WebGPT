@@ -216,7 +216,13 @@ async function withLedger(file, work) {
     // Do not create directories or change ACLs. Every parent must use the same canonical ledger.
     stage = 'ledger_path';
     file = join(realpathSync(dirname(file)), basename(file));
-    if (regularFile(file)) file = realpathSync(file);
+    const candidate = fileInfo(file);
+    if (candidate) {
+      if (!candidate.isFile() || candidate.isSymbolicLink()) fail('LEDGER');
+      file = realpathSync(file);
+    }
+    // A publisher may replace the inode during the path lookup above. Validate
+    // link count, size and opened identity only after acquiring its shared lock.
     lock = file + '.dispatch.lock';
     owner = JSON.stringify({ pid: process.pid, instanceId: randomUUID() });
     stage = 'lock_acquire';

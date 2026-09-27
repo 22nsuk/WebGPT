@@ -302,7 +302,8 @@ test('actual supervisor death permits verified drain or dead-owner recovery and 
   const launch = () => {
     const parent = spawn(process.execPath, ['--input-type=module', '-e', source], { env, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
     const observed = observeChild(parent);
-    const item = { ...observed, parent, workerPid: null, ports: null };
+    const item = { ...observed, parent, workerPid: null, ports: null, streamsClosed: false };
+    observed.closed.then(() => { item.streamsClosed = true; });
     parent.on('message', value => {
       if (value.workerPid) item.workerPid = value.workerPid;
       if (value.ports) { item.ports = value.ports; config.mcpPort = value.ports.mcpPort; config.controlPort = value.ports.controlPort; }
@@ -327,7 +328,10 @@ test('actual supervisor death permits verified drain or dead-owner recovery and 
     // A surviving child must drain through IPC; a killed child leaves ownership
     // evidence that the replacement must verify and archive before starting.
     const workerLock = join(dir, 'worker.lock');
-    await until(() => !existsSync(workerLock) || processState(first.workerPid) === 'dead', undefined, 'orphan worker drain');
+    // A disappearing lock is not a completed child exit: release unlinks owner.json
+    // before removing the directory. Wait for the owned descendant and inherited
+    // output pipes to finish before classifying any remaining recovery evidence.
+    await until(() => first.streamsClosed && fixtureProcessTerminated(first.workerPid), undefined, 'orphan worker drain');
     const needsRecovery = existsSync(workerLock);
     if (needsRecovery) {
       assert.equal(processState(first.workerPid), 'dead');
