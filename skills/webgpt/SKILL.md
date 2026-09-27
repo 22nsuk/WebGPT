@@ -60,10 +60,13 @@ Do independent authorized parent work while the worker runs; do not race its fil
 
 1. **Establish the actual route.** Identify the installed skill path, local Node host, connected
    browser/profile and required project connector, not just their names. Run
-   `node <skill>/scripts/client.mjs dispatch preflight` in ordinary Node before registration.
-   This checks only the helper runtime. CUA is for browser controls, never a Node filesystem/lock/
-   controller host. A merged PR, enabled file-URL toggle or `/health` is not end-to-end readiness.
-   Use [setup.md](references/setup.md) only for missing capability or installation work.
+   `node <skill>/scripts/client.mjs dispatch preflight` in ordinary Node once per unchanged parent
+   session/host/install/configuration; it checks only the helper runtime. Reuse that evidence and
+   the verified connection identity, not cached per-task permissions or UI state. Recheck affected
+   capabilities after restart, configuration/endpoint/schema/account/profile changes or an error.
+   CUA is for browser controls, never a Node filesystem/lock/controller host. A merged PR,
+   file-URL toggle or `/health` is not end-to-end readiness. Use [setup.md](references/setup.md)
+   only for missing capability or installation work; do not repeat setup for every healthy task.
 2. **Register when needed.** Follow [workspace.md#per-task](references/workspace.md#per-task).
    Give the exact project root `read` for review or `edit` for changes, not per-file allowlists;
    keep runtime data outside it. Text/research can omit the workspace or use no connector.
@@ -72,7 +75,8 @@ Do independent authorized parent work while the worker runs; do not race its fil
    attachments are a separate delivery route, not interchangeable with `read_input` or file tools.
    Verify required direct file access in the selected chat; if absent, report the blocked part,
    never silently implement returned patches yourself. Patch-only delivery requires a request.
-3. **Dispatch once.** Read [dispatch.md](references/dispatch.md) before a transmission. Use one
+3. **Dispatch once.** Follow [dispatch.md](references/dispatch.md); reuse instructions already read
+   at this installed revision instead of rereading unchanged documents per task. Use one
    canonical private task ledger containing objective, ownership, allowed inputs/actions, target
    and recovery tab/URL IDs, outputs, work/cleanup state, disposition and last backup check.
    Verify actual mode: `xh|xhigh` = Extra High (default), `p|pro` = Pro; never silently substitute.
@@ -84,16 +88,21 @@ Do independent authorized parent work while the worker runs; do not race its fil
    observe all files ready before sending and same-message `userMessage.attachmentNames` before
    `confirm`. Only the successful begin owner continues; v2 metadata is not remote-byte/parsing proof.
    Keep legacy evidence and independent attachment review; no silent record upgrade/reset.
-4. **Wait for owned work.** Follow [workspace.md](references/workspace.md): use `waitForTasks` or
-   `client.mjs wait <owned-task-id> ...`. Empty renewals remain in the active client process.
-   Inspect on an event, recovery signal or due backup; every **15 minutes**, check each due unfinished
-   chat once. This is not a task timeout. No repeated full snapshots, idle narration or resend because
-   work continues. A finished result without a callback is still collected. An empty event queue is
-   not an idle worker; use `client.mjs tasks` when inventory is needed. No after-final wake-up is supplied.
-5. **Verify and collect.** Save the full result/evidence, inspect relevant diffs and key claims, run
-   focused authorized checks, and record accepted/rejected/partial disposition. Then use `collectTask`
-   or `client.mjs collect <task-id>` per [workspace.md](references/workspace.md); this verifies saved
-   bytes and acknowledges receipt. Integrity is not correctness or proof of reported tests. Inspect
+4. **Wait and read for review.** For one owned task, use `reviewTask` or
+   `client.mjs review <owned-task-id>`: it waits and returns the verified full result as `review.content`
+   without collecting. See [result-review.md](references/result-review.md). Use `waitForTasks` or
+   `client.mjs wait <owned-task-id> ...` for metadata-only or multiple-task waits. Empty renewals stay
+   in the client. A null `review` is not success: handle the returned recovery/interruption/due-backup
+   or settled-without-event notice. Every **15 minutes**, inspect each due unfinished chat once;
+   this is not a task timeout. No repeated full snapshots, idle narration or resend because work
+   continues. An empty event queue is not an idle worker; use `tasks` when inventory is needed.
+   No after-final wake-up is supplied. Retained/interrupted work uses the recovery route below.
+5. **Verify and collect.** Use the verified body already returned for this review rather than reopening
+   it just to display it. Preserve result/evidence, inspect relevant diffs and key claims, run focused
+   authorized checks, and record accepted/rejected/partial disposition. Then use `collectTask` or
+   `client.mjs collect <task-id>` per [workspace.md](references/workspace.md); collection still freshly
+   verifies bytes, recovery and retirement. Do not duplicate its successful post-check with a routine
+   full `reconcile`. Integrity is not correctness or proof of reported tests. Inspect
    accumulated tool calls once by exact call identity/target, not quoted errors or repeated panel views.
    Collect each finished task promptly, remove terminal tasks from periodic checks, cancel abandoned
    registrations/deadlines and end terminal-batch waits. Preserve partial failures and verification progress.
