@@ -226,34 +226,84 @@ Run `preflight` in ordinary Node before controller registration. It returns
 `{"runtime":"node","ready":true}` when the local dispatch helper can load; it does not establish
 browser, connector, controller or project readiness. Keep those checks separate.
 
-`begin.json` has exactly `{"prompt":"...","observation":{...readiness...}}`. A separate `prepare`
-call is optional: `begin` captures and validates fresh readiness itself. Only after a successful
-`begin` may the parent make the one fill/send call, followed by a narrowly observed confirmation.
-If that call throws or its response is lost, run `recover` and inspect; do not run `begin` again.
+Wait for `register` to finish successfully before calling `begin` on the same ledger. Programmatic
+callers must `await` each in order, not launch them together with `Promise.all`. A separate `prepare`
+is optional: `begin` captures and validates fresh readiness itself. Its private payload has exactly
+`prompt` and `observation`, not the registration spec or a bare readiness object:
+
+```json
+{
+  "prompt": "Review the assigned task and return the requested evidence.",
+  "observation": {
+    "target": {"tabId": "owned-tab", "chatUrl": "https://chatgpt.com/c/example-conversation"},
+    "mode": "pro",
+    "connectorSelected": true,
+    "approvalPending": false,
+    "composerSha256": null,
+    "lastUserMessageId": "previous-user-message"
+  }
+}
+```
+
+These are illustrative values, not observed UI evidence. Use the registered prompt and freshly
+observed owned-target readiness. Only the caller whose `begin` succeeds may continue that
+uninterrupted attempt: upload if required, observe readiness, fill/send once, then confirm from the
+actual new message. After a lost response or interrupted attempt, use the reconciliation table
+below; never repeat `begin` to find out whether the earlier action ran.
 
 Text-only helper/dispatch CLI results contain only `state`, `mode`, `connectorRequired`,
 `uiPrepared`, `submissionConfirmed`, `resendBlocked`, `needsInspection` and a fixed `reason` code.
 Version-2 attachment tasks additionally expose `requiredAttachmentCount` and `attachmentEvidenceConfirmed`;
-filenames remain private.
-No prompt, task token, task/tab/message ID, conversation URL, digest or raw error is printed.
-Invalid JSON diagnostics also omit source excerpts. A CLI exit of zero means the state operation
-was recorded, **not** that sending succeeded: check `state` and `submissionConfirmed`.
-CLI failures use allowlisted `code`, `stage` and `reason` fields. Interpret those fields rather
-than treating a rejected Promise's raw text as a safe diagnostic; do not print private payloads,
-raw exception messages or stack traces while investigating an error.
+filenames remain private. A CLI exit of zero means the state operation succeeded, **not** that
+sending succeeded: check `state` and `submissionConfirmed`.
+
+Failures retain exactly `code`, `stage`, `reason`, `message`, with fixed text and WeakMap-backed
+trusted diagnostics. No prompt, token, path, tab/chat/message identity, digest, JSON excerpt or
+stack is printed. `<action>` below means one of the fixed supported command names, never an echoed
+unknown argument. Existing storage, lock, ledger-validation and resend-blocked diagnostics retain
+their meanings.
+
+| Stage | Reason examples | Interpretation |
+| --- | --- | --- |
+| `cli_arguments` | `invalid_arguments`, `unknown_action`, `begin_arguments_invalid` | Invalid argument vector, unsupported action or wrong action-specific argument count; no file access. |
+| `cli_arguments` | `<action>_ledger_path_invalid`, `<action>_payload_path_invalid` | Expected an absolute ledger `.json` path or absolute payload path; no file access. |
+| `payload_read` | `<action>_payload_missing`, `<action>_payload_file_invalid` | Missing payload, unsafe type/link, oversized data or changed file identity; not a corrupt task ledger diagnosis. I/O failures still use `DISPATCH_STORAGE` and its fixed reason. |
+| `payload_decode` | `<action>_payload_utf8_invalid`, `<action>_payload_json_invalid` | Payload bytes could not be decoded or parsed; no parser excerpt and no ledger mutation. |
+| `payload_validate` | `register_input_shape_invalid`, `begin_input_shape_invalid` | Wrong top-level routing fields, rejected before taking a ledger lock. |
+| `payload_validate` | `begin_input_invalid`, `prepare_input_invalid`, `register_input_invalid` | A core input/observation check rejected the value. Existing readiness, stored-ledger and conflict checks are not relabeled as input errors. |
+
+A decodable but incomplete `confirm` observation deliberately keeps the existing behavior: it
+records `uncertain`/`evidence_unconfirmed` and can exit zero, or refuses to downgrade `submitted`.
+Invalid JSON cannot reach that check and leaves the prior state unchanged. Neither case permits a
+resend. An input error describes this invocation; it does not prove that no earlier attempt ran.
+`DISPATCH_LOCKED` is not an instruction to add `await` and retry: another parent may own the lock.
+Inspect ownership and retained state rather than stealing the lock, registering a replacement ID
+or uploading again. Interpret trusted diagnostics instead of printing rejected Promises or payloads.
+
 Existing controller commands retain their contracts; notably controller `register` still returns
 a private task token. Consume that result privately, not as general diagnostic output. The compact
 projection does not sanitize separate browser-tool logs; constrain their returned observations too.
 
 ## Interruption and reconciliation
 
-On resumption, run the existing controller readiness/reconciliation checks and match owned tasks
-against the same private ledger. `inspect` only summarizes it; `recover` changes an interrupted
-`sending` to `uncertain`, never to ready and never sends. A timeout during partial typing is not
-proof of no submission. Inspect the owned draft/chat and saved controller result before deciding
-what happened. `confirmDispatch`/CLI `confirm` can accept later matching evidence for the original
-attempt. A controller-completed task can be collected even if its UI dispatch record is uncertain;
-there is no need to resend or manufacture `submitted` to reconcile completion.
+On resumption, use the existing controller readiness/reconciliation checks and match owned tasks
+to the same private ledger. `inspect` summarizes recorded evidence, not the live UI; `recover`
+changes interrupted `sending` to `uncertain`, never to ready and never sends. Keep UI submission,
+result collection and final-answer completion as separate observations:
+
+| Observed state | Next permitted step | Boundary |
+| --- | --- | --- |
+| `registered`/`prepared`, no previous attempt | Verify fresh owned UI and inputs, then continue the existing sequential `begin` path. | A sample or stored summary cannot replace live readiness. |
+| `sending`/`uncertain` | Inspect the original chat, required attachments and controller; use late matching evidence to `confirm` the original attempt. | No new begin, upload, send, ledger or replacement task to bypass uncertainty. |
+| Controller terminal, dispatch uncertain | Collect the verified saved result through the existing conditional collection checks when recovery is clear. | Collection does not establish UI submission, attachment bytes/use, result quality or completed final chat text. Do not manufacture `submitted`. |
+| Recovery warnings or uncommitted result | Preserve source/result/journal candidates and obtain the authorized recovery disposition. | No normal collection or `/ack` bypass, journal reset or automatic replay. |
+| Already collected | Reuse the verified disposition and finish independent final-answer observation/preservation. | Do not repeat collection, whole-system checks or transmission merely to clear a UI uncertainty. |
+
+Collect a verified terminal result promptly to retire its task token; do not keep authority live
+solely while waiting for chat text. `submit_result` closes project-file access and backup deadlines,
+not the independent final answer. Submission or collection alone never authorizes pressing Stop,
+cancelling generation or deleting the chat. Preserve the completed final answer before closing the
+owned tab, following [parent-workflow.md](parent-workflow.md) and [chat-lifecycle.md](chat-lifecycle.md).
 
 A forcibly terminated high-level caller may leave `<ledger>.dispatch.lock`. No TTL/PID-only stealing
 is performed. Preserve the lock and ledger; establish that every relevant parent is stopped and
@@ -274,7 +324,12 @@ response loss, partial typing, connector-only bodies, target/mode/approval misma
 evidence, forced process termination, publication failures, lock conflicts and output redaction.
 `dispatchAttachments.test.mjs` additionally exercises version-1 compatibility, declared attachment
 requirements, incomplete/mismatched evidence, duplicate begins and fresh-process CLI resumption using
-explicit UI fixtures. These tests are not a live signed-in ChatGPT/connector/browser end-to-end run. Verify the actual
+explicit UI fixtures. `dispatchCli.test.mjs` checks action-specific diagnostics, refusal before
+ledger writes, forged diagnostics, v1/v2 CLI compatibility and real Worker conditional collection
+independent of uncertain UI records, including recovery refusal. The repository test runner discovers
+all three files without a separate runtime or new workflow.
+
+These tests are not a live signed-in ChatGPT/connector/browser end-to-end run. Verify the actual
 adapter's supported controls and evidence contract in the authorized environment before routine use.
 No token/latency savings or new transport/backend compatibility is claimed; measurement is a
 separate follow-up after the minimum dispatch changes.

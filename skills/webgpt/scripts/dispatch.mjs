@@ -30,9 +30,14 @@ const defaults = {
 };
 const storageStages = ['payload_read', 'ledger_path', 'lock_acquire', 'ledger_read', 'ledger_write',
   'ledger_publish'];
-const diagnosticStages = new Set([...Object.values(defaults).map(([stage]) => stage), ...storageStages, 'lock_release']);
+const cliActions = ['preflight', 'inspect', 'recover', 'register', 'prepare', 'begin', 'confirm'];
+const cliReasons = ['arguments_invalid', 'ledger_path_invalid', 'payload_path_invalid', 'payload_missing',
+  'payload_file_invalid', 'payload_utf8_invalid', 'payload_json_invalid', 'input_shape_invalid', 'input_invalid'];
+const diagnosticStages = new Set([...Object.values(defaults).map(([stage]) => stage), ...storageStages,
+  'lock_release', 'cli_arguments', 'payload_decode', 'payload_validate']);
 const diagnosticReasons = new Set([...Object.values(defaults).map(([, reason]) => reason),
-  'not_found', 'permission_denied', 'storage_full', 'lock_owner_changed', 'lock_release_failed']);
+  'not_found', 'permission_denied', 'storage_full', 'lock_owner_changed', 'lock_release_failed',
+  'invalid_arguments', 'unknown_action', ...cliActions.flatMap(action => cliReasons.map(reason => action + '_' + reason))]);
 const diagnostics = new WeakMap();
 class DispatchError extends Error {
   constructor(code, stage = defaults[code][0], reason = defaults[code][1]) {
@@ -408,20 +413,47 @@ export async function dispatchPrompt(file, prompt, adapter) {
 export async function dispatchCli(args) {
   preflightDispatchRuntime();
   try {
-    if (!Array.isArray(args)) fail('INPUT');
-    if (args.length === 1 && args[0] === 'preflight') return preflightDispatchRuntime();
+    if (!Array.isArray(args) || !args.length || Array.from(args).some(value => typeof value !== 'string'))
+      throw new DispatchError('INPUT', 'cli_arguments', 'invalid_arguments');
     const [action, file, payloadFile] = args;
+    if (!cliActions.includes(action)) throw new DispatchError('INPUT', 'cli_arguments', 'unknown_action');
+    // Only a fixed, validated action can enter a public reason. No supplied values are copied.
+    const inputError = (reason, stage) => new DispatchError('INPUT', stage, action + '_' + reason);
     const noPayload = { inspect: inspectDispatch, recover: recoverDispatch };
     const withPayload = { register: registerDispatch, prepare: prepareDispatch, begin: beginDispatch, confirm: confirmDispatch };
-    if (args.length === 2 && Object.hasOwn(noPayload, action)) return await noPayload[action](file);
-    if (args.length !== 3 || !Object.hasOwn(withPayload, action) || !isAbsolute(payloadFile)) fail('INPUT');
+    const count = action === 'preflight' ? 1 : Object.hasOwn(noPayload, action) ? 2 : 3;
+    if (args.length !== count) throw inputError('arguments_invalid', 'cli_arguments');
+    if (action === 'preflight') return preflightDispatchRuntime();
+    if (!isAbsolute(file) || !file.endsWith('.json')) throw inputError('ledger_path_invalid', 'cli_arguments');
+    if (Object.hasOwn(noPayload, action)) return await noPayload[action](file);
+    if (!isAbsolute(payloadFile)) throw inputError('payload_path_invalid', 'cli_arguments');
     let bytes;
     try { bytes = readBytes(payloadFile); }
-    catch (error) { throw error instanceof DispatchError ? error : storageError(error, 'payload_read'); }
-    if (bytes === null) fail('INPUT');
-    let payload;
-    try { payload = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)); } catch { fail('INPUT'); }
-    return await withPayload[action](file, payload);
+    catch (error) {
+      if (diagnostics.get(error)?.code === 'DISPATCH_LEDGER') throw inputError('payload_file_invalid', 'payload_read');
+      throw error instanceof DispatchError ? error : storageError(error, 'payload_read');
+    }
+    if (bytes === null) throw inputError('payload_missing', 'payload_read');
+    let text, payload;
+    try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
+    catch { throw inputError('payload_utf8_invalid', 'payload_decode'); }
+    try { payload = JSON.parse(text); }
+    catch { throw inputError('payload_json_invalid', 'payload_decode'); }
+    // Reject routing-envelope mistakes before acquiring a ledger lock. The core
+    // validators still own values, UI readiness, persisted state and send safety.
+    try {
+      if (action === 'register') keys(payload, ['taskId', 'mode', 'prompt', 'target'], ['connectorRequired', 'requiredAttachments']);
+      if (action === 'begin') keys(payload, ['prompt', 'observation']);
+    } catch { throw inputError('input_shape_invalid', 'payload_validate'); }
+    // Do not prevalidate confirm observations: decodable but incomplete evidence
+    // must still persist uncertain (or refuse downgrading submitted), not bypass it.
+    try { return await withPayload[action](file, payload); }
+    catch (error) {
+      const trusted = diagnostics.get(error);
+      if (trusted?.code === 'DISPATCH_INPUT' || trusted?.code === 'DISPATCH_OBSERVATION')
+        throw new DispatchError(trusted.code.slice('DISPATCH_'.length), 'payload_validate', action + '_input_invalid');
+      throw error;
+    }
   } catch (error) {
     throw error instanceof DispatchError ? error : new DispatchError('INPUT');
   }
