@@ -97,8 +97,14 @@ function snapshot(path) {
 // Optional bounded reads keep the original whole-file snapshot/revision contract.
 // Return complete lines (including their original endings); never silently drop a long-line tail.
 export function readWorkspace(grant,path,options={}) {
-  const range=readWindowOptions(options);
+  if(!options || typeof options!=='object' || Array.isArray(options))throw Error('invalid read options');
+  const {expectedSha256,...window}=options;
+  if(expectedSha256!==undefined && (typeof expectedSha256!=='string' || !/^[0-9a-f]{64}$/.test(expectedSha256)))
+    throw Error('invalid expectedSha256');
+  const range=readWindowOptions(window);
   const result={path,...snapshot(target(grant,path))};
+  // Bind subsequent windows to one whole-file revision without a snapshot cache.
+  if(expectedSha256!==undefined && result.sha256!==expectedSha256)throw Error('file revision conflict; read again');
   return range&&result.exists?{...result,...textWindow(result.text,range)}:result;
 }
 // Readiness needs directory access, not a sorted, revision-hashed listing.
@@ -189,14 +195,26 @@ export function inspectRecovery(dir, taskId) {
   return {receipts,unresolved};
 }
 
-export function changeWorkspace(grant,dir,taskId,{path,text,expectedSha256},deleting=false) {
+export function changeWorkspace(grant,dir,taskId,{path,text,expectedSha256,oldText},deleting=false) {
   if(expectedSha256!==null && (typeof expectedSha256!=='string' || !/^[0-9a-f]{64}$/.test(expectedSha256))) throw Error('expectedSha256 required (null only for create)');
-  if(!deleting && (typeof text!=='string' || text.includes('\0') || Buffer.byteLength(text)>MAX_BYTES)) throw Error('text must be <=1 MiB');
+  if(!deleting && (typeof text!=='string' || !text.isWellFormed() || text.includes('\0') || Buffer.byteLength(text)>MAX_BYTES)) throw Error('text must be <=1 MiB');
+  if(oldText!==undefined && (deleting || expectedSha256===null || typeof oldText!=='string' || !oldText
+      || !oldText.isWellFormed() || oldText.includes('\0') || Buffer.byteLength(oldText)>MAX_BYTES))
+    throw Error('oldText requires nonempty UTF-8 text and an existing file revision');
   // Validate scope before creating any directory.
   relativeFile(path);
   if(!grant || grant.mode!=='edit') throw Error('workspace absent or read-only');
   const file=target(grant,path,true,!deleting && expectedSha256===null), before=snapshot(file);
   if(before.sha256!==expectedSha256 || deleting && !before.exists) throw Error('file revision conflict; read before changing');
+  if(oldText!==undefined) {
+    const offset=before.text.indexOf(oldText);
+    // Exactly one literal match, including overlapping occurrences. No regex,
+    // fuzzy matching, newline normalization or substitution-string expansion.
+    if(offset<0 || before.text.indexOf(oldText,offset+1)!==-1)throw Error('oldText must match exactly once');
+    if(oldText===text)throw Error('replacement would not change the file');
+    text=before.text.slice(0,offset)+text+before.text.slice(offset+oldText.length);
+    if(Buffer.byteLength(text)>MAX_BYTES)throw Error('resulting text must be <=1 MiB');
+  }
   const permissions=before.exists?lstatSync(file):null;
   if(!deleting && process.platform!=='win32' && permissions && (permissions.mode & 0o7000))throw Error('editing special-mode files is not supported');
   const recovery=resolve(dir,'recovery',taskId);mkdirSync(recovery,{recursive:true,mode:0o700});

@@ -20,6 +20,8 @@ API models for requested web ChatGPT work. Use only documented, authorized brows
   complete the assigned outcome with the tools actually available, submit the deliverable and
   limitations, then finish a user-facing final chat answer. For delegated GitHub publication,
   read [GitHub workflow](references/github-workflow.md) before declaring a capability unavailable.
+  For code changes, use [development-loop.md](references/development-loop.md) for exact text edits
+  and check-evidence handoff; this adds no execution authority.
   Make no further project/tool changes after submission. Skip the parent-only sections below.
   Do not start a nested parent workflow, invent/reuse
   an old token, or treat missing parent CLI/Git access as proof that granted file work is impossible.
@@ -48,6 +50,8 @@ tools can provide publication, CI and review operations under their own authoriz
 current tools before assigning those steps to the parent. Missing local Git or shell is not evidence
 that remote GitHub writes are unavailable. The parent runs local checks when needed and verifies the
 actual contribution. See [GitHub workflow](references/github-workflow.md) for ownership and completion.
+For development, agree on check ownership up front and return related failures with their actual
+revision/exit status in one handoff; see [development-loop.md](references/development-loop.md).
 
 Use one chat for coherent work and related follow-ups. Split only genuinely independent outcomes
 with disjoint writes; order dependent steps. Reduce concurrency on throttling, not by cloning tasks.
@@ -113,7 +117,10 @@ Do independent authorized parent work while the worker runs; do not race its fil
 Never bypass action-time confirmations, copy cookies, use private browser APIs or touch unrelated tabs.
 Return only bounded owned-target evidence; keep prompts/tokens, IDs, URLs, full transcripts and raw
 browser errors private. Read before changing files, follow `nextCursor`/`nextOffset`, compare whole-file
-SHA across read windows, and read the full file before replacement; preserve others' edits and backups.
+SHA across read windows (pin `read_file.expectedSha256` when supported), and read the full file before
+full replacement. For a local correction, `write_file.oldText` may select one exact span from relevant
+context with the same whole-file SHA; preserve others' edits and backups. Never drop `oldText` as a
+fallback to an older worker: that would replace the whole file with only the replacement span.
 
 <a id="resume-and-service-recovery"></a>
 

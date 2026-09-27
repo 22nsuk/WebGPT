@@ -8,6 +8,7 @@ const root = fileURLToPath(new URL('../', import.meta.url));
 const files = directory => readdirSync(new URL('../' + directory + '/', import.meta.url), { withFileTypes: true })
   .flatMap(entry => entry.isDirectory() ? files(directory + '/' + entry.name)
     : entry.isFile() && entry.name.endsWith('.test.mjs') ? [directory + '/' + entry.name] : []).sort();
+const feedback = fileURLToPath(new URL('../skills/webgpt/scripts/test-feedback.mjs', import.meta.url));
 const installation = 'tests/installation.test.mjs';
 const phases = [
   ['repository', [...files('skills/webgpt/scripts'), ...files('tests').filter(file => file !== installation)]],
@@ -15,7 +16,8 @@ const phases = [
 ];
 for (const [name, tests] of phases) {
   console.log('WebGPT test phase: ' + name);
-  const child = spawn(process.execPath, ['--test', '--test-concurrency=2', '--test-reporter=tap', ...tests], {
+  const child = spawn(process.execPath, ['--test', '--test-concurrency=2', '--test-reporter=tap',
+    `--test-reporter=${feedback}`, '--test-reporter-destination=stdout', '--test-reporter-destination=stderr', ...tests], {
     cwd: root, stdio: 'inherit', windowsHide: true,
   });
   const code = await new Promise((resolve, reject) => {
