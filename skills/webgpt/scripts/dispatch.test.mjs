@@ -469,7 +469,7 @@ test('client dispatch CLI output and malformed-input stderr are bounded and priv
   assert.equal(run.status, 1);
   assert.equal(run.stdout, '');
   assert.deepEqual(JSON.parse(run.stderr.trim().replace(/^WebGPT: /, '')), {
-    code: 'DISPATCH_INPUT', stage: 'input', reason: 'invalid_input', message: 'invalid private dispatch input',
+    code: 'DISPATCH_INPUT', stage: 'payload_decode', reason: 'begin_payload_json_invalid', message: 'invalid private dispatch input',
   });
   safe(run.stderr);
 });
