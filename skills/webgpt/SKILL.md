@@ -60,8 +60,13 @@ complete the separate UI/quality review before collection. Do not run them on ev
   yourself or claim edits. Patch-only delivery requires a request. File access adds no Git/PR/push,
   process-control or out-of-scope authority. Text-only work needs no connector.
 
-Prepare prompt, mode, attachments and any callback registration before typing. Persist `sending`
-before the send-capable call using `dispatchPrompt` or `client.mjs dispatch begin`. Fill and immediately
+Prepare prompt, mode and any callback registration before typing. For required attachments, follow
+[file-uploads.md](references/file-uploads.md): retain their requirements in the original private task
+record, verify the browser/profile and source host, and use split CLI `dispatch begin` **before the first
+upload**. Only the parent whose begin succeeds may continue that attempt. Observe all required files
+ready before filling the body; missing or unobservable files block sending. Preserve uncertain attempts,
+never omit required files, substitute project access, or retry uploads on resume. For text-only work,
+`dispatchPrompt` or CLI `begin` persists `sending` before the send-capable call. Fill and immediately
 submit in one browser-tool call using observed controls where supported. No snapshot, round trip,
 commentary or fixed sleep between them; wait only for Send to become actionable. Verify afterward.
 Use the bounded observation contract in [dispatch.md](references/dispatch.md): return only the
@@ -69,9 +74,11 @@ selected mode/connector, approval state, composer digest and the exact owned tar
 Keep target identifiers and payload files private; never return the sidebar, other chats, full
 transcripts, prompt/token text or raw browser errors. Do not bypass action-time tool confirmations.
 A click, cleared composer or assistant activity is not submission proof. Confirm the actual new user
-message against the saved baseline and full prepared body. On timeout (including partial character
-entry), missing evidence or interruption, preserve `sending`/`uncertain` and inspect the retained chat
-and controller; never automatically type the remainder, resend, or create replacement work.
+message against the saved baseline and full prepared body. For required files, verify attachments on
+that same message **before** CLI `confirm`; otherwise keep `sending`/`uncertain` and retain any valid body
+evidence for recovery. The helper itself validates only body/target evidence, not files. On timeout,
+missing evidence or interruption, inspect the original requirements, chat and controller; never
+automatically re-upload, type the remainder, resend, or create replacement work.
 For navigation, mode/connector selection and panel actions, observe the expected URL, menu or
 control transition after the action. A returned click is not completion. If unchanged, inspect the
 current control/state before another action; do not blind-reclick or add a fixed sleep.
