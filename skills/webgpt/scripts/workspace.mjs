@@ -6,18 +6,21 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { readBytesUpTo } from './bounded-read.mjs';
 import { readWindowOptions, textWindow } from './text-window.mjs';
+import { windowsReplacementFailure } from './windows-replacement-diagnostics.mjs';
 
 const MAX_BYTES = 1024 * 1024;
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const metadata = path => { try { return lstatSync(path); } catch (e) { if (e.code === 'ENOENT') return null; throw e; } };
-function windowsReplacement(action,file,temporary,expectedSha256) {
+function windowsReplacement(action,file,temporary,expectedSha256,context) {
   const executable=resolve(process.env.SystemRoot || 'C:\\Windows','System32/WindowsPowerShell/v1.0/powershell.exe');
   const helper=fileURLToPath(new URL('./replace-workspace-file.ps1',import.meta.url));
-  const result=spawnSync(executable,['-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',helper,action],{
-    input:JSON.stringify({file,temporary,expectedSha256}),encoding:'utf8',windowsHide:true,maxBuffer:64*1024,
-  });
-  if(result.error)throw result.error;
-  if(result.status!==0)throw Error(`Windows permission-preserving replacement failed: ${result.stderr.trim() || result.signal || result.status}`);
+  let result;
+  try {
+    result=spawnSync(executable,['-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',helper,action],{
+      input:JSON.stringify({file,temporary,expectedSha256}),encoding:'utf8',windowsHide:true,maxBuffer:64*1024,
+    });
+  } catch(error) {result={error};}
+  if(result.error||result.status!==0||result.signal)throw windowsReplacementFailure(action,result,context);
 }
 // Native aliases can resolve through non-UTF-8 names even when the supplied
 // string is well formed. Never use a replacement-character spelling as a path.
@@ -218,7 +221,7 @@ export function changeWorkspace(grant,dir,taskId,{path,text,expectedSha256},dele
       // POSIX creation also starts private; chmod below applies the exact mode,
       // independently of umask, after chown. Special-mode edits are rejected above.
       if(process.platform==='win32') {
-        windowsReplacement('prepare',file,temporary);
+        windowsReplacement('prepare',file,temporary,undefined,{recovery,operation});
         created=true;
       }
       const fd=openSync(temporary,constants.O_RDWR|constants.O_NOFOLLOW
@@ -242,7 +245,7 @@ export function changeWorkspace(grant,dir,taskId,{path,text,expectedSha256},dele
       if(current.dev!==permissions.dev || current.ino!==permissions.ino || current.mode!==permissions.mode
           || current.uid!==permissions.uid || current.gid!==permissions.gid)throw Error('file permissions or identity changed');
       replacementAttempted=true;
-      if(process.platform==='win32')windowsReplacement('replace',file,temporary,expectedSha256);
+      if(process.platform==='win32')windowsReplacement('replace',file,temporary,expectedSha256,{recovery,operation});
       else renameSync(temporary,file);
     } finally {
       // ReplaceFile can fail after moving the original or merging its streams.

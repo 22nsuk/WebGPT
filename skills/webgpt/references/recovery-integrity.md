@@ -71,6 +71,94 @@ workspace/recovery snapshots and diagnostic reads, each with its existing limit;
 introduces no new size cap on the worker's committed task inventory. It is a byte-budget
 bound, not a transaction, read-timeout, hostile-filesystem sandbox or total-heap guarantee.
 
+## Windows replacement failure diagnostics
+
+A failing Windows prepare/replace helper now returns only a bounded, versioned
+envelope. The ordinary MCP error contains `WINDOWS_REPLACEMENT_FAILED`, the action,
+last reported stage, diagnostic status, operation ID, `diagnosticSaved`, and
+`recoveryReviewRequired=true`. A verified revision mismatch also retains the fixed
+`file revision conflict` wording. No raw stderr/stdout, exception message, stack,
+file path, process arguments or credentials are copied into this error.
+This covers the Windows helper boundary, not a general redaction of every worker error.
+
+The helper records at most four outer-to-inner exceptions using fixed type names
+(or `unknown`), signed 32-bit `hresult` values and an explicit `NativeErrorCode` only
+for `Win32Exception`. The Node validator accepts at most 4096 UTF-8 bytes and checks
+exact fields, action/stage/reason combinations, numeric ranges and chain bounds.
+The private evidence adds `win32Code` and `win32Source`: either `native_error_code`
+or the exact `0x8007xxxx` error layout, `hresult_from_win32`. Other HRESULT low bits
+are not decoded as OS errors. Null means unavailable, and `chainTruncated=true`
+means deeper causes were not recorded. Even a mapped code identifies reported
+error metadata, not the program holding a handle or a proven historical cause.
+
+| Reported stage | What it locates | What it does not establish |
+| --- | --- | --- |
+| `read_request`, `read_source_acl` | Request decoding or source security-descriptor access. | That native replacement was attempted. |
+| `create_private_stage`, `verify_stage_ownership` | Protected stage preparation or owner/group validation. | Ownership of a colliding stage, or permission to remove it. |
+| `verify_source_revision` with `revision_conflict` | The helper's explicit size/hash mismatch check. | Which writer changed the source, or permission to overwrite it. |
+| `native_replace` | The helper reached the File.Replace call site. | Native API completion, unchanged original bytes, or the exact OS cause. |
+| `unknown` | No validated stage was received. | Success, a retryable error, or absence of partial changes. |
+
+`diagnosticStatus` distinguishes `structured`, `missing_output`, `invalid_output`,
+`oversized_output`, `output_limit`, `process_error`, `process_interrupted` and
+`process_unconfirmed`. Truncated JSON is invalid output, not a partially trusted
+envelope. Process failures preserve only a fixed code vocabulary (otherwise
+`unknown`); they do not prove whether the child reached an API. No fallback parses
+English error text or prints the original process error. A structured diagnostic
+with reason `unknown` and no exceptions means the helper could not build details.
+
+After the existing backup and prepared journal, a helper failure attempts exactly
+one exclusive, flushed write of at most 4096 bytes to the private runtime's
+`recovery/<task-id>/<operation>.diagnostic.txt`. Match its operation to the canonical
+`<operation>.json` and original `<operation>.before.txt`, plus any workspace
+`.webgpt-<operation>.tmp`. The diagnostic includes no file-content/status snapshot:
+inspect the actual source, backup and stage separately with the existing type,
+single-link, size and hash checks. These are observations, not a transaction.
+
+The `.diagnostic.txt` suffix is intentionally not `.json` or `.json.tmp`:
+`inspectRecovery` continues to scan only mutation journals, without treating
+diagnostics as receipts or weakening validation of other JSON records. Windows
+storage relies on the same configured private runtime ACLs as backups; POSIX
+creation uses mode 0600. Do not grant access or change ACLs to get a diagnostic saved.
+For manual inspection, first establish a regular, non-linked file within the bound.
+Keep recovery evidence private and out of ordinary logs and PR attachments.
+
+`diagnosticSaved=true` means that write/flush returned successfully, not that the
+file is still intact or survives every storage failure. `false` can leave no file,
+a preserved partial file, or a pre-existing entry; it does not erase any of them.
+Diagnostic save failure leaves the original replacement failure authoritative,
+without another retry, cleanup or global storage-state transition. In particular,
+it cannot turn the edit into success, promote a prepared journal or clear quarantine.
+The original backup, journal and any stage remain the primary recovery evidence.
+
+Stop further writes for the affected task and compare the retained evidence before
+deciding its disposition. File.Replace can fail after partial moves/metadata work;
+an old `readonly=false` observation or ACL comparison does not identify the cause.
+
+| Current target observation | Supervisor interpretation and next decision |
+| --- | --- |
+| Content SHA equals `beforeSha256` | Original content is present at observation time; do not infer that no intermediate operation occurred or immediately retry. |
+| Content SHA equals `afterSha256`, but journal is prepared | Expected content is present without a committed mutation receipt. Do not promote the journal or bypass collection. |
+| Missing, changed, wrong type, linked or unreadable | Preserve all candidates; investigate and obtain an explicit recovery decision. Never automatically overwrite with the backup. |
+| Diagnostic missing or partial | Preserve primary evidence and report unavailable details; do not reconstruct an OS code or repeat the edit to obtain one. |
+
+The affected task remains unable to write/delete or submit `completed`; it can
+retain partial output through `failed`. Conditional collection still refuses
+unresolved recovery. Other tasks remain usable. Do not use `/ack`, a replacement
+token, journal initialization, deletion-then-copy, ignored metadata errors or a
+blanket retry to bypass this uncertainty. Explicit cancellation/discard remains a
+separate disposition, not successful collection or recovery of the original attempt.
+
+Before deployment, run `scripts/windowsReplacementDiagnostics.test.mjs`,
+`scripts/workspacePermissions.test.mjs` and `scripts/recoveryIntegrity.test.mjs`
+under the repository's test workflow. The permissions suite reuses a real Windows
+sharing lock and actual helper-startup SHA conflict, retaining source/backup/stage
+and ACL/owner/group checks. Diagnostic tests distinguish synthetic error envelopes,
+injected partial moves/storage failures, and actual Worker/MCP isolation/collection
+checks from native OS reproductions. Non-Windows skips are not Windows passes.
+Full repository/installed-layout and supported Node/Windows checks are still needed;
+none of these tests establishes the cause of a past incident or measured speedup.
+
 ## Mutation journals are checked in both directions
 
 Each applied journal must agree with its recorded state receipt, and each recorded
@@ -222,6 +310,10 @@ Do not enable infinite wrapper retries to turn a data error into a restart loop.
 
 Relevant official contracts:
 
+- [Windows ReplaceFile failure states and metadata](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-replacefilew)
+- [Exception.HResult](https://learn.microsoft.com/en-us/dotnet/api/system.exception.hresult?view=netframework-4.8.1)
+- [Win32Exception.NativeErrorCode](https://learn.microsoft.com/en-us/dotnet/api/system.componentmodel.win32exception.nativeerrorcode?view=netframework-4.8.1)
+- [HRESULT_FROM_WIN32 mapping](https://learn.microsoft.com/en-us/windows/win32/api/winerror/nf-winerror-hresult_from_win32)
 - [Node IPC disconnect](https://nodejs.org/docs/latest-v24.x/api/process.html#event-disconnect)
 - [Node child-process exit, disconnect and kill behavior](https://nodejs.org/docs/latest-v24.x/api/child_process.html)
 - [Node filesystem flags and flush behavior](https://nodejs.org/docs/latest-v24.x/api/fs.html)
