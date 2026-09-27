@@ -10,17 +10,36 @@ Select the existing GitHub app in the same task chat alongside the project conne
 needed. Before dispatch begins, observe each required app selected and record their identities in
 the existing private task ledger's parent-owned fields. The dispatch boolean `connectorSelected`
 does not identify or prove selection of both apps; do not extend its strict observation schema.
-Inspect the available tools or the host's supported tool search before reporting a missing
-capability. A plugin title, old skill description, user report or parent-session tool inventory is
-useful context; the worker must still discover its own callable operations. Do not treat missing
-local `git`/`gh` as a failed GitHub authorization check.
 
-Discover the operations required by the assignment: repository/ref reads, branch and file or Git
-object writes, commit/ref updates, PR creation, commit-specific CI runs/jobs/logs, and review
-comments/threads. These may be lazy-loaded and need separate searches. Current tool schemas govern
-arguments, supported actions and pagination; do not invent names or assume all GitHub apps expose
-the same features. Instructions that universally require CLI for commits, pushes or Actions logs
-must be checked against those schemas before using that fallback.
+For an assigned publication, use this order before declaring a capability blocked or retrying a write:
+
+1. Discover the current worker's own callable operations through its available tools or supported
+   tool search: repository/ref reads, branch and file or Git-object writes, commit/ref updates and PR
+   creation. Also discover CI runs/jobs/logs and review comments/threads when assigned. Tools may be
+   lazy-loaded; inspect current schemas and pagination. A plugin title, old skill description, user
+   report or parent-session inventory does not establish the worker's capabilities.
+2. Read the exact repository and base ref through the intended GitHub connection without mutation.
+   Confirm accessibility and the base SHA before writing. A successful read proves that read only,
+   not write permission; do not create a probe branch or PR merely to test access.
+3. Keep local workspace/container evidence separate from the GitHub connection. Missing `git`/`gh`,
+   container DNS failures and WebGPT MCP's lack of Git operations do not prove connector failure.
+   Check CLI-only instructions against the discovered GitHub schemas before choosing a fallback.
+4. If an authorized write fails, diagnose that specific call using its sanitized response. For a
+   `403`, distinguish repository access, the endpoint's required `Contents` or `Pull requests`
+   permissions, `Workflows` permission when applicable, and branch protection/rulesets. Also check
+   for rate limits; a `403` alone is not proof of missing write permission. Use response details and
+   exposed headers such as `X-Accepted-GitHub-Permissions` when available, without assuming the
+   connector exposes them. Honor denials and required approvals; do not broaden permissions.
+5. Before retrying a failed or ambiguous write, respect any rate-limit wait and re-read the affected
+   ref, commit or PR through the same connection. Match the intended branch, parent/tree or PR
+   head/base to determine whether the write already succeeded. Continue from confirmed state; retry
+   only an operation shown not to have taken effect after addressing its failure. If the outcome
+   cannot be determined, retain the evidence and report that specific blocker instead of repeating
+   the mutation, force-updating a ref or creating a duplicate branch/commit/PR.
+
+For response-specific permission and rate-limit interpretation, consult
+[GitHub's REST API troubleshooting guidance](https://docs.github.com/en/rest/using-the-rest-api/troubleshooting-the-rest-api).
+Do not invent tool names or assume all GitHub apps expose the same features.
 
 Distinguish an undiscovered tool, an unavailable operation, repository authorization denial,
 mandatory approval, and an invalid call. A failure of one operation does not establish that all
@@ -41,10 +60,10 @@ them from CI tests that actually ran.
 Resolve the exact repository, base revision and task branch before writing. Reuse an existing task
 branch/PR only after reconciling ownership and current state. Preserve unrelated files and changes.
 For Git-object operations, retain the existing tree, preserve file modes, create the intended commit
-with the observed parent, and update only the task branch without force. If a write response is lost
-or a branch has advanced, inspect the existing ref/commit/PR before another mutation; do not assume
-the write failed or overwrite concurrent work. A local workspace receipt does not prove remote
-publication: compare the final remote diff with the intended files and record the commit SHA.
+with the observed parent, and update only the task branch without force. Re-read a branch that has
+advanced and reconcile concurrent work before another mutation; do not overwrite it. A local
+workspace receipt does not prove remote publication: compare the final remote diff with the
+intended files and record the commit SHA.
 
 When the worker also edited a local checkout through MCP, remote commits do not update that
 checkout's HEAD or index. The parent must fetch the published ref and compare HEAD, index, current
