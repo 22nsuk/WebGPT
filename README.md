@@ -39,7 +39,11 @@ Codex는 변경 내용을 검토하고 로컬 테스트 결과를 확인해줘.
 
 For repository work, WebGPT reads the assigned project directly through a `read` or `edit`
 grant; it can choose relevant files without repeated copy/paste or per-file permission requests.
-WebGPT edits project text, and Codex reviews the changes and runs local checks and Git operations.
+WebGPT edits project text, and Codex reviews the changes and runs needed local checks.
+When assigned direct publication, web ChatGPT can use separately connected GitHub tools for
+supported branch/commit/PR operations and CI/review follow-through. Discover the actual tools;
+the file worker's lack of shell access does not establish that GitHub writes are unavailable.
+See the [GitHub workflow](skills/webgpt/references/github-workflow.md).
 Research that needs no local files can use a text-only task. The
 [practical usage guide (한국어)](skills/webgpt/references/usage.md) covers review, implementation,
 research, follow-ups, parallel ownership and interruption recovery with example prompts.

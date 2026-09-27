@@ -17,7 +17,9 @@ API models for requested web ChatGPT work. Use only documented, authorized brows
   acceptance criteria; independent duplicate analysis is appropriate only when requested/justified.
 - **Assigned worker:** a current private task token and connector assignment identify this role.
   Read `get_task` through the selected connector, use supplied inputs and the granted project, then
-  submit the actual deliverable and limitations, then finish a user-facing final chat answer.
+  complete the assigned outcome with the tools actually available, submit the deliverable and
+  limitations, then finish a user-facing final chat answer. For delegated GitHub publication,
+  read [GitHub workflow](references/github-workflow.md) before declaring a capability unavailable.
   Make no further project/tool changes after submission. Skip the parent-only sections below.
   Do not start a nested parent workflow, invent/reuse
   an old token, or treat missing parent CLI/Git access as proof that granted file work is impossible.
@@ -41,8 +43,11 @@ unrelated data, arbitrary titles/preambles and chat-cleanup instructions.
 
 The seven MCP tools are the local project/result bridge, not the limit of the web model's reasoning.
 Use separately available research/tools only when the task permits them; do not assume they exist.
-The bridge grants no shell, Git/PR/push or process-control authority. The parent runs authorized local
-tests/builds and integration. Missing worker shell alone does not block analysis or text-file editing.
+The bridge grants no shell, Git/PR/push or process-control authority. Separately connected GitHub
+tools can provide publication, CI and review operations under their own authorization; discover the
+current tools before assigning those steps to the parent. Missing local Git or shell is not evidence
+that remote GitHub writes are unavailable. The parent runs local checks when needed and verifies the
+actual contribution. See [GitHub workflow](references/github-workflow.md) for ownership and completion.
 
 Use one chat for coherent work and related follow-ups. Split only genuinely independent outcomes
 with disjoint writes; order dependent steps. Reduce concurrency on throttling, not by cloning tasks.

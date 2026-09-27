@@ -160,8 +160,9 @@ This is the protocol available to the worker, not a sequence to copy into ordina
 
 With no workspace grant, only `get_task`, `read_input` and `submit_result` are available to the task.
 
-The service rejects stale revisions, symlinks/hardlinks, traversal and Git metadata access; Git
-remains the parent's responsibility. The same metadata-name check applies to every path component
+The service rejects stale revisions, symlinks/hardlinks, traversal and Git metadata access.
+Separate authorized GitHub tools do not bypass or change this file-access boundary.
+The same metadata-name check applies to every path component
 and directory listing: case variants of `.git`, trailing dots/spaces, `GIT~1` and NTFS stream
 aliases are protected on every platform. `.gitignore`, `.gitattributes`, `.gitmodules` and `.github`
 remain ordinary project files. Existing components are also checked by their native filesystem
@@ -224,8 +225,11 @@ installs, Git or interactive programs through this worker. State checks it could
 not run as NOT_RUN. Codex reviews executable changes and runs relevant checks using
 the project's verified workflow within the user's existing authorization. Return
 the necessary failure output to the retained chat for a focused correction; if the
-previous task has ended, register a new task token in that chat. Git integration
-remains with Codex. Do not add shell access to resolve a missing verification step.
+previous task has ended, register a new task token in that chat. These limits apply
+to this worker, not separately connected GitHub tools. When the user assigns direct
+publication, discover those tools and follow [GitHub workflow](github-workflow.md);
+missing local Git does not establish missing remote write authority. Do not add
+shell access to resolve a missing verification step.
 See [fork-policy.md](fork-policy.md) for execution risks and isolation requirements.
 
 ## Completion and lifecycle
