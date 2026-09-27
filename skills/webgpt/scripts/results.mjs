@@ -31,14 +31,27 @@ function readCandidate(file) {
   } finally { closeSync(fd); }
 }
 
-export function verifySavedResult(event, dir) {
+function verifiedResultBytes(event, dir) {
   const [artifact] = paths(dir, event.id);
   if (typeof event.artifact !== 'string' || resolve(event.artifact) !== artifact)
     throw Error('unexpected saved result path');
   const saved = readCandidate(artifact);
   if (!saved) throw Object.assign(Error('ENOENT: saved result is missing'), { code: 'ENOENT' });
   if (saved.sha256 !== event.sha256) throw fault('RESULT_INVALID', 'saved result integrity mismatch');
+  return saved.bytes;
+}
+
+export function verifySavedResult(event, dir) {
+  verifiedResultBytes(event, dir);
   return 'verified';
+}
+
+// Return the exact bytes that passed the existing path/link/size/SHA checks,
+// decoded once. Never verify then reopen a potentially different file to display.
+export function readVerifiedResult(event, dir) {
+  const bytes = verifiedResultBytes(event, dir);
+  try { return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes); }
+  catch { throw fault('RESULT_INVALID', 'saved result is not valid UTF-8'); }
 }
 
 function flushCandidate(file, bytes) {

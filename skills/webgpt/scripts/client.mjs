@@ -2,7 +2,7 @@ import { readFileSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, isAbsolute } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { verifySavedResult } from './results.mjs';
+import { readVerifiedResult, verifySavedResult } from './results.mjs';
 import { setTimeout as delay } from 'node:timers/promises';
 
 // Decode user-authored local JSON without silently replacing invalid wire bytes.
@@ -150,6 +150,19 @@ export async function waitForTasks(ids, config = configuration(), { signal, retr
 
 export function verifyResult(event, config) {
   return verifySavedResult(event, config.dataDir);
+}
+
+// One parent call waits and reads the verified result, but never accepts work,
+// collects, cancels, clears a backup deadline, or hides a recovery notice.
+export async function reviewTask(id, config = configuration(), options = {}) {
+  const snapshot = await waitForTasks([id], config, options);
+  options.signal?.throwIfAborted();
+  if (snapshot.events.length > 1 || snapshot.events.some(event => !['completed', 'failed', 'cancelled'].includes(event.status)))
+    throw Object.assign(Error('worker returned an invalid result event'), { code: 'RESULT_INVALID' });
+  const blocked = snapshot.interrupted || snapshot.recoveryRequired?.length || snapshot.resultRecoveryRequired?.length;
+  const event = blocked ? undefined : snapshot.events[0];
+  const review = event ? { ...event, content: readVerifiedResult(event, config.dataDir), integrity: 'verified' } : null;
+  return { ...snapshot, review, browserChecked: false };
 }
 
 // Verify saved bytes before acknowledgment; this is not a code-quality verdict.
@@ -304,6 +317,10 @@ if (process.argv[1] && process.argv[1] !== '-' && import.meta.url === pathToFile
       const saved = args[0] === '--file' ? readJsonFile(args[1])
         : args.length === 1 && !isTaskId(args[0]) ? readJsonFile(args[0]) : null;
       result = await waitForTasks(saved ? saved.ids ?? [saved.id] : args);
+    } else if (action === 'review') {
+      if (args.length !== 1 || !isTaskId(args[0]))
+        throw Object.assign(Error('usage: client.mjs review <task-id>'), { code: 'REVIEW_USAGE' });
+      result = await reviewTask(args[0]);
     } else if (action === 'collect') {
       const resume = args[0] === '--resume';
       if (args.length !== (resume ? 2 : 1)) throw Error('usage: client.mjs collect [--resume] <task-id>');
@@ -325,6 +342,11 @@ if (process.argv[1] && process.argv[1] !== '-' && import.meta.url === pathToFile
     if (action === 'dispatch') {
       const { dispatchDiagnostic } = await import('./dispatch.mjs');
       console.error('WebGPT: ' + JSON.stringify(dispatchDiagnostic(error)));
+    } else if (action === 'review') {
+      // Do not echo a controller body, native path, result content or credentials.
+      const code = ['REVIEW_USAGE', 'RESULT_INVALID', 'STATE_INVALID', 'ENOENT'].includes(error.code) ? error.code : 'REVIEW_FAILED';
+      console.error('WebGPT: ' + JSON.stringify({ code, message: code === 'REVIEW_USAGE'
+        ? 'usage: client.mjs review <task-id>' : 'result review failed; preserve evidence and inspect the owned task' }));
     } else if (action === 'collect'
         && ['COLLECTION_UNCONFIRMED', 'COLLECTION_RECOVERY_REQUIRED', 'COLLECTION_DISCARDED', 'COLLECTION_UNSUPPORTED'].includes(error.code)) {
       // Collection diagnostics never serialize raw causes, snapshots or paths.
