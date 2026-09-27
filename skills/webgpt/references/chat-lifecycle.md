@@ -11,12 +11,27 @@ so the user can revisit the context and evidence.
 Track work (`RUNNING → COLLECTED → VERIFIED` or `FAILED/CANCELLED`) separately from cleanup.
 The default cleanup path is `PENDING → CHAT_RETAINED → DONE`; only explicitly requested deletion
 uses `PENDING → CHAT_DELETED → DONE`. Either path can be `BLOCKED` with a reason/next action.
-Retaining a chat is successful cleanup, not a blocker. After saving output and recording its
-accepted/rejected/partial disposition, including failures:
+Retaining a chat is successful cleanup, not a blocker. Track final chat-answer status separately
+from controller work/collection in the existing private ledger: pending, complete, interrupted or
+unobserved, with the actual evidence. This is parent bookkeeping, not a new worker state or schema.
+Successful `submit_result` closes project-file access and ends controller backup deadlines;
+collection/acknowledgment retires the token. Neither proves final chat-answer completion.
+After saving output and recording its accepted/rejected/partial disposition, including failures:
 
-1. Stop remaining owned generation. Never erase active work, uncollected output or its only copy.
-   Acknowledge collected results or cancel abandoned registrations per workspace.md regardless
-   of chat retention; retained chats must not keep task tokens or backup checks active.
+1. Verify and collect submitted results promptly per workspace.md, even if the final chat answer
+   is still being written. Do not keep task tokens or controller backup checks active for that
+   answer. Continue waiting for the owned chat's final answer independently; a settled controller
+   wait cannot observe it. Check once at collection, then on a relevant browser event or each
+   15-minute parent backup check while it remains pending. Do not repeatedly poll, resend, reload
+   active generation, or press Stop merely because submission/collection succeeded.
+   Require a substantive final answer and observed generation completion; a cleared composer,
+   tool result, absent Stop button alone, or "stopped" message is insufficient. Preserve the final
+   answer and compare material claims with the saved result. A disagreement or new caveat needs
+   a recorded disposition, not silent replacement of the collected artifact.
+   Stop generation only for an explicit user cancellation or a concrete safety reason. Record an
+   interruption as such, retain partial output and do not claim the final answer was received.
+   If access is lost, preserve the pending chat and report the missing observation; no new task or
+   after-final wake-up is implied. Never erase active work, uncollected output or its only copy.
 2. By default, record `CHAT_RETAINED` and preserve the chat without opening Delete or Archive.
    Delete a chat only when the user explicitly requests deletion of that chat or a clearly
    identified set of task chats. A chat being a test or disposable does not itself grant consent.
@@ -24,8 +39,9 @@ accepted/rejected/partial disposition, including failures:
    For requested deletion, verify the exact owned chat, accept only its matching dialog, then verify
    redirect/unavailability and exact Recent entry disappearance where exposed. Tab closure, model
    claims or unrelated navigation are not deletion proof. Preserve saved results/evidence.
-3. Close the exact terminal task-owned tabs after collection, whether the chats are retained or
-   explicitly deleted, including recovery duplicates and tabs redirected to home. Recheck IDs/current
+3. Close the exact terminal task-owned tabs only after collection and final-answer completion, or
+   a recorded explicit cancellation/interruption, whether the chats are retained or explicitly
+   deleted, including recovery duplicates and tabs redirected to home. Recheck IDs/current
    URLs against the ledger; preserve unrelated or repurposed tabs and the browser. Keep the saved
    URLs for retained chats. Verify those task-tab IDs are absent from the tab list; do not open a
    replacement home tab. If closure fails, preserve the retention/deletion disposition and report

@@ -32,6 +32,16 @@ const evidence=file=>ps(`$acl=[IO.File]::GetAccessControl($request.file);
     protected=$acl.AreAccessRulesProtected;
     users=@($acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])|Where-Object {$_.IdentityReference.Value -eq 'S-1-5-32-545'}).Count;
     rules=@($acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])|ForEach-Object {$_.IdentityReference.Value})}|ConvertTo-Json`,{file});
+function diagnosticEvidence(f,taskId) {
+  const recovery=inspectRecovery(f.dir,taskId);
+  assert.equal(recovery.receipts.length,0);assert.equal(recovery.unresolved.length,1);
+  const entry=JSON.parse(fs.readFileSync(recovery.unresolved[0],'utf8'));
+  const bytes=fs.readFileSync(join(f.dir,'recovery',taskId,entry.operation+'.diagnostic.txt'),'utf8');
+  assert.ok(Buffer.byteLength(bytes)<=4096);
+  for(const privateValue of [f.file,f.root,f.path])assert.equal(bytes.includes(privateValue),false);
+  const diagnostic=JSON.parse(bytes);assert.equal(diagnostic.operation,entry.operation);
+  return diagnostic;
+}
 
 for(const restricted of [true,false])test(`Windows edit preserves ${restricted?'restricted':'inherited'} DACL and owner/group, including private staging`,{skip:!windows},()=>fixture(f=>{
   ps(`$users=[Security.Principal.SecurityIdentifier]::new('S-1-5-32-545');
@@ -67,6 +77,7 @@ for(const restricted of [true,false])test(`Windows edit preserves ${restricted?'
   assert.equal(fs.readFileSync(f.file,'utf8'),'changed 한국어');
   assert.equal(fs.readFileSync(receipt.backup,'utf8'),'original');
   assert.deepEqual(inspectRecovery(f.dir,'permissions'),{receipts:[receipt],unresolved:[]});
+  assert.equal(fs.readdirSync(join(f.dir,'recovery','permissions')).some(name=>name.endsWith('.diagnostic.txt')),false);
   assert.deepEqual(fs.readdirSync(f.root),[f.path]);
 }));
 
@@ -80,13 +91,23 @@ test('Windows native replacement failure preserves original and prepared recover
   try {
     const ready=await Promise.race([once(child.stdout,'data').then(([data])=>data.toString().trim()),exited.then(()=>{throw Error(errors||'lock child exited');})]);
     assert.equal(ready,'ready');
-    assert.throws(()=>changeWorkspace(f.grant,f.dir,'permissions',{path:f.path,text:'changed',expectedSha256:revision}),/permission-preserving replacement failed/);
+    assert.throws(()=>changeWorkspace(f.grant,f.dir,'permissions',{path:f.path,text:'changed',expectedSha256:revision}),error=>{
+      assert.equal(error.code,'WINDOWS_REPLACEMENT_FAILED');assert.equal(error.diagnosticSaved,true);
+      assert.equal(error.recoveryReviewRequired,true);assert.equal(error.message.includes(f.path),false);
+      return true;
+    });
     assert.equal(fs.readFileSync(f.file,'utf8'),'original');
     assert.equal(evidence(f.file).sddl,before.sddl);
     const recovery=inspectRecovery(f.dir,'permissions');assert.equal(recovery.receipts.length,0);assert.equal(recovery.unresolved.length,1);
     const entry=JSON.parse(fs.readFileSync(recovery.unresolved[0],'utf8'));
     assert.equal(entry.state,'prepared');assert.equal(fs.readFileSync(entry.backup,'utf8'),'original');
     assert.equal(fs.readFileSync(join(f.root,`.webgpt-${entry.operation}.tmp`),'utf8'),'changed');
+    const diagnostic=diagnosticEvidence(f,'permissions');
+    assert.equal(diagnostic.diagnosticStatus,'structured');assert.equal(diagnostic.action,'replace');
+    assert.equal(diagnostic.stage,'native_replace');assert.equal(diagnostic.reason,'exception');
+    assert.ok(diagnostic.exceptions.length>0&&diagnostic.exceptions.length<=4);
+    assert.ok(diagnostic.exceptions.some(entry=>Number.isInteger(entry.hresult)));
+    // The observed code is retained, not hard-coded as proof of a historical cause.
   } finally {child.stdin.end('\n');await exited;}
 }));
 
@@ -101,6 +122,11 @@ test('Windows replacement rechecks revision after helper startup',{skip:!windows
   finally {childProcess.spawnSync=originalSpawn;syncBuiltinESMExports();}
   assert.equal(changed,true);assert.equal(fs.readFileSync(f.file,'utf8'),'concurrent edit');
   assert.equal(inspectRecovery(f.dir,'permissions').unresolved.length,1);
+  const diagnostic=diagnosticEvidence(f,'permissions');
+  assert.equal(diagnostic.diagnosticStatus,'structured');assert.equal(diagnostic.action,'replace');
+  assert.equal(diagnostic.stage,'verify_source_revision');assert.equal(diagnostic.reason,'revision_conflict');
+  assert.equal(fs.readFileSync(join(f.root,`.webgpt-${diagnostic.operation}.tmp`),'utf8'),'replacement');
+  assert.equal(fs.readFileSync(join(f.dir,'recovery','permissions',diagnostic.operation+'.before.txt'),'utf8'),'original');
 }));
 
 test('staging creation collision preserves the unowned file and recovery evidence',()=>fixture(f=>{
@@ -130,6 +156,11 @@ test('staging creation collision preserves the unowned file and recovery evidenc
   assert.equal(recovery.receipts.length,0);assert.equal(recovery.unresolved.length,1);
   const prepared=JSON.parse(fs.readFileSync(recovery.unresolved[0],'utf8'));
   assert.equal(prepared.state,'prepared');assert.equal(fs.readFileSync(prepared.backup,'utf8'),'original');
+  if(windows) {
+    const diagnostic=diagnosticEvidence(f,'collision');
+    assert.equal(diagnostic.diagnosticStatus,'structured');assert.equal(diagnostic.action,'prepare');
+    assert.equal(diagnostic.stage,'create_private_stage');assert.equal(diagnostic.reason,'exception');
+  }
 }));
 
 test('Windows unconfirmed preparation preserves staging evidence',{skip:!windows},()=>fixture(f=>{
@@ -145,7 +176,10 @@ test('Windows unconfirmed preparation preserves staging evidence',{skip:!windows
     }
     return result;
   };syncBuiltinESMExports();
-  try {assert.throws(()=>changeWorkspace(f.grant,f.dir,'prepare',{path:f.path,text:'changed',expectedSha256:revision}),/fixture preparation confirmation failure/);}
+  try {assert.throws(()=>changeWorkspace(f.grant,f.dir,'prepare',{path:f.path,text:'changed',expectedSha256:revision}),error=>{
+    assert.equal(error.code,'WINDOWS_REPLACEMENT_FAILED');
+    assert.equal(error.message.includes('fixture preparation confirmation failure'),false);return true;
+  });}
   finally {childProcess.spawnSync=originalSpawn;syncBuiltinESMExports();}
   assert.ok(temporary);assert.equal(fs.readFileSync(temporary,'utf8'),'');
   assert.equal(fs.readFileSync(f.file,'utf8'),'original');
@@ -153,6 +187,9 @@ test('Windows unconfirmed preparation preserves staging evidence',{skip:!windows
   assert.equal(recovery.receipts.length,0);assert.equal(recovery.unresolved.length,1);
   const prepared=JSON.parse(fs.readFileSync(recovery.unresolved[0],'utf8'));
   assert.equal(prepared.state,'prepared');assert.equal(fs.readFileSync(prepared.backup,'utf8'),'original');
+  const diagnostic=diagnosticEvidence(f,'prepare');
+  assert.equal(diagnostic.diagnosticStatus,'invalid_output');assert.equal(diagnostic.action,'prepare');
+  assert.equal(diagnostic.stage,'unknown');assert.deepEqual(diagnostic.exceptions,[]);
 }));
 
 for(const failure of ['open','write','sync'])test(`owned staging ${failure} failure cleans only its stage and preserves recovery`,
