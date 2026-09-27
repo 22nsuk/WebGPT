@@ -23,8 +23,8 @@ private**. Use a private payload file or in-memory object, not secret text in sh
 
 `registered -> prepared -> sending -> submitted|uncertain`
 
-Registration is idempotent only for the same task, body digest, mode, connector requirement and
-initial target. It cannot reset any transmission. Preparation records the narrowly observed UI;
+Registration is idempotent only for the same task, body digest, mode, connector requirement,
+required attachment names (when declared) and initial target. It cannot reset any transmission. Preparation records the narrowly observed UI;
 `begin` publishes both readiness and `sending` before any send-capable browser action. The
 high-level helper keeps a per-ledger exclusive lock across its browser calls. Split CLI calls
 release the lock after each saved transition, but `sending` still blocks every subsequent begin.
@@ -75,7 +75,7 @@ For an observed new, empty owned chat, `chatUrl` and the previous user message I
 After sending, retain the actual conversation URL in the confirmation evidence. Existing chat URLs
 must match exactly. An unrelated/reused tab is not an acceptable replacement target.
 
-Call `dispatchPrompt(ledgerPath, preparedPrompt, adapter)`. The adapter contains exactly three
+For text-only tasks, call `dispatchPrompt(ledgerPath, preparedPrompt, adapter)`. The adapter contains exactly three
 callbacks, bound to the parent's **available, documented and authorized browser controls**:
 
 - `observeReady()` reads only the selected mode/required connector, approval state, composer and
@@ -116,7 +116,7 @@ Unicode; it normalizes CRLF/CR to LF and outer whitespace, preserving internal t
 Obtain a stable message identity actually exposed by the allowed browser controls. If that or the
 immediate predecessor cannot be established, leave the transmission uncertain; do not invent it.
 
-Confirmation adds exactly this `userMessage` object. Its outer `lastUserMessageId` must be the new
+Text-only confirmation adds exactly this `userMessage` object. Its outer `lastUserMessageId` must be the new
 ID and `composerSha256` must be `null`. A newly created chat must now have an actual owned URL.
 
 ```json
@@ -134,27 +134,59 @@ composer, Send click, assistant response, old matching message or unrelated chat
 
 ### Required attachments use the split CLI and a deferred confirmation
 
-The strict objects and `submissionConfirmed` validate body/target evidence, not uploaded files.
-Follow [file-uploads.md](file-uploads.md) for required attachments: keep their requirements in the
-original private task record and use split CLI `begin` **before any upload-capable action**. Only the
-caller whose locked begin succeeds may upload and continue that uninterrupted attempt. A failed begin
-or resumed `sending`/`uncertain` state permits inspection, not another upload. Do not use the high-level
-`dispatchPrompt` workflow for these tasks; it automatically confirms the body without this separate gate.
+For a **new attachment-dependent task**, add `requiredAttachments` to the initial private dispatch
+registration specification (not controller registration). Omit it for text-only work:
 
-After begin, upload once and observe all required files ready in the exact owned composer before the
-batched body fill/send. Then verify both body and attachment evidence on the same new user message
-**before** CLI `confirm`. If either check is missing, preserve any valid body observation privately but
-leave `sending`/`uncertain`: this existing durable state marks the post-send check unfinished on resume.
-Do not treat controller completion or `collected:true` as attachment acceptance. Missing original file
-requirements also block claiming the attachment-dependent work verified.
+```json
+"requiredAttachments": ["source-A.pdf", "source-B.csv"]
+```
 
-This ordering reuses existing locking and blocked-attempt states, not a new upload protocol or schema.
-`sendingAt` now precedes upload for this workflow, so recorded confirmation time includes attachment
-preparation and review; it is not send latency. Never invent observation fields, edit dispatch state,
-reset/replay the task or bypass collection integrity. Already body-confirmed older records require an
-independent attachment check; do not erase valid confirmation. UI chips do not prove remote byte
-integrity or successful parsing. Parent content review and explicit partial-result disposition remain
-separate; the helper cannot enforce these instructions on arbitrary browser callers.
+The helper stores a version-2 dispatch record with those immutable names. Re-registering cannot
+change/remove them or upgrade an existing version-1 record. Input order is irrelevant. Use 1–32 unique,
+exact, case-sensitive visible basenames, each at most 255 UTF-8 bytes, with no paths, control characters
+or leading/trailing whitespace. These are local evidence bounds, **not provider upload limits**.
+Duplicate, truncated or ambiguous display names cannot establish identity; stop for inspection rather
+than guessing, silently renaming originals or changing the requirements. Keep source paths/digests
+and stronger identity evidence in the existing private task record, not the bounded observation.
+
+Follow [file-uploads.md](file-uploads.md): verify the actual browser/profile, source host and supported
+upload action. Use split CLI `begin` **before any upload-capable action**. Only the caller whose locked
+begin succeeds may continue that uninterrupted attempt. A failed begin or resumed `sending`/`uncertain`
+state permits inspection, not another upload. For version 2, `dispatchPrompt` rejects with
+`DISPATCH_ATTACHMENTS` before any browser callback; use the split workflow, not a downgraded record.
+
+After begin, upload once and observe every required file ready in the exact owned composer before
+batched body fill/send. Pre-send readiness remains the parent's responsibility. After sending, inspect
+the same actual new user message. Add this field **inside its `userMessage` observation**:
+
+```json
+"attachmentNames": ["source-A.pdf", "source-B.csv"]
+```
+
+Report the complete observed list of ready attachments, not expected names echoed from registration,
+not draft chips and not another message's files. All existing body/target/mode/predecessor checks still
+apply. Missing, duplicate, extra or mismatched names prevent confirmation and leave `uncertain` with
+`evidence_unconfirmed`, inspection required and resending blocked. A subsequent matching observation
+can confirm the original attempt without another begin, upload or send. A second identical confirmation
+is idempotent; incomplete evidence cannot downgrade an already submitted record.
+
+Version-2 compact output adds only `requiredAttachmentCount` and `attachmentEvidenceConfirmed`.
+The latter means matching **reported UI name/count evidence**, not independently verified uploads,
+remote bytes, parsing or model usage. The helper cannot detect fabricated observations, distinguish
+different bytes with the same basename, inspect a browser or enforce instructions on callers that
+bypass it. Do not substitute controller completion or `collected:true` for attachment/content review.
+
+Text-only records and observations remain version 1 with their original output shape. Older helpers
+reject version 2 instead of silently treating it as text-only; install matching parent scripts and
+instructions together before starting new attachment tasks. No worker/MCP schema change is required.
+Do not reset, rewrite or auto-upgrade retained version-1 records. Their body-only `submitted` is still
+valid body evidence, but required attachments need independent review before accepting the work.
+Keep the original requirements and any valid body evidence when a check is unfinished.
+
+This extends the existing ledger schema, not its states/locks or an upload transport. `sendingAt`
+precedes upload here, so confirmation time includes upload/review, not pure send latency. Preserve
+partial results and inspect a confirmed non-submission before an explicit operator decision; no
+automatic retry, repair, replacement task, collection bypass or service change is added.
 
 ## Observe UI transitions and exact tool calls
 
@@ -199,8 +231,10 @@ call is optional: `begin` captures and validates fresh readiness itself. Only af
 `begin` may the parent make the one fill/send call, followed by a narrowly observed confirmation.
 If that call throws or its response is lost, run `recover` and inspect; do not run `begin` again.
 
-Ordinary helper/dispatch CLI results contain only `state`, `mode`, `connectorRequired`,
+Text-only helper/dispatch CLI results contain only `state`, `mode`, `connectorRequired`,
 `uiPrepared`, `submissionConfirmed`, `resendBlocked`, `needsInspection` and a fixed `reason` code.
+Version-2 attachment tasks additionally expose `requiredAttachmentCount` and `attachmentEvidenceConfirmed`;
+filenames remain private.
 No prompt, task token, task/tab/message ID, conversation URL, digest or raw error is printed.
 Invalid JSON diagnostics also omit source excerpts. A CLI exit of zero means the state operation
 was recorded, **not** that sending succeeded: check `state` and `submissionConfirmed`.
@@ -238,7 +272,9 @@ delay token retirement, clear backup checks prematurely, or touch services/ACLs/
 callbacks, real filesystem publication, separate Node processes and the actual client CLI. It covers
 response loss, partial typing, connector-only bodies, target/mode/approval mismatches, stale message
 evidence, forced process termination, publication failures, lock conflicts and output redaction.
-These tests are not a live signed-in ChatGPT/connector/browser end-to-end run. Verify the actual
+`dispatchAttachments.test.mjs` additionally exercises version-1 compatibility, declared attachment
+requirements, incomplete/mismatched evidence, duplicate begins and fresh-process CLI resumption using
+explicit UI fixtures. These tests are not a live signed-in ChatGPT/connector/browser end-to-end run. Verify the actual
 adapter's supported controls and evidence contract in the authorized environment before routine use.
 No token/latency savings or new transport/backend compatibility is claimed; measurement is a
 separate follow-up after the minimum dispatch changes.
