@@ -72,8 +72,8 @@ tradeoff is that WebGPT can edit project text and return evidence, but cannot ru
 build, test, Git or interactive commands through this worker. Separately connected
 GitHub tools can support authorized remote publication and CI/review inspection;
 see [GitHub workflow](github-workflow.md). Codex performs needed local verification
-and returns relevant results for a correction. Scoped waits and collection reduce coordination overhead without
-expanding the delegated task's OS authority. No performance saving is promised.
+and returns relevant results for a correction. Scoped waits and collection reduce
+coordination overhead without expanding the delegated task's OS authority. No performance saving is promised.
 
 Review changed test/build scripts, package lifecycle hooks and other executable
 inputs before the parent runs them. A file-only delegate can still write code

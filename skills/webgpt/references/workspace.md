@@ -160,8 +160,9 @@ This is the protocol available to the worker, not a sequence to copy into ordina
 
 With no workspace grant, only `get_task`, `read_input` and `submit_result` are available to the task.
 
-The service rejects stale revisions, symlinks/hardlinks, traversal and Git metadata access; Git
-remains the parent's responsibility. The same metadata-name check applies to every path component
+The service rejects stale revisions, symlinks/hardlinks, traversal and Git metadata access.
+Separate authorized GitHub tools do not bypass or change this file-access boundary.
+The same metadata-name check applies to every path component
 and directory listing: case variants of `.git`, trailing dots/spaces, `GIT~1` and NTFS stream
 aliases are protected on every platform. `.gitignore`, `.gitattributes`, `.gitmodules` and `.github`
 remain ordinary project files. Existing components are also checked by their native filesystem
