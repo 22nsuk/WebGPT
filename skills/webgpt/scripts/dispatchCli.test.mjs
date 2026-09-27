@@ -221,3 +221,47 @@ for (const recovery of [false, true]) test(`CLI uncertain dispatch collection ${
     assert.equal((await dispatchCli(['inspect', f.file])).submissionConfirmed, false);
   } finally { await worker.close(); }
 });
+
+for (const existing of [false, true]) test(`CLI register diagnoses invalid identity values before touching a ${existing ? 'retained' : 'missing'} ledger`, async t => {
+  const f = fixture(t), original = fs.openSync;
+  if (!existing) fs.unlinkSync(f.file);
+  const before = existing ? fs.readFileSync(f.file) : null;
+  const invalid = [
+    ...[null, 7, '', '../' + secret, 'a'.repeat(81), 'CON', 'cOm1', 'lpt9'].map(taskId => ({ taskId })),
+    ...[null, 7, '', 'Pro', secret].map(mode => ({ mode })),
+  ];
+  let ledgerOpens = 0;
+  fs.openSync = (path, ...args) => {
+    if (typeof path === 'string' && path.startsWith(f.file)) ledgerOpens++;
+    return original(path, ...args);
+  }; syncBuiltinESMExports();
+  try {
+    for (const patch of invalid) {
+      fs.writeFileSync(f.payload, JSON.stringify({ ...spec(), ...patch }));
+      await assert.rejects(dispatchCli(['register', f.file, f.payload]),
+        inputFailure(f, 'payload_validate', 'register_input_invalid'));
+    }
+  } finally { fs.openSync = original; syncBuiltinESMExports(); }
+  assert.equal(ledgerOpens, 0);
+  assert.equal(fs.existsSync(f.file + '.dispatch.lock'), false);
+  if (existing) assert.deepEqual(fs.readFileSync(f.file), before);
+  else assert.equal(fs.existsSync(f.file), false);
+  // Valid registration still works after rejected input without resetting any ledger.
+  fs.writeFileSync(f.payload, JSON.stringify(spec()));
+  assert.equal((await dispatchCli(['register', f.file, f.payload])).state, 'registered');
+});
+
+test('CLI register keeps genuinely invalid retained identity evidence classified as ledger corruption', async t => {
+  const f = fixture(t);
+  await registerDispatch(f.file, spec());
+  const valid = read(f.file);
+  fs.writeFileSync(f.payload, JSON.stringify(spec()));
+  for (const patch of [{ taskId: 'CON' }, { mode: secret }]) {
+    const bytes = JSON.stringify({ ...valid, dispatch: { ...valid.dispatch, ...patch } });
+    fs.writeFileSync(f.file, bytes);
+    await assert.rejects(dispatchCli(['register', f.file, f.payload]),
+      inputFailure(f, 'ledger_validate', 'invalid_ledger', 'DISPATCH_LEDGER'));
+    assert.equal(fs.readFileSync(f.file, 'utf8'), bytes);
+    assert.equal(fs.existsSync(f.file + '.dispatch.lock'), false);
+  }
+});

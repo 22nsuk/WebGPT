@@ -69,6 +69,9 @@ const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const digest = v => typeof v === 'string' && /^[a-f0-9]{64}$/.test(v);
 const opaque = v => typeof v === 'string' && v.length > 0 && v.length <= 512 && !/[\x00-\x20\x7f]/.test(v) && v.isWellFormed();
 const messageId = v => v === null || opaque(v);
+// Share identity rules between stored evidence and new CLI input without relabeling ledger failures.
+const validDispatchIdentity = d => typeof d.taskId === 'string' && /^[a-zA-Z0-9_-]{1,80}$/.test(d.taskId)
+  && !/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(d.taskId) && ['pro', 'xhigh'].includes(d.mode);
 const keys = (v, required, optional = [], code = 'INPUT') => {
   if (!record(v) || required.some(k => !Object.hasOwn(v, k))
       || Object.keys(v).some(k => !required.includes(k) && !optional.includes(k))) fail(code);
@@ -132,9 +135,7 @@ function validateDispatch(d) {
   keys(d, ['version', 'taskId', 'mode', 'connectorRequired', 'promptSha256', 'target', 'state', 'registeredAt'],
     ['before', 'preparedAt', 'sendingAt', 'uncertainAt', 'submittedAt', 'confirmation', 'reason', 'requiredAttachments'], 'LEDGER');
   if (![1, 2].includes(d.version) || (d.version === 2) !== Object.hasOwn(d, 'requiredAttachments')
-      || typeof d.taskId !== 'string' || !/^[a-zA-Z0-9_-]{1,80}$/.test(d.taskId)
-      || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(d.taskId)
-      || !['pro', 'xhigh'].includes(d.mode) || typeof d.connectorRequired !== 'boolean'
+      || !validDispatchIdentity(d) || typeof d.connectorRequired !== 'boolean'
       || !digest(d.promptSha256) || !phases.includes(d.state)) fail('LEDGER');
   if (d.version === 2) attachmentNames(d.requiredAttachments, 'LEDGER', true);
   target(d.target, 'LEDGER');
@@ -440,11 +441,13 @@ export async function dispatchCli(args) {
     try { payload = JSON.parse(text); }
     catch { throw inputError('payload_json_invalid', 'payload_decode'); }
     // Reject routing-envelope mistakes before acquiring a ledger lock. The core
-    // validators still own values, UI readiness, persisted state and send safety.
+    // validators still own UI readiness, persisted state and send safety.
     try {
       if (action === 'register') keys(payload, ['taskId', 'mode', 'prompt', 'target'], ['connectorRequired', 'requiredAttachments']);
       if (action === 'begin') keys(payload, ['prompt', 'observation']);
     } catch { throw inputError('input_shape_invalid', 'payload_validate'); }
+    if (action === 'register' && !validDispatchIdentity(payload))
+      throw inputError('input_invalid', 'payload_validate');
     // Do not prevalidate confirm observations: decodable but incomplete evidence
     // must still persist uncertain (or refuse downgrading submitted), not bypass it.
     try { return await withPayload[action](file, payload); }
