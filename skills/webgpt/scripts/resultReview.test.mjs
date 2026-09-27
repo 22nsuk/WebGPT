@@ -230,6 +230,8 @@ for (const problem of ['none', 'pending-result', 'journal', 'changed-result']) t
   assert.equal(typeof token, 'string');
   const submitted = await callTool(worker, 'submit_result', { token, status: 'completed', summary: 'fixture', result: text });
   assert.equal(submitted?.isError, false);
+  assert.equal(submitted.structuredContent.accepted, true);
+  assert.equal(submitted.structuredContent.sha256, digest(text));
   const state = fs.readFileSync(join(dir, 'state.json'));
   assert.equal((await reviewTask('owned', config)).review.content, text);
   assert.deepEqual(fs.readFileSync(join(dir, 'state.json')), state);
@@ -241,7 +243,9 @@ for (const problem of ['none', 'pending-result', 'journal', 'changed-result']) t
   } else if (problem !== 'none') {
     if (problem === 'pending-result') fs.writeFileSync(join(dir, 'owned.result.txt.tmp'), 'candidate evidence');
     else { fs.mkdirSync(join(dir, 'recovery', 'owned'), { recursive: true }); fs.writeFileSync(join(dir, 'recovery', 'owned', 'broken.json'), '{}'); }
-    assert.equal((await reviewTask('owned', config)).review, null);
+    // Terminal wait events certify result identity, not a full recovery audit.
+    // The unchanged collection guard must catch evidence introduced after completion.
+    assert.equal((await reviewTask('owned', config)).review.content, text);
     await assert.rejects(collectTask('owned', config), { code: 'COLLECTION_RECOVERY_REQUIRED' });
     assert.deepEqual(fs.readFileSync(join(dir, 'state.json')), state);
   } else {
@@ -251,4 +255,29 @@ for (const problem of ['none', 'pending-result', 'journal', 'changed-result']) t
     assert.equal(retired.review, null); assert.equal(retired.settled, true);
     assert.equal(fs.readFileSync(join(dir, 'owned.result.txt'), 'utf8'), text);
   }
+});
+
+
+test('real worker review returns a running task candidate notice without publishing or retiring it', async t => {
+  const { start } = await import('./worker.mjs');
+  const { callTool } = await import('./test-fixtures/worker-http.mjs');
+  const dir = fs.realpathSync.native(fs.mkdtempSync(join(tmpdir(), 'webgpt-review-pending-')));
+  let worker;
+  t.after(async () => { await worker?.close(); fs.rmSync(dir, { recursive: true, force: true }); });
+  worker = await start({ dir, port: 0, controlPort: 0, configFile: join(dir, 'config.json'), waitMs: 20 });
+  const config = { dataDir: dir, controlPort: worker.controlPort };
+  const { token } = await request('register', { id: 'owned', instructions: 'owned fixture', inputs: {} }, config);
+  const state = fs.readFileSync(join(dir, 'state.json'));
+  const candidate = join(dir, 'owned.result.txt.tmp');
+  fs.writeFileSync(candidate, 'uncommitted candidate');
+  const result = await reviewTask('owned', config);
+  assert.equal(result.review, null);
+  assert.equal(result.browserChecked, false);
+  assert.equal(result.settled, false);
+  assert.deepEqual(result.events, []);
+  assert.ok(result.resultRecoveryRequired.some(event => event.id === 'owned'));
+  assert.deepEqual(fs.readFileSync(join(dir, 'state.json')), state);
+  assert.equal(fs.readFileSync(candidate, 'utf8'), 'uncommitted candidate');
+  assert.equal(fs.existsSync(join(dir, 'owned.result.txt')), false);
+  assert.equal((await callTool(worker, 'get_task', { token }))?.isError, false);
 });

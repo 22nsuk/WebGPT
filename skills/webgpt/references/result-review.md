@@ -30,7 +30,7 @@ It returns the scoped wait envelope (`events`, `backupDue`, `settled`, and any
 existing recovery/interruption fields) plus:
 
 - `review`: the terminal result event with `content` and `integrity: "verified"`,
-  or `null` when there is no result event or recovery/interruption needs attention.
+  or `null` when there is no result event or the wait reports recovery/interruption.
 - `browserChecked: false`: neither the mode/connector selection nor the final chat
   answer has been observed by this local command.
 
@@ -53,6 +53,14 @@ explicit aborts are inherited unchanged; no mutation is retried. Missing/bad
 result bytes, malformed scope and unsupported wait responses fail without
 collection. CLI errors use compact fixed diagnostics rather than raw controller
 bodies, native paths or credentials.
+
+The existing scoped wait reports recovery notices for running tasks; it is **not
+an exhaustive recovery audit of terminal tasks**. A returned body verifies result
+bytes, not collection readiness. A late journal or temporary-result candidate can
+therefore coexist with a verified terminal body; the unchanged conditional
+`collect` rechecks that evidence before retirement and must reject it. Use explicit
+reconciliation when investigating such evidence, not an automatic extra audit on
+every normal review.
 
 ## Exact bytes, privacy and scope
 
