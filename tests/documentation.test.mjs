@@ -10,9 +10,10 @@ const root = fileURLToPath(new URL('../', import.meta.url));
 const refs = 'skills/webgpt/references/';
 const documents = ['README.md', 'README.ko.md', refs + 'install-manual.md',
   refs + 'install-manual.ko.md', refs + 'upstream-review-2026-09-28.md'];
-const read = path => readFileSync(join(root, path), 'utf8');
+const normalizeNewlines = text => text.replace(/\r\n/g, '\n');
+const read = path => normalizeNewlines(readFileSync(join(root, path), 'utf8'));
 // A deliberately small checker for these authored Markdown files, not a general renderer.
-const prose = text => text.replace(/^```[^\n]*\n[\s\S]*?^```\s*$/gm, '');
+const prose = text => normalizeNewlines(text).replace(/^```[^\n]*\n[\s\S]*?^```\s*$/gm, '');
 function anchors(text) {
   const result = new Set(), counts = new Map();
   for (const match of prose(text).matchAll(/^#{1,6}\s+(.+)$/gm)) {
@@ -39,6 +40,7 @@ function checkLink(base, file, link) {
     'missing anchor: ' + file + ' -> ' + link);
 }
 function recipes(text) {
+  text = normalizeNewlines(text);
   const result = {};
   for (const match of text.matchAll(/<!-- recipe:([a-z-]+) -->\n```([^\n]*)\n([\s\S]*?)\n```/g)) {
     assert.ok(!Object.hasOwn(result, match[1]), 'duplicate recipe: ' + match[1]);
@@ -126,6 +128,12 @@ test('documentation checks reject broken links anchors and recipe fixtures', () 
     assert.throws(() => checkLink(directory, 'guide.md', '../outside.md'), /escapes/);
     const sample = '<!-- recipe:one -->\n```sh\nnode --version\n```\n';
     assert.deepEqual(recipes(sample).one, { language: 'sh', body: 'node --version' });
+    const crlf = text => text.replace(/\n/g, '\r\n');
+    assert.deepEqual(recipes(crlf(sample)), recipes(sample));
+    const headings = '# Guide\n## 설치\n## 설치\n';
+    assert.deepEqual(anchors(crlf(headings)), anchors(headings));
+    const fencedLink = '```text\n[example](not-a-link.md)\n```\n[real](guide.md)\n';
+    assert.deepEqual(localLinks(crlf(fencedLink)), ['guide.md']);
     assert.throws(() => recipes(sample + sample), /duplicate recipe/);
     assert.throws(() => recipes(sample + '```sh\nnode other.mjs\n```\n'), /recipe marker/);
     assert.deepEqual(localLinks('```text\n[example](not-a-link.md)\n```\n[real](guide.md)\n'), ['guide.md']);

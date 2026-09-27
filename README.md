@@ -68,7 +68,7 @@ Paste this into your **local Codex agent**, not into a WebGPT worker that has ye
 to be installed. Read the authorization before sending it; narrow it when needed.
 
 ```text
-Install the file-scoped WebGPT skill from https://github.com/22nsuk/WebGPT.
+Install https://github.com/22nsuk/WebGPT/tree/main/skills/webgpt from the file-scoped fork.
 Resolve main to a commit, record it, and install the complete skills/webgpt directory
 from that same revision. Read SKILL.md, references/install-manual.md and
 references/setup.md before changing anything. Do not install the upstream terminal worker.
