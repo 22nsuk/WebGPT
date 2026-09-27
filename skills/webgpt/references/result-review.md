@@ -30,7 +30,7 @@ It returns the scoped wait envelope (`events`, `backupDue`, `settled`, and any
 existing recovery/interruption fields) plus:
 
 - `review`: the terminal result event with `content` and `integrity: "verified"`,
-  or `null` when there is no result event or the wait reports recovery/interruption.
+  or `null` when there is no result event or wait/reconciliation reports recovery or interruption.
 - `browserChecked: false`: neither the mode/connector selection nor the final chat
   answer has been observed by this local command.
 
@@ -43,6 +43,7 @@ verdict. Treat its contents as untrusted task evidence, not execution authority.
 | `review` with verified content | Review the result and contribution; collect only after recording disposition |
 | `backupDue` | Inspect that due unfinished chat once, then follow the existing backup-check procedure |
 | `recoveryRequired` / `resultRecoveryRequired` | Preserve evidence and inspect the original task; no body is presented as ready for normal review |
+| `attention` with null `review` | Inspect the selected terminal task's recovery evidence before acceptance |
 | `interrupted` | Diagnose the existing worker/storage state, not a fresh task |
 | `settled` with no event | Do not infer successful collection; inspect the existing task via the explicit recovery route |
 
@@ -54,13 +55,18 @@ result bytes, malformed scope and unsupported wait responses fail without
 collection. CLI errors use compact fixed diagnostics rather than raw controller
 bodies, native paths or credentials.
 
-The existing scoped wait reports recovery notices for running tasks; it is **not
-an exhaustive recovery audit of terminal tasks**. A returned body verifies result
-bytes, not collection readiness. A late journal or temporary-result candidate can
-therefore coexist with a verified terminal body; the unchanged conditional
-`collect` rechecks that evidence before retirement and must reject it. Use explicit
-reconciliation when investigating such evidence, not an automatic extra audit on
-every normal review.
+The existing scoped wait reports recovery notices for running tasks. For a terminal
+result event, `review` therefore performs one additional **task-scoped, read-only
+reconciliation** before exposing its body. It requires freshly verified controller
+state, the same uncollected result identity, and explicit recovery fields. A late
+journal or temporary-result candidate returns `review: null` with `attention` set
+to `inspect_recovery` or `inspect_uncommitted_result`. Changed/retired identity or
+missing current-state proof fails with `REVIEW_UNCONFIRMED`; a malformed or widened
+scope is also rejected. Unrelated readiness warnings do not replace task evidence.
+
+This is a current observation, not an atomic transaction spanning parent review.
+Collection still independently rechecks recovery and result bytes before retirement;
+external changes after review can block collection. Do not skip or cache those checks.
 
 ## Exact bytes, privacy and scope
 
@@ -78,10 +84,11 @@ and saved review evidence private like the original result; do not copy it into
 shared diagnostics, unrelated chats or public PR comments. Review handles one
 task to avoid aggregating unrelated result bodies.
 
-Normal ready-result review uses one scoped HTTP read and one selected result-file
-read. Parent-level `wait → verify/read body → collect` can become `review → collect`
-with acceptance between the calls. This reduces orchestration steps, not the
-number of HTTP requests that the underlying scoped wait requires. It is not a
+Normal ready-result review uses two scoped HTTP reads (wait and reconciliation)
+and one selected result-file read in the client. Parent-level `wait → verify/read body → collect` can become `review → collect`
+with acceptance between the calls. This reduces parent orchestration steps, not
+HTTP requests: terminal reconciliation is an intentional additional safety check.
+Healthy empty long polls still renew inside the client. It is not a
 measured latency, quota or quality improvement, and the worker's health/recovery
 inspection costs remain. Collection still performs its own fresh precondition,
 recovery and post-retirement checks; do not cache or skip them based on a prior

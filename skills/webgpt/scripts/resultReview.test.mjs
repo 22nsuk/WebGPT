@@ -26,10 +26,16 @@ async function fixture(t, { content = text, status = 'completed' } = {}) {
   fs.writeFileSync(join(dir, 'state.json'), 'owned-evidence', { mode: 0o600 });
   const calls = [];
   let respond = (_req, res) => res.end(JSON.stringify({ ...empty(), events: [event], settled: true }));
+  let reconcile = value => value;
   const server = createServer((req, res) => {
     calls.push({ method: req.method, path: req.url });
     if (req.headers.authorization !== 'Bearer fixture-only-key') { res.writeHead(401); res.end('{}'); return; }
     res.setHeader('content-type', 'application/json');
+    if (req.url === '/reconcile?id=owned') {
+      res.end(JSON.stringify(reconcile({ scope: ['owned'], health: { stateVerified: true, issues: [] },
+        tasks: [{ ...event, collected: false, discarded: false, recoveryRequired: [], journalIssues: [], pendingResults: [] }] })));
+      return;
+    }
     respond(req, res);
   });
   t.after(async () => {
@@ -42,7 +48,7 @@ async function fixture(t, { content = text, status = 'completed' } = {}) {
   const runCli = args => promisify(execFile)(process.execPath, [cli, ...args], {
     cwd: dir, env: { ...process.env, WEBGPT_CONFIG: configFile, WEBGPT_DATA_DIR: dir }, timeout: 10000, maxBuffer: 8 * 1024 * 1024,
   });
-  return { dir, artifact, event, config, calls, runCli, respond: callback => { respond = callback; } };
+  return { dir, artifact, event, config, calls, runCli, respond: callback => { respond = callback; }, reconcile: callback => { reconcile = callback; } };
 }
 async function observeResultReads(t, f, run) {
   const original = { open: fs.openSync, read: fs.readSync, close: fs.closeSync };
@@ -76,7 +82,7 @@ for (const status of ['completed', 'failed', 'cancelled']) test(`review preserve
     assert.deepEqual(result.events, [f.event]);
   });
   assert.deepEqual(reads, { opens: 1, bytes: Buffer.byteLength(text) });
-  assert.deepEqual(f.calls, [{ method: 'GET', path: '/wait?id=owned' }]);
+  assert.deepEqual(f.calls, [{ method: 'GET', path: '/wait?id=owned' }, { method: 'GET', path: '/reconcile?id=owned' }]);
   assert.equal(fs.readFileSync(join(f.dir, 'state.json'), 'utf8'), 'owned-evidence');
   assert.equal(verifyResult(f.event, f.config), 'verified', 'legacy verification return stays compatible');
 });
@@ -85,8 +91,9 @@ test('review renews empty waits inside one call and reads no unrelated artifact'
   const f = await fixture(t); fs.writeFileSync(join(f.dir, 'other.result.txt'), 'unrelated-private-result');
   f.respond((_req, res) => res.end(JSON.stringify(f.calls.length < 3 ? empty() : { ...empty(), events: [f.event] })));
   assert.equal((await reviewTask('owned', f.config)).review.content, text);
-  assert.equal(f.calls.length, 3);
-  assert.ok(f.calls.every(call => call.method === 'GET' && call.path === '/wait?id=owned'));
+  assert.equal(f.calls.length, 4);
+  assert.ok(f.calls.slice(0, 3).every(call => call.method === 'GET' && call.path === '/wait?id=owned'));
+  assert.deepEqual(f.calls[3], { method: 'GET', path: '/reconcile?id=owned' });
 });
 
 for (const notice of [
@@ -124,7 +131,7 @@ for (const damage of ['missing', 'changed', 'directory', 'hardlink', 'oversized'
   if (damage === 'oversized') fs.writeFileSync(f.artifact, Buffer.alloc(1024 * 1024 + 1));
   if (damage === 'wrong-path') f.event.artifact = join(f.dir, 'controller.key');
   await assert.rejects(reviewTask('owned', f.config));
-  assert.equal(f.calls.length, 1); assert.equal(fs.readFileSync(join(f.dir, 'state.json'), 'utf8'), 'owned-evidence');
+  assert.equal(f.calls.length, 2); assert.equal(fs.readFileSync(join(f.dir, 'state.json'), 'utf8'), 'owned-evidence');
 });
 
 test('review rejects symlink results before following the target', async t => {
@@ -198,7 +205,7 @@ test('review CLI takes an ID, returns one JSON body and never resolves a same-na
       assert.equal(error.code, 1); assert.equal(error.stdout, ''); assert.match(error.stderr, /REVIEW_USAGE/); return true;
     });
   }
-  assert.deepEqual(f.calls, [{ method: 'GET', path: '/wait?id=owned' }]);
+  assert.deepEqual(f.calls, [{ method: 'GET', path: '/wait?id=owned' }, { method: 'GET', path: '/reconcile?id=owned' }]);
 });
 
 test('review CLI redacts native failures and rejected controller bodies without retries', async t => {
@@ -212,7 +219,7 @@ test('review CLI redacts native failures and rejected controller bodies without 
     assert.equal(error.stdout, ''); assert.match(error.stderr, /REVIEW_FAILED/);
     assert.doesNotMatch(error.stderr, /private-body|private-error/); return true;
   });
-  assert.equal(f.calls.length, 2);
+  assert.equal(f.calls.length, 3);
 });
 
 // Dynamic imports keep the client-only tests usable with a verified dependency
@@ -243,9 +250,11 @@ for (const problem of ['none', 'pending-result', 'journal', 'changed-result']) t
   } else if (problem !== 'none') {
     if (problem === 'pending-result') fs.writeFileSync(join(dir, 'owned.result.txt.tmp'), 'candidate evidence');
     else { fs.mkdirSync(join(dir, 'recovery', 'owned'), { recursive: true }); fs.writeFileSync(join(dir, 'recovery', 'owned', 'broken.json'), '{}'); }
-    // Terminal wait events certify result identity, not a full recovery audit.
-    // The unchanged collection guard must catch evidence introduced after completion.
-    assert.equal((await reviewTask('owned', config)).review.content, text);
+    // Terminal wait notices alone omit this evidence. Review and collection
+    // must both inspect it independently before presenting/retiring a result.
+    const review = await reviewTask('owned', config);
+    assert.equal(review.review, null);
+    assert.equal(review.attention, problem === 'journal' ? 'inspect_recovery' : 'inspect_uncommitted_result');
     await assert.rejects(collectTask('owned', config), { code: 'COLLECTION_RECOVERY_REQUIRED' });
     assert.deepEqual(fs.readFileSync(join(dir, 'state.json')), state);
   } else {
@@ -280,4 +289,43 @@ test('real worker review returns a running task candidate notice without publish
   assert.equal(fs.readFileSync(candidate, 'utf8'), 'uncommitted candidate');
   assert.equal(fs.existsSync(join(dir, 'owned.result.txt')), false);
   assert.equal((await callTool(worker, 'get_task', { token }))?.isError, false);
+});
+
+
+for (const field of ['recoveryRequired', 'journalIssues', 'pendingResults']) test(`review withholds terminal body for ${field} without reading or collecting`, async t => {
+  const f = await fixture(t);
+  f.reconcile(value => { value.tasks[0][field] = ['owned fixture evidence']; return value; });
+  const reads = await observeResultReads(t, f, async () => {
+    const result = await reviewTask('owned', f.config);
+    assert.equal(result.review, null);
+    assert.equal(result.attention, field === 'pendingResults' ? 'inspect_uncommitted_result' : 'inspect_recovery');
+  });
+  assert.equal(reads.opens, 0); assert.equal(f.calls.length, 2);
+  assert.ok(f.calls.every(call => call.method === 'GET'));
+});
+
+for (const problem of ['unverified', 'invalid-state', 'collected', 'discarded', 'status', 'artifact', 'sha256',
+  'missing-recovery', 'missing-scope', 'wrong-task']) test(`review fails closed on ${problem} terminal evidence`, async t => {
+  const f = await fixture(t);
+  f.reconcile(value => {
+    const task = value.tasks[0];
+    if (problem === 'unverified') delete value.health.stateVerified;
+    else if (problem === 'invalid-state') value.health.issues = ['STATE_INVALID'];
+    else if (problem === 'collected' || problem === 'discarded') task[problem] = true;
+    else if (problem === 'status') task.status = 'cancelled';
+    else if (problem === 'artifact') task.artifact = join(f.dir, 'other.result.txt');
+    else if (problem === 'sha256') task.sha256 = '0'.repeat(64);
+    else if (problem === 'missing-recovery') delete task.journalIssues;
+    else if (problem === 'missing-scope') delete value.scope;
+    else task.id = 'other';
+    return value;
+  });
+  const reads = await observeResultReads(t, f, () => assert.rejects(reviewTask('owned', f.config)));
+  assert.equal(reads.opens, 0); assert.equal(f.calls.length, 2);
+});
+
+test('unrelated readiness warnings do not replace freshly verified task evidence', async t => {
+  const f = await fixture(t);
+  f.reconcile(value => { value.health.ok = false; value.health.issues = ['WORKSPACE_UNAVAILABLE']; return value; });
+  assert.equal((await reviewTask('owned', f.config)).review.content, text);
 });

@@ -161,8 +161,22 @@ export async function reviewTask(id, config = configuration(), options = {}) {
     throw Object.assign(Error('worker returned an invalid result event'), { code: 'RESULT_INVALID' });
   const blocked = snapshot.interrupted || snapshot.recoveryRequired?.length || snapshot.resultRecoveryRequired?.length;
   const event = blocked ? undefined : snapshot.events[0];
-  const review = event ? { ...event, content: readVerifiedResult(event, config.dataDir), integrity: 'verified' } : null;
-  return { ...snapshot, review, browserChecked: false };
+  if (!event) return { ...snapshot, review: null, browserChecked: false };
+  // Wait notices cover running tasks, not late recovery evidence on terminal
+  // tasks. Inspect only this task before exposing its body for parent acceptance.
+  const state = await readReconciliation(config, { signal: options.signal, ids: [id] });
+  const task = state.tasks[0];
+  if (state.health?.stateVerified !== true || state.health?.issues?.includes('STATE_INVALID')
+      || task.collected !== false || task.discarded !== false || task.status !== event.status
+      || task.artifact !== event.artifact || task.sha256 !== event.sha256
+      || ['recoveryRequired', 'journalIssues', 'pendingResults'].some(key => !Array.isArray(task[key])))
+    throw Object.assign(Error('result review needs current task and recovery evidence'), { code: 'REVIEW_UNCONFIRMED' });
+  const attention = reconciliationAttention(task, 'verified');
+  if (['inspect_recovery', 'inspect_uncommitted_result'].includes(attention))
+    return { ...snapshot, review: null, attention, browserChecked: false };
+  options.signal?.throwIfAborted();
+  return { ...snapshot, review: { ...event, content: readVerifiedResult(event, config.dataDir), integrity: 'verified' },
+    browserChecked: false };
 }
 
 // Verify saved bytes before acknowledgment; this is not a code-quality verdict.
@@ -344,7 +358,7 @@ if (process.argv[1] && process.argv[1] !== '-' && import.meta.url === pathToFile
       console.error('WebGPT: ' + JSON.stringify(dispatchDiagnostic(error)));
     } else if (action === 'review') {
       // Do not echo a controller body, native path, result content or credentials.
-      const code = ['REVIEW_USAGE', 'RESULT_INVALID', 'STATE_INVALID', 'ENOENT'].includes(error.code) ? error.code : 'REVIEW_FAILED';
+      const code = ['REVIEW_USAGE', 'REVIEW_UNCONFIRMED', 'RESULT_INVALID', 'STATE_INVALID', 'ENOENT'].includes(error.code) ? error.code : 'REVIEW_FAILED';
       console.error('WebGPT: ' + JSON.stringify({ code, message: code === 'REVIEW_USAGE'
         ? 'usage: client.mjs review <task-id>' : 'result review failed; preserve evidence and inspect the owned task' }));
     } else if (action === 'collect'
