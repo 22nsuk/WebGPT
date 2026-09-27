@@ -300,15 +300,73 @@ test('shutdown is authenticated, drains an in-flight wait, is idempotent, and pr
 // must come from shutdown, not the fixture's 30 ms timeout expiring under CI load.
 }, { waitMs: 55000 }));
 
-test('bounded drain closes a partial request without accepting its late body', () => fixture(async f => {
-  const socket = connect(f.service.controlPort, '127.0.0.1'); await once(socket, 'connect');
-  socket.on('error', () => {});
-  socket.write(`POST /register HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer ${f.service.key}\r\nContent-Length: 1000\r\n\r\n{`);
-  await delay(5); const begun = Date.now(); await f.service.close(); socket.destroy();
-  assert.ok(Date.now() - begun < 2000);
-  assert.equal(existsSync(join(f.dir, 'state.json')), false);
-  assert.equal(existsSync(join(f.dir, 'worker.lock')), false);
-}));
+test('bounded drain closes a partial request without accepting its late body', { timeout: 5000 }, t => fixture(async f => {
+  const held = connect(f.service.controlPort, '127.0.0.1');
+  const late = connect(f.service.controlPort, '127.0.0.1');
+  for (const socket of [held, late]) { socket.on('error', () => {}); socket.resume(); }
+  let controlServer, partialRequests = 0, forcedClose = 0, heldClosed = false, lateClosed = false;
+  held.once('close', () => { heldClosed = true; });
+  late.once('close', () => { lateClosed = true; });
+  const emit = Server.prototype.emit, closeAllConnections = Server.prototype.closeAllConnections;
+  const observeRequest = t.mock.method(Server.prototype, 'emit', function (event, ...args) {
+    const emitted = Reflect.apply(emit, this, [event, ...args]);
+    if (event === 'request' && this.address()?.port === f.service.controlPort
+        && args[0].method === 'POST' && args[0].url === '/register') {
+      controlServer ??= this;
+      assert.equal(args[0].complete, false, 'the controller must have accepted an incomplete HTTP request');
+      partialRequests++;
+    }
+    return emitted;
+  });
+  const observeForcedClose = t.mock.method(Server.prototype, 'closeAllConnections', function (...args) {
+    if (this === controlServer) forcedClose++;
+    return Reflect.apply(closeAllConnections, this, args);
+  });
+  try {
+    await Promise.all([once(held, 'connect'), once(late, 'connect')]);
+    const body = JSON.stringify({ id: 'late', instructions: 'late body must not register', inputs: {} });
+    const prefix = `POST /register HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer ${f.service.key}\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n`;
+    held.write(prefix + body.slice(0, 1));
+    late.write(prefix + body.slice(0, 1));
+    await untilFixture(() => partialRequests === 2, {
+      timeoutMs: 5000, label: 'both partial register requests must reach the controller handler',
+    });
+
+    // Freeze only the grace timers so CI scheduling cannot race the late body.
+    // Real sockets and handler events remain observable.
+    // Queue one late body while both handlers are already waiting for it, then
+    // synchronously enter stopping before the event loop can accept that body.
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const rejected = new Promise(resolve => {
+      let response = '';
+      late.on('data', bytes => {
+        response += bytes.toString();
+        if (response.includes('\r\n')) resolve(response);
+      });
+    });
+    late.end(body.slice(1));
+    const closing = f.service.close();
+    assert.equal(forcedClose, 0, 'the grace path must not force-close synchronously');
+    assert.match(await rejected, /^HTTP\/1\.1 503 /,
+      'a body completed after stopping must be rejected before registration');
+    t.mock.timers.tick(49);
+    assert.equal(forcedClose, 0, 'the partial request retains its configured grace period');
+    t.mock.timers.tick(1);
+    assert.equal(forcedClose, 1, 'the held request must be force-closed at closeGraceMs');
+    t.mock.timers.reset();
+    await closing;
+    await untilFixture(() => heldClosed && lateClosed, {
+      timeoutMs: 5000, label: 'bounded drain must close both request sockets',
+    });
+    assert.equal(existsSync(join(f.dir, 'state.json')), false);
+    assert.equal(existsSync(join(f.dir, 'state.initialized')), false);
+    assert.equal(existsSync(join(f.dir, 'worker.lock')), false);
+  } finally {
+    t.mock.timers.reset();
+    observeForcedClose.mock.restore(); observeRequest.mock.restore();
+    held.destroy(); late.destroy();
+  }
+}, { closeGraceMs: 50 }));
 
 test('reconciliation includes collected and cancelled tasks, checks retained hashes, and never acknowledges or cancels', () => fixture(async f => {
   const a = await f.register('a'), b = await f.register('b'), c = await f.register('c');
