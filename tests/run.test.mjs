@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -12,6 +12,8 @@ for (const failure of [null, 'repository', 'installation']) {
       const scripts = join(root, 'skills', 'webgpt', 'scripts'), tests = join(root, 'tests');
       mkdirSync(scripts, { recursive: true }); mkdirSync(tests);
       cpSync(new URL('./run.mjs', import.meta.url), join(tests, 'run.mjs'));
+      // The isolated checkout must include the runner's real reporter dependency.
+      cpSync(new URL('../skills/webgpt/scripts/test-feedback.mjs', import.meta.url), join(scripts, 'test-feedback.mjs'));
       const trace = join(root, 'trace.jsonl');
       const source = name => `
         import {appendFileSync} from 'node:fs';
@@ -32,6 +34,14 @@ for (const failure of [null, 'repository', 'installation']) {
       assert.ifError(result.error);
       assert.equal(result.signal, null, result.stderr);
       assert.equal(result.status, failure ? 1 : 0, result.stdout + result.stderr);
+      if (failure) {
+        const feedback = JSON.parse(result.stderr);
+        assert.equal(feedback.evidence, 'node-test-failure-events');
+        assert.ok(feedback.failures.length > 0);
+        const expectedFile = failure === 'repository' ? join(scripts, 'a.test.mjs') : join(tests, 'installation.test.mjs');
+        assert.ok(feedback.failures.some(item => item.file === realpathSync(expectedFile)), result.stderr);
+        assert.match(result.stdout, /not ok/);
+      } else assert.equal(result.stderr, '');
       const entries = readFileSync(trace, 'utf8').trim().split('\n').map(JSON.parse);
       assert.deepEqual(entries.slice(0, 4).sort(), ['nested shipped file', 'repository', 'repository policy', 'second shipped file']);
       if (failure === 'repository') assert.equal(entries.length, 4);
