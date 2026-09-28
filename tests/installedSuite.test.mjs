@@ -159,7 +159,9 @@ await test('later noisy pass', t => t.diagnostic('x'.repeat(1100000)));
   assert.ok(stderr.includes('node-test-failure-events'), 'missing compact installed failure evidence');
   const feedback = JSON.parse(stderr), failure = feedback.failures.find(item => item.name === 'early 한국어 🧪 assertion');
   assert.equal(feedback.processExitCode, null); assert.equal(feedback.revision, null);
-  assert.equal(failure.file, await fs.realpath(join(f.root, 'early.test.mjs')));
+  // Windows test events can retain a short temp-path alias. Resolve both spellings
+  // so the check still requires this exact source file, not merely its basename.
+  assert.equal(await fs.realpath(failure.file), await fs.realpath(join(f.root, 'early.test.mjs')));
   assert.equal(failure.line, 3); assert.equal(failure.code, 'ERR_ASSERTION');
   assert.match(failure.message, /actual 한국어 🧪/); assert.match(failure.message, /expected 한국어 🧪/);
   assert.ok(failure.stack.includes('early.test.mjs'));
