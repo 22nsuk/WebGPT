@@ -8,6 +8,31 @@ import { performance } from 'node:perf_hooks';
 
 const execute = promisify(execFile);
 const tailLimit = 64 * 1024;
+
+function appendTail(tail, text) {
+  const bytes = Buffer.from(tail + text, 'utf8');
+  let start = Math.max(0, bytes.length - tailLimit);
+  // Drop a partial leading code point, not a UTF-16 unit or replacement character.
+  while ((bytes[start] & 0xc0) === 0x80) start++;
+  return bytes.toString('utf8', start);
+}
+
+export function readTapCounts(output) {
+  // Test stdout is also rendered as TAP comments. Read the counters immediately
+  // after the final root plan, not independent matches in arbitrary test output.
+  // Keep the existing TAP contract; unknown/incomplete formats fail closed.
+  let plan;
+  for (const match of output.matchAll(/^1\.\.(\d+)\r?\n/gm)) plan = match;
+  if (!plan || !Number.isSafeInteger(Number(plan[1]))) return null;
+  const summary = output.slice(plan.index + plan[0].length).match(
+    /^# tests (\d+)\r?\n# suites (\d+)\r?\n# pass (\d+)\r?\n# fail (\d+)\r?\n# cancelled (\d+)\r?\n# skipped (\d+)\r?\n# todo (\d+)(?:\r?\n|$)/);
+  if (!summary) return null;
+  const values = summary.slice(1).map(Number);
+  if (values.some(value => !Number.isSafeInteger(value))) return null;
+  const [tests, , pass, fail, cancelled, skipped, todo] = values;
+  if (tests !== pass + fail + cancelled + skipped + todo) return null;
+  return { tests, pass, fail, cancelled, skipped };
+}
 async function within(promise, ms) {
   let timer;
   try { return await Promise.race([promise, new Promise(resolve => { timer = setTimeout(() => resolve(null), ms); })]); }
@@ -53,8 +78,8 @@ async function runFile(directory, file, timeoutMs, progress) {
   });
   let stdout = '', stderr = '', spawnError;
   // Decode across pipe chunks so Unicode in the bounded report stays intact.
-  child.stdout.setEncoding('utf8').on('data', text => { stdout = (stdout + text).slice(-tailLimit); });
-  child.stderr.setEncoding('utf8').on('data', text => { stderr = (stderr + text).slice(-tailLimit); });
+  child.stdout.setEncoding('utf8').on('data', text => { stdout = appendTail(stdout, text); });
+  child.stderr.setEncoding('utf8').on('data', text => { stderr = appendTail(stderr, text); });
   child.on('error', error => { spawnError = error; });
   const closed = new Promise(resolve => child.once('close', (code, signal) => resolve({ code, signal })));
   let exit = await within(closed, timeoutMs);
@@ -77,11 +102,8 @@ async function runFile(directory, file, timeoutMs, progress) {
     // An abnormal runner exit is not proof its descendants have released the copy.
     cleanupSafe = false;
   }
-  const counts = Object.fromEntries(['tests', 'pass', 'fail', 'cancelled', 'skipped'].map(name =>
-    [name, Number(stdout.match(new RegExp(`^# ${name} (\\d+)$`, 'm'))?.[1] ?? NaN)]));
-  if (!error && (!Number.isSafeInteger(counts.tests) || counts.tests < 1
-      || !Number.isSafeInteger(counts.pass) || !Number.isSafeInteger(counts.skipped)
-      || counts.fail !== 0 || counts.cancelled !== 0))
+  const counts = readTapCounts(stdout);
+  if (!error && (!counts || counts.tests < 1 || counts.fail !== 0 || counts.cancelled !== 0))
     error = Error(`installed test file did not report a successful TAP summary: ${file}`);
   const elapsed = Math.round(performance.now() - started);
   progress(`${error ? 'FAIL' : 'DONE'} ${file} (${elapsed} ms)`);
