@@ -3,8 +3,8 @@
 **English** · [한국어](README.ko.md)
 
 Delegate a bounded task to your signed-in web ChatGPT, give it scoped access to
-project text files, and collect a saved result for review. The parent agent owns
-scope, permissions and integration; web ChatGPT owns the assigned work.
+project text files, and review the saved result before collecting it. The parent
+agent owns scope, permissions and integration; web ChatGPT owns the assigned work.
 
 This is the **file-scoped fork** of [Nhahan/WebGPT](https://github.com/Nhahan/WebGPT).
 It is a local Codex skill plus a small Node.js worker, not a model API client or a
@@ -26,11 +26,12 @@ subscription, bypass usage limits or guarantee quota savings.
 | --- | --- |
 | Research, analysis and writing | Web ChatGPT's reasoning and separately available, authorized tools |
 | Local project review | A task-scoped `read` grant |
-| Local implementation | An `edit` grant for direct UTF-8 file creation, replacement and deletion |
+| Local implementation | An `edit` grant for UTF-8 files up to 1 MiB: creation, replacement, exact-span editing and deletion |
 | Conflict protection | Whole-file SHA-256 preconditions; stale writes are rejected |
-| Completion and recovery | Saved results, scoped waits, integrity-checked collection and retained evidence |
+| Completion and recovery | Saved results, read-only review, integrity-checked collection and retained evidence |
 | Shell, local Git, test execution through the file worker | **Not provided.** The parent runs local checks |
 | Remote branch/commit/PR operations | Possible through **separately connected GitHub tools** and their permissions |
+| Large/binary files and native CLI evidence | Optional [parent-side artifact inputs](skills/webgpt/references/artifact-inputs.md); no worker execution or large/binary mutation |
 | Arbitrary binary files or recursive deletion | Not supported by the file tools |
 
 The worker exposes seven MCP tools: `get_task`, `read_input`, `list_files`,
@@ -147,10 +148,13 @@ Retain task chats by default, including setup tests, failures and recovery chats
 Delete a chat only when the user explicitly requests deletion of that chat.
 Closing a task-owned tab does not delete its chat or retire a task token.
 
-The parent verifies the result and relevant changes, then collects the saved
-artifact with SHA-256 verification. **Integrity is not correctness** and does not
-prove reported tests ran. Observe final chat-answer completion separately before
-closing the owned tab. Use `read` grants for reviews; do not upgrade them silently.
+For one owned task, `client.mjs review <task-id>` waits and reads the verified
+saved body without collecting it. Follow [result review](skills/webgpt/references/result-review.md):
+handle a null review or recovery notice, inspect changes and run the relevant checks,
+record disposition, then use `client.mjs collect <task-id>`. Collection freshly
+verifies integrity and retires task inputs/token; **integrity is not correctness**
+or proof that reported tests ran. Observe final chat-answer completion separately
+before closing the owned tab. Use `read` grants for reviews; do not upgrade them silently.
 
 Keep task tokens private to their assigned conversations. Never publish the full
 MCP URL, `mcp-path.key`, `controller.key`, service credentials or recovery copies.
@@ -200,8 +204,9 @@ journals and result candidates; never reset them to manufacture a PASS.
 | Human installation / agent setup | [English manual](skills/webgpt/references/install-manual.md) · [한국어](skills/webgpt/references/install-manual.ko.md) · [Agent setup](skills/webgpt/references/setup.md) |
 | Practical prompts and task design | [Usage (한국어)](skills/webgpt/references/usage.md) · [Parent workflow](skills/webgpt/references/parent-workflow.md) |
 | Tool contracts and limits | [Workspace](skills/webgpt/references/workspace.md) |
+| Code changes and native evidence | [Development loop](skills/webgpt/references/development-loop.md) (exact edits, pinned reads, failure feedback) · [Artifact inputs](skills/webgpt/references/artifact-inputs.md) |
 | Sending, attachments and cleanup | [Dispatch](skills/webgpt/references/dispatch.md) · [Uploads](skills/webgpt/references/file-uploads.md) · [Chat lifecycle](skills/webgpt/references/chat-lifecycle.md) |
-| Results, recovery and deployment | [Collection](skills/webgpt/references/collection-details.md) · [Recovery integrity](skills/webgpt/references/recovery-integrity.md) · [Backup safety](skills/webgpt/references/backup-safety.md) · [Windows operations](skills/webgpt/references/operations-windows.md) |
+| Results, recovery and deployment | [Result review](skills/webgpt/references/result-review.md) · [Collection](skills/webgpt/references/collection-details.md) · [Recovery integrity](skills/webgpt/references/recovery-integrity.md) · [Backup safety](skills/webgpt/references/backup-safety.md) · [Windows operations](skills/webgpt/references/operations-windows.md) |
 | Diagnosis and acceptance | [Diagnostics](skills/webgpt/references/diagnostics.md) · [Verification](skills/webgpt/references/verification.md) · [Parent acceptance](skills/webgpt/references/parent-acceptance.md) |
 | Architecture and upstream policy | [Browser-use comparison](skills/webgpt/references/browser-use-comparison.md) · [Fork policy](skills/webgpt/references/fork-policy.md) · [Upstream comparison](skills/webgpt/references/upstream-review-2026-09-28.md) |
 

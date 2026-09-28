@@ -3,7 +3,7 @@
 [English](README.md) · **한국어**
 
 로그인된 웹 ChatGPT에 하나의 명확한 작업을 맡기고, 프로젝트 텍스트 파일에
-범위를 제한한 접근 권한을 부여한 뒤, 저장된 결과를 수집·검토합니다.
+범위를 제한한 접근 권한을 부여한 뒤, 저장된 결과를 검토하고 수집합니다.
 부모 에이전트는 범위·권한·통합을, 웹 ChatGPT는 배정된 작업을 담당합니다.
 
 이 저장소는 [Nhahan/WebGPT](https://github.com/Nhahan/WebGPT)의 **파일 범위 제한 포크**입니다.
@@ -26,11 +26,12 @@
 | --- | --- |
 | 조사·분석·글쓰기 | 웹 ChatGPT의 추론과 별도로 사용 가능한 승인된 도구 활용 |
 | 로컬 프로젝트 검토 | 작업별 `read` 권한 |
-| 로컬 구현 | `edit` 권한으로 UTF-8 파일 직접 생성·교체·삭제 |
+| 로컬 구현 | `edit` 권한으로 1 MiB 이하 UTF-8 파일 직접 생성·교체·정확한 구간 수정·삭제 |
 | 수정 충돌 방지 | 전체 파일 SHA-256을 사전 조건으로 사용하고 오래된 수정 거부 |
-| 완료와 복구 | 결과 저장, 작업별 대기, 무결성 검증 후 수집, 증거 보존 |
+| 완료와 복구 | 결과 저장, 읽기 전용 결과 검토, 무결성 검증 후 수집, 증거 보존 |
 | 파일 워커를 통한 셸·로컬 Git·테스트 실행 | **제공하지 않음.** 필요한 로컬 검사는 부모가 실행 |
 | 원격 브랜치·커밋·PR 작업 | **별도로 연결한 GitHub 도구**와 해당 권한으로 가능 |
+| 대형·바이너리 파일 및 네이티브 CLI 근거 | 선택적 [부모 측 근거 입력](skills/webgpt/references/artifact-inputs.md); 워커 실행이나 대형·바이너리 수정 권한은 추가하지 않음 |
 | 임의의 바이너리 파일·재귀 삭제 | 파일 도구에서 지원하지 않음 |
 
 워커의 MCP 도구는 `get_task`, `read_input`, `list_files`, `read_file`,
@@ -144,8 +145,11 @@ webgpt xh 이 프로젝트에 검색 필터를 구현하고 관련 테스트를 
 사용자가 해당 채팅의 삭제를 명시적으로 요청한 경우에만 삭제합니다.
 작업 탭을 닫는 것과 채팅 삭제, 작업 토큰 종료는 각각 별개입니다.
 
-부모는 결과와 관련 변경을 검증한 뒤 SHA-256을 확인하여 저장 결과를 수집합니다.
-**무결성은 정확성이 아니며**, 보고된 테스트가 실제 실행되었다는 증거도 아닙니다.
+소유한 단일 작업은 `client.mjs review <task-id>`로 대기하고 무결성을 확인한 저장
+본문을 읽습니다. 아직 수집하지는 않습니다. [결과 검토](skills/webgpt/references/result-review.md)에 따라
+null 결과나 복구 알림을 처리하고, 변경 검토·관련 검사·수용 판단 후
+`client.mjs collect <task-id>`를 실행합니다. 수집은 무결성을 다시 확인하고 작업
+입력과 토큰을 회수합니다. **무결성은 정확성이나 보고된 테스트의 실행 증거가 아닙니다**.
 탭을 닫기 전에는 최종 채팅 답변의 완료도 별도로 확인합니다.
 검토에는 `read` 권한을 사용하고 임의로 수정 권한으로 올리지 않습니다.
 
@@ -197,8 +201,9 @@ PASS를 만들기 위해 상태를 초기화하지 마세요.
 | 직접 설치·에이전트 설정 | [English manual](skills/webgpt/references/install-manual.md) · [한국어](skills/webgpt/references/install-manual.ko.md) · [에이전트 설정](skills/webgpt/references/setup.md) |
 | 실용 요청문과 작업 설계 | [사용법](skills/webgpt/references/usage.md) · [부모 작업 절차](skills/webgpt/references/parent-workflow.md) |
 | 도구 계약과 제한 | [Workspace](skills/webgpt/references/workspace.md) |
+| 코드 수정과 네이티브 근거 | [개발 절차](skills/webgpt/references/development-loop.md) (정확한 구간 수정·리비전 고정 읽기·실패 요약) · [대형·바이너리 근거 입력](skills/webgpt/references/artifact-inputs.md) |
 | 전송·첨부·정리 | [Dispatch](skills/webgpt/references/dispatch.md) · [첨부](skills/webgpt/references/file-uploads.md) · [채팅 생명주기](skills/webgpt/references/chat-lifecycle.md) |
-| 결과·복구·배포 | [수집](skills/webgpt/references/collection-details.md) · [복구 무결성](skills/webgpt/references/recovery-integrity.md) · [백업 안전](skills/webgpt/references/backup-safety.md) · [Windows 운영](skills/webgpt/references/operations-windows.md) |
+| 결과·복구·배포 | [결과 검토](skills/webgpt/references/result-review.md) · [수집](skills/webgpt/references/collection-details.md) · [복구 무결성](skills/webgpt/references/recovery-integrity.md) · [백업 안전](skills/webgpt/references/backup-safety.md) · [Windows 운영](skills/webgpt/references/operations-windows.md) |
 | 진단과 수용 검증 | [진단](skills/webgpt/references/diagnostics.md) · [검증](skills/webgpt/references/verification.md) · [부모 수용](skills/webgpt/references/parent-acceptance.md) |
 | 구조와 업스트림 정책 | [Browser-use 비교](skills/webgpt/references/browser-use-comparison.md) · [포크 정책](skills/webgpt/references/fork-policy.md) · [업스트림 비교](skills/webgpt/references/upstream-review-2026-09-28.md) |
 

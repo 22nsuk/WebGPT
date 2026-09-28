@@ -2,7 +2,7 @@
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
 import { isAbsolute } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 
 export const MAX_SOURCE_BYTES = 256 * 1024 * 1024;
@@ -10,6 +10,8 @@ export const MAX_WINDOW_BYTES = 8 * 1024;
 export const MAX_INPUT_BYTES = 64 * 1024;
 const MAX_WINDOWS = 8;
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
+const validPath = value => typeof value === 'string' && value.isWellFormed() &&
+  isAbsolute(value) && !value.includes('\0');
 
 class EvidenceError extends Error {
   constructor(code, message) { super(message); this.code = code; }
@@ -27,8 +29,8 @@ function regular(stat) {
 }
 
 function options({ source, label, view, ranges, expectedSha256 }) {
-  if (typeof source !== 'string' || !isAbsolute(source) || source.includes('\0'))
-    fail('INVALID_ARGUMENT', 'source must be an absolute local file path.');
+  if (!validPath(source))
+    fail('INVALID_ARGUMENT', 'source must be a well-formed absolute local file path.');
   if (typeof label !== 'string' || !/^[A-Za-z0-9_.-]{1,64}$/.test(label))
     fail('INVALID_ARGUMENT', 'label must contain 1-64 ASCII letters, digits, dots, underscores or hyphens.');
   if (!['metadata', 'text', 'hex'].includes(view) || !Array.isArray(ranges) || ranges.length > MAX_WINDOWS)
@@ -143,8 +145,8 @@ function run(argv) {
     seen.add(token.name);
   }
   if (values.help && tokens.length === 1) { process.stdout.write(usage); return; }
-  if (values.help || typeof values.out !== 'string' || !isAbsolute(values.out) || values.out.includes('\0'))
-    fail('INVALID_ARGUMENT', 'Provide a new absolute --out path, or --help alone.');
+  if (values.help || !validPath(values.out))
+    fail('INVALID_ARGUMENT', 'Provide a new well-formed absolute --out path, or --help alone.');
   const ranges = (values.range ?? []).map(value => {
     if (!/^(0|[1-9][0-9]*):(0|[1-9][0-9]*)$/.test(value))
       fail('INVALID_ARGUMENT', 'Use --range byte-offset:byte-length with decimal integers.');
@@ -162,7 +164,8 @@ function run(argv) {
 
 function isCliEntry() {
   if (!process.argv[1] || process.argv[1] === '-') return false;
-  try { return pathToFileURL(fs.realpathSync(process.argv[1])).href === import.meta.url; }
+  // Normalize both sides: --preserve-symlinks-main also preserves import.meta.url.
+  try { return fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url)); }
   // Eval arguments and renamed importers need not name an existing entry file.
   catch { return false; }
 }
