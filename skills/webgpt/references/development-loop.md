@@ -129,8 +129,11 @@ Use these arguments only when the actual installed connector advertises them.
 Update matching scripts through the existing stopped-worker process and refresh
 its schema when needed; do not silently drop `oldText` on an older worker (that
 would turn replacement text into a whole-file overwrite). Existing callers need
-no migration. Binary, >1 MiB and CLI-centric tasks remain parent/native work or
-explicitly scoped analysis, not a reason to widen this connector's authority.
+no migration. For binary, >1 MiB and native CLI evidence, use the optional parent-only
+[artifact input helper](artifact-inputs.md): fingerprint the approved source once,
+select bounded text/hex windows, review the new evidence file and pass its text in
+named `inputs`. Native execution and large/binary writes remain with the parent;
+the helper adds no worker tool, command queue, upload or permission expansion.
 
 ## 3. Keep the healthy route short
 
