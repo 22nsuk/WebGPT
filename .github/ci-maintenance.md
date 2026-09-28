@@ -20,7 +20,7 @@ it independent of suite size. Existing individual test/request deadlines and the
 ten-minute CI job limit remain unchanged; this is not a fixed speedup claim.
 
 The harness logs each file's start, finish and elapsed time as it runs, retains a
-bounded output tail for failures, and sums all TAP results. Normal failures do not
+bounded output tail for failures, and sums validated TAP counts. Normal failures do not
 skip queued files. On a file deadline it terminates the tracked live runner's tree
 on Windows or its process group on POSIX, then waits for stream closure. This is
 test-fixture ownership, not containment of arbitrary detached descendants. If
@@ -33,6 +33,30 @@ For an installed skill alone, run
 `node --test --test-concurrency=2 --test-reporter=tap` from its directory.
 Bare `node --test` uses Node's CPU-dependent concurrency and can overlap the
 repository's installation test with other files; use the runner above for CI parity.
+
+### Installed result evidence
+
+Test stdout can contain `tests`, `pass` or `fail` lines which Node renders as TAP
+comments. They are not runner totals. The harness reads one complete counter block
+immediately after the final root plan, checks safe integer counts and their sum
+(including TODO), and still requires an actual zero exit code with no signal,
+failures or cancellations. A missing, incomplete or inconsistent summary is not
+success; an earlier block cannot substitute for a damaged final one. Skips and
+TODO remain distinct from passing tests. This preserves the harness's existing
+Node TAP dependency, not a general TAP parser or proof against hostile test code.
+Node explicitly [does not guarantee reporter text stability and recommends test
+events for programmatic consumers](https://nodejs.org/download/release/v22.16.0/docs/api/test.html#test-reporters).
+This correction does not add another reporter or change the process/stream layout;
+keep the OS/Node matrix and result fixtures when updating the harness or runtime.
+
+Each stdout/stderr tail retains at most **64 KiB of UTF-8**, trimming only at a
+complete code point. A JavaScript string-length limit is not a byte limit for
+Korean or emoji output. The installed failure reporter still preserves up to
+12 early failure entries within 32 KiB on stderr, even after later TAP output
+has displaced the assertion from stdout. The tails are partial diagnostic text,
+not complete logs, automatic redaction, test verdicts or new cleanup authority.
+No file deadline, two-file concurrency budget or process-tree teardown rule is
+relaxed to obtain a passing result.
 
 ### Avoid duplicate event runs, not coverage
 
