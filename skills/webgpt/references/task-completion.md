@@ -151,3 +151,26 @@ Capability references (checked 2026-09-29): OpenAI's [data analysis guide](https
 illustrate non-repository work and account-dependent capabilities. They do not prove
 that any particular worker session has a tool, access or permission. Inspect the
 actual session and respect its controls instead of hard-coding product limits here.
+
+## Guidance delivered by the running bridge
+
+The worker's `initialize.instructions` carries a compact version of this policy;
+`submit_result` also describes feasible-work completion and its terminal, text-only
+boundary. This reaches the connection/tool surface instead of relying solely on a
+parent-local guide. MCP's [initialization lifecycle](https://modelcontextprotocol.io/specification/2025-06-18/basic/lifecycle)
+provides this advisory field; clients decide how it is presented to the model.
+It is not execution authority or proof of model compliance.
+
+The task's instructions, inputs, destination and restrictions still come from the
+actual assignment. The bridge does not append guidance to `get_task`, rewrite saved
+instructions, expose other tasks, grant separate-app access or add a binary channel.
+Its lack of shell/Git is a bridge limitation, not a ban on separately authorized
+worker tools. Parent acceptance and fresh collection checks remain required.
+
+Updating only Markdown cannot change an already running server or cached client
+metadata. Apply matching code using the existing [stopped-update procedure](operations-windows.md#parent-resume-transition-and-rollback),
+then check the selected connection's current initialization/tool guidance through
+its supported refresh/reconnection route when needed. Do not recreate connections,
+restart services or repeat these checks on every healthy task. Existing chats may
+retain older guidance; local HTTP/CI tests do not establish live client adoption or
+parent-work savings. No task-state or tool-argument migration is introduced.
