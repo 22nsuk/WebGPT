@@ -12,17 +12,24 @@ validation and corrective iterations. This is not a goal to consume quota or ski
 Do not substitute CLI/native subagents or API models for requested web ChatGPT work. Use only
 documented, authorized browser controls.
 
+This applies to non-Git local folders, provided text, research, uploaded data, documents/media
+and connected-app work too. Git, a remote repository, a commit and CI are not prerequisites.
+Complete the requested artifact or action, not merely instructions for the parent to finish it;
+a requested review, plan or draft remains that narrower outcome, not permission to edit or send.
+
 ## Route the request before doing the work
 
 - **Parent delegation:** the user asks to have WebGPT do work. Establish a useful deliverable and
   delegate before independently solving that same assignment. Inspect enough to set scope and
   acceptance criteria; independent duplicate analysis is appropriate only when requested/justified.
 - **Assigned worker:** a current private task token and connector assignment identify this role.
-  Read `get_task` through the selected connector, use supplied inputs and the granted project, then
+  Read `get_task` through the selected connector, use actual inputs and any granted project, then
   finish the worker-owned investigation, changes, available checks and corrections before
   `submit_result`; an initial patch is not completion of a broader assignment. Report concrete
   blockers and parent-only gaps, then finish a user-facing final chat answer. For delegated GitHub publication,
   read [GitHub workflow](references/github-workflow.md) before declaring a capability unavailable.
+  For non-repository work, use [task-completion.md](references/task-completion.md) for input routes,
+  artifact checks and delivery; no Git setup or parent handback is required merely by task type.
   For code changes, use [development-loop.md](references/development-loop.md) for exact text edits
   and check-evidence handoff; this adds no execution authority.
   Make no further project/tool changes after submission. Skip the parent-only sections below.
@@ -41,8 +48,8 @@ User-facing examples remain in [usage.md](references/usage.md); tradeoffs are in
 
 ## Delegate the complete permitted outcome
 
-Choose one coherent outcome: investigate a cause, evaluate alternatives, review a subsystem, or
-implement and validate a bounded change. Give the objective, relevant context, deliverable/acceptance criteria,
+Choose one coherent outcome: a finished analysis, document, data transformation, app update,
+review or implementation. Give the objective, actual inputs, output format/destination, acceptance criteria,
 ownership and material constraints in the user's language. Let the worker choose its investigation
 and implementation within that scope; do not prescribe every tool call or replace real work with
 known-answer exercises. Preserve the requested format and necessary source material; omit credentials,
@@ -55,13 +62,14 @@ Assign available authorized investigation, implementation, validation and correc
 If PR publication is authorized, include final-head CI and review follow-through by default unless
 the user limits that outcome. Otherwise do not publish. See [GitHub workflow](references/github-workflow.md).
 
-Choose the authoritative work surface before dispatch: a remote task branch for a repository/PR
-outcome with no required local changes, or the granted project for local/dirty-file work. Do not
-create both copies for the parent to reconcile unnecessarily, or substitute remote HEAD for local
-inputs. Worker sandbox tests prove only that tested copy/environment, not the user's installation.
-Reserve parent execution for a named capability, environment or acceptance gap. Batch that assistance
-with exact revision/exit evidence; do not hand all testing back because MCP has no shell. See
-[development-loop.md](references/development-loop.md).
+Choose the authoritative inputs and each output's destination before dispatch: an ordinary local
+folder, supplied text/attachments, a connected object, a worker-created artifact, or a Git branch
+when relevant. Do not introduce a repository, duplicate copies or parent synchronization without
+need. Preserve local/unsaved inputs instead of substituting a remote version. Use task-appropriate
+checks and actual source/output identities; Git SHA/CI is only one form of evidence. Reserve parent
+assistance for a named capability, environment, approval or delivery gap. See
+[task-completion.md](references/task-completion.md) for the general route and
+[development-loop.md](references/development-loop.md) for code-specific checks.
 
 Use one chat for coherent work and related follow-ups. Split only genuinely independent outcomes
 with disjoint writes; order dependent steps. Reduce concurrency on throttling, not by cloning tasks.
@@ -82,8 +90,9 @@ Do independent authorized parent work while the worker runs; do not race its fil
    file-URL toggle or `/health` is not end-to-end readiness. Use [setup.md](references/setup.md)
    only for missing capability or installation work; do not repeat setup for every healthy task.
 2. **Register when needed.** Follow [workspace.md#per-task](references/workspace.md#per-task).
-   Give the exact project root `read` for review or `edit` for changes, not per-file allowlists;
-   keep runtime data outside it. Remote-only or text/research work can omit the workspace.
+   Give the exact local folder root `read` for review or `edit` for changes, not per-file allowlists;
+   Git is not required. Keep runtime data outside it. Attachment-only, connected-app, remote-only
+   or text/research work can omit the workspace when no local access is needed.
    Browser-only work can omit the local connector, but then has no saved-result collection.
    Put large permitted text in named `inputs`; project files stay available through the grant.
    Do not upload a repository just to replace working direct access. Required binary/visual
@@ -179,6 +188,9 @@ deletion and tab absence, or report cleanup `BLOCKED` without erasing successful
 Have the worker return the requested deliverable with a compact acceptance summary: outcome,
 revision, changes, check evidence, limitations and the smallest remaining parent action (or none).
 Keep detailed evidence at accessible authorized references; do not truncate a requested full report.
+For non-Git work, use available input/output identities instead of demanding a commit. Include the
+real artifact/attachment or app reference, not a sandbox path alone. `submit_result` saves text,
+not binary attachments; distinguish creation, validation and delivery to the requested destination.
 Report what WebGPT actually contributed, what the parent verified/integrated, disposition and remaining
 blockers. Do not present parent-only work, fixture/CI PASS or a connection probe as productive delegation.
 Use [parent-acceptance.md](references/parent-acceptance.md) for a requested usage review; the four small

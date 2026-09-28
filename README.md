@@ -2,9 +2,11 @@
 
 **English** · [한국어](README.ko.md)
 
-Delegate a bounded task to your signed-in web ChatGPT, give it scoped access to
-project text files, and review the saved result before collecting it. The parent
-agent owns scope, permissions and integration; web ChatGPT owns the assigned work.
+Delegate a complete outcome to your signed-in web ChatGPT: research, ordinary local
+folders, uploaded data, documents/media or connected-app work—not just Git projects.
+Within the requested scope and actual tool permissions, the web worker creates,
+checks, corrects and delivers the result. The parent owns scope, permissions and
+acceptance, providing only necessary assistance. See [task completion](skills/webgpt/references/task-completion.md).
 
 This is the **file-scoped fork** of [Nhahan/WebGPT](https://github.com/Nhahan/WebGPT).
 It is a local Codex skill plus a small Node.js worker, not a model API client or a
@@ -25,19 +27,20 @@ subscription, bypass usage limits or guarantee quota savings.
 | Capability | This fork |
 | --- | --- |
 | Research, analysis and writing | Web ChatGPT's reasoning and separately available, authorized tools |
-| Local project review | A task-scoped `read` grant |
+| Local folder/project review | A task-scoped `read` grant; Git is not required |
 | Local implementation | An `edit` grant for UTF-8 files up to 1 MiB: creation, replacement, exact-span editing and deletion |
 | Conflict protection | Whole-file SHA-256 preconditions; stale writes are rejected |
 | Completion and recovery | Saved results, read-only review, integrity-checked collection and retained evidence |
-| Shell, local Git, test execution through the file worker | **Not provided.** The parent runs local checks |
+| Shell, local Git, test execution through the file worker | **Not provided by MCP.** Use available authorized worker tools; parent assistance is for actual host/capability gaps |
 | Remote branch/commit/PR operations | Possible through **separately connected GitHub tools** and their permissions |
-| Large/binary files and native CLI evidence | Optional [parent-side artifact inputs](skills/webgpt/references/artifact-inputs.md); no worker execution or large/binary mutation |
+| Large/binary files and native CLI evidence | Use available authorized attachment/analysis/app tools; [parent-side evidence](skills/webgpt/references/artifact-inputs.md) for host-only inputs. No MCP execution or binary writes |
 | Arbitrary binary files or recursive deletion | Not supported by the file tools |
 
 The worker exposes seven MCP tools: `get_task`, `read_input`, `list_files`,
-`read_file`, `write_file`, `delete_file`, `submit_result`. Text/research tasks can
-omit a project grant; browser-only delegation can omit the worker, but then has no
-worker completion event or saved-result collection.
+`read_file`, `write_file`, `delete_file`, `submit_result`. Tasks using only supplied
+text, attachments or connected apps can omit the workspace grant. Browser-only
+delegation can omit the local worker, but then has no worker completion event or
+saved-result collection.
 
 File grants exclude Git metadata, the running installation, operational
 configuration and private runtime. They are **not a general secret filter**:
@@ -50,7 +53,8 @@ Use Node.js **22 or newer**, a local Codex environment that discovers skills, an
 an available signed-in ChatGPT account/mode. Agent-controlled delegation also
 needs a supported browser-control tool connected to that signed-in browser.
 Installing this skill does not install a browser extension or establish browser
-control automatically. Git is used by the manual download recipe.
+control automatically. Git is used by the manual download recipe, not required for
+delegated tasks.
 
 For ChatGPT to access the local worker, you also need permission to configure a
 remote MCP connection and an authorized HTTPS forwarding service. An existing
@@ -117,13 +121,19 @@ one disposable project task. File copying alone completes only the first part.
 In a local Codex session that has loaded this skill:
 
 ```text
+webgpt xh Analyze the attached CSV and deliver a checked monthly-summary workbook.
+Preserve the source. Return the actual file and findings, not just code or a plan.
+Do not publish or send it elsewhere; report only genuinely blocked steps for parent assistance.
+```
+
+```text
 webgpt p Review this repository for likely defects and prioritize improvements.
 Use read-only access. Do not change files; cite the relevant paths and evidence.
 ```
 
 ```text
 webgpt xh Implement the search filter in this project and update relevant tests.
-Preserve unrelated behavior. Codex should review the diff and run the necessary local checks.
+Preserve unrelated behavior. Complete available checks and corrections; report any host-only gaps.
 ```
 
 `xh` / `xhigh` = **Extra High** (default); `p` / `pro` = **Pro**. Verify the
@@ -202,7 +212,7 @@ journals and result candidates; never reset them to manufacture a PASS.
 | Topic | Guide |
 | --- | --- |
 | Human installation / agent setup | [English manual](skills/webgpt/references/install-manual.md) · [한국어](skills/webgpt/references/install-manual.ko.md) · [Agent setup](skills/webgpt/references/setup.md) |
-| Practical prompts and task design | [Usage (한국어)](skills/webgpt/references/usage.md) · [Parent workflow](skills/webgpt/references/parent-workflow.md) |
+| Practical prompts and task design | [Usage (한국어)](skills/webgpt/references/usage.md) · [Parent workflow](skills/webgpt/references/parent-workflow.md) · [All task types](skills/webgpt/references/task-completion.md) |
 | Tool contracts and limits | [Workspace](skills/webgpt/references/workspace.md) |
 | Code changes and native evidence | [Development loop](skills/webgpt/references/development-loop.md) (exact edits, pinned reads, failure feedback) · [Artifact inputs](skills/webgpt/references/artifact-inputs.md) |
 | Sending, attachments and cleanup | [Dispatch](skills/webgpt/references/dispatch.md) · [Uploads](skills/webgpt/references/file-uploads.md) · [Chat lifecycle](skills/webgpt/references/chat-lifecycle.md) |

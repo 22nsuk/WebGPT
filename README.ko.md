@@ -2,9 +2,10 @@
 
 [English](README.md) · **한국어**
 
-로그인된 웹 ChatGPT에 하나의 명확한 작업을 맡기고, 프로젝트 텍스트 파일에
-범위를 제한한 접근 권한을 부여한 뒤, 저장된 결과를 검토하고 수집합니다.
-부모 에이전트는 범위·권한·통합을, 웹 ChatGPT는 배정된 작업을 담당합니다.
+로그인된 웹 ChatGPT에 결과의 완성을 맡깁니다. Git 프로젝트뿐 아니라 조사·일반 로컬
+폴더·첨부 데이터·문서/미디어·연결된 앱 작업에도 적용됩니다. 요청 범위와 실제 도구 권한
+안에서 웹 워커가 생성·검증·교정·전달까지 수행하고, 부모는 범위·권한·수용 판단과 필요한
+보조만 담당합니다. [일반 작업 완료 지침](skills/webgpt/references/task-completion.md)을 참고하세요.
 
 이 저장소는 [Nhahan/WebGPT](https://github.com/Nhahan/WebGPT)의 **파일 범위 제한 포크**입니다.
 로컬 Codex 스킬과 작은 Node.js 워커로 구성되며, 모델 API 클라이언트나 브라우저
@@ -25,18 +26,18 @@
 | 기능 | 이 포크의 방식 |
 | --- | --- |
 | 조사·분석·글쓰기 | 웹 ChatGPT의 추론과 별도로 사용 가능한 승인된 도구 활용 |
-| 로컬 프로젝트 검토 | 작업별 `read` 권한 |
+| 로컬 폴더·프로젝트 검토 | 작업별 `read` 권한; Git 불필요 |
 | 로컬 구현 | `edit` 권한으로 1 MiB 이하 UTF-8 파일 직접 생성·교체·정확한 구간 수정·삭제 |
 | 수정 충돌 방지 | 전체 파일 SHA-256을 사전 조건으로 사용하고 오래된 수정 거부 |
 | 완료와 복구 | 결과 저장, 읽기 전용 결과 검토, 무결성 검증 후 수집, 증거 보존 |
-| 파일 워커를 통한 셸·로컬 Git·테스트 실행 | **제공하지 않음.** 필요한 로컬 검사는 부모가 실행 |
+| 파일 워커를 통한 셸·로컬 Git·테스트 실행 | **MCP에서 제공하지 않음.** 별도 승인 도구를 활용하고 실제 호스트·기능 부족분만 부모 보조 |
 | 원격 브랜치·커밋·PR 작업 | **별도로 연결한 GitHub 도구**와 해당 권한으로 가능 |
-| 대형·바이너리 파일 및 네이티브 CLI 근거 | 선택적 [부모 측 근거 입력](skills/webgpt/references/artifact-inputs.md); 워커 실행이나 대형·바이너리 수정 권한은 추가하지 않음 |
+| 대형·바이너리 파일 및 네이티브 CLI 근거 | 실제 첨부·분석·앱 도구 활용; 부모 호스트 전용 입력은 [근거 준비](skills/webgpt/references/artifact-inputs.md). MCP 실행·바이너리 쓰기는 추가하지 않음 |
 | 임의의 바이너리 파일·재귀 삭제 | 파일 도구에서 지원하지 않음 |
 
 워커의 MCP 도구는 `get_task`, `read_input`, `list_files`, `read_file`,
-`write_file`, `delete_file`, `submit_result`의 7개입니다. 텍스트·조사 작업은
-프로젝트 권한을 생략할 수 있습니다. 브라우저만 사용하는 위임은 워커 자체를
+`write_file`, `delete_file`, `submit_result`의 7개입니다. 제공된 텍스트·첨부·연결된 앱만
+사용하는 작업은 workspace 권한을 생략할 수 있습니다. 브라우저만 사용하는 위임은 로컬 워커를
 생략할 수 있지만, 워커 완료 이벤트와 저장 결과 수집은 제공되지 않습니다.
 
 파일 권한은 Git 메타데이터, 실행 중인 설치본, 운영 설정, 비공개 런타임을
@@ -50,7 +51,8 @@ Node.js **22 이상**, 스킬을 인식하는 로컬 Codex 환경, 사용할 모
 로그인된 ChatGPT 계정이 필요합니다. 에이전트가 브라우저를 조작해 위임하려면
 해당 로그인 브라우저에 연결된 지원 브라우저 제어 도구도 필요합니다.
 이 스킬을 복사하는 것만으로 확장 프로그램이 설치되거나 브라우저 제어가
-가능해지는 것은 아닙니다. 직접 설치 예제의 다운로드에는 Git을 사용합니다.
+가능해지는 것은 아닙니다. 직접 설치 예제의 다운로드에는 Git을 사용하지만
+위임 작업에 Git이 필요한 것은 아닙니다.
 
 ChatGPT가 로컬 워커에 접근하려면 원격 MCP 연결을 설정할 수 있는 권한과
 승인된 HTTPS 전달 서비스도 필요합니다. 정상적인 기존 연결을 우선 재사용하며,
@@ -116,13 +118,19 @@ references/setup.md를 읽어줘. 업스트림의 터미널 워커는 설치하�
 스킬을 로드한 로컬 Codex 세션에서 다음과 같이 요청합니다.
 
 ```text
+webgpt xh 첨부한 CSV를 분석하고 검증된 월별 집계 워크북을 만들어줘.
+원본은 보존하고, 코드나 계획만이 아니라 실제 결과 파일과 분석을 전달해줘.
+외부에 게시·발송하지 말고 실제로 막힌 단계만 부모에게 필요한 조치로 보고해줘.
+```
+
+```text
 webgpt p 이 저장소의 오류 가능성을 검토하고 개선 우선순위를 정리해줘.
 읽기 전용 권한을 사용하고 파일은 수정하지 마. 관련 경로와 근거를 제시해줘.
 ```
 
 ```text
 webgpt xh 이 프로젝트에 검색 필터를 구현하고 관련 테스트를 수정해줘.
-무관한 동작은 유지해줘. Codex는 diff를 검토하고 필요한 로컬 검사를 실행해줘.
+무관한 동작은 유지하고 가능한 검사·교정까지 마쳐줘. 부모 호스트에서만 가능한 부분은 구분해줘.
 ```
 
 `xh` / `xhigh`는 **Extra High**이며 기본값이고, `p` / `pro`는 **Pro**입니다.
@@ -199,7 +207,7 @@ PASS를 만들기 위해 상태를 초기화하지 마세요.
 | 주제 | 안내 |
 | --- | --- |
 | 직접 설치·에이전트 설정 | [English manual](skills/webgpt/references/install-manual.md) · [한국어](skills/webgpt/references/install-manual.ko.md) · [에이전트 설정](skills/webgpt/references/setup.md) |
-| 실용 요청문과 작업 설계 | [사용법](skills/webgpt/references/usage.md) · [부모 작업 절차](skills/webgpt/references/parent-workflow.md) |
+| 실용 요청문과 작업 설계 | [사용법](skills/webgpt/references/usage.md) · [부모 작업 절차](skills/webgpt/references/parent-workflow.md) · [일반 작업 완료](skills/webgpt/references/task-completion.md) |
 | 도구 계약과 제한 | [Workspace](skills/webgpt/references/workspace.md) |
 | 코드 수정과 네이티브 근거 | [개발 절차](skills/webgpt/references/development-loop.md) (정확한 구간 수정·리비전 고정 읽기·실패 요약) · [대형·바이너리 근거 입력](skills/webgpt/references/artifact-inputs.md) |
 | 전송·첨부·정리 | [Dispatch](skills/webgpt/references/dispatch.md) · [첨부](skills/webgpt/references/file-uploads.md) · [채팅 생명주기](skills/webgpt/references/chat-lifecycle.md) |
