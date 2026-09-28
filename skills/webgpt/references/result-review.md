@@ -14,7 +14,7 @@ disposition. Only after that review:
 node <skill>/scripts/client.mjs collect <task-id>
 ```
 
-`review` combines the existing scoped wait with a verified full-text read. It is
+`review` combines the existing scoped wait with a verified full-text read by default. It is
 not upstream `finish`: it **never collects or accepts work**, retires a token,
 clears a backup deadline, cancels, registers, resends, or operates a browser.
 Use `wait <id> ...` for metadata-only/multiple-task waits. Existing collection and
@@ -23,8 +23,10 @@ Use `wait <id> ...` for metadata-only/multiple-task waits. Existing collection a
 ## Result and notification contract
 
 The exported `reviewTask(id, config, options)` accepts the same `signal` and
-bounded `retryDelays` options as `waitForTasks`. The CLI accepts exactly one task
-ID, not a JSON file, `--file`, `--resume`, or an arbitrary result pathname.
+bounded `retryDelays` options as `waitForTasks`, plus optional `offset`, `limit`,
+`maxChars` and `expectedSha256` for the result read below. The CLI accepts exactly
+one task ID with optional explicit read flags, not a JSON file, `--file`,
+`--resume`, or an arbitrary result pathname.
 
 It returns the scoped wait envelope (`events`, `backupDue`, `settled`, and any
 existing recovery/interruption fields) plus:
@@ -68,6 +70,56 @@ This is a current observation, not an atomic transaction spanning parent review.
 Collection still independently rechecks recovery and result bytes before retirement;
 external changes after review can block collection. Do not skip or cache those checks.
 
+## Optional bounded result windows
+
+For a long result, request the relevant complete lines instead of sending the
+entire body through the parent's output channel again:
+
+```text
+node <skill>/scripts/client.mjs review <task-id> --limit 80 --max-chars 8000
+node <skill>/scripts/client.mjs review <task-id> --offset <nextOffset> --limit 80 --max-chars 8000 --expected-sha256 <sha256-from-first-review>
+```
+
+Use the returned `review.nextOffset` and `review.sha256`, not the hash of an
+excerpt. The API equivalent is `reviewTask(id, config, { offset, limit, maxChars,
+expectedSha256 })`. With no window option, the original full `content` and response
+shape remain unchanged; an `expectedSha256` pin alone also returns the full body.
+Any window option enables defaults for omitted bounds: `offset: 1`, `limit: 400`,
+`maxChars: 16000`. Offset is a positive safe integer; limit is 1–5000 lines and
+maxChars is 1–200000 UTF-16 code units, including original line endings.
+
+A successful window adds `partial`, `startLine`, `endLine`, `totalLines` and
+`nextOffset` **inside `review`**, alongside the selected `content`. Its `sha256`
+and `integrity` still describe the **whole verified result**, not only the excerpt.
+`partial` stays true on a final page starting after line 1; `nextOffset: null`
+means no later lines, not proof that earlier lines were read. An empty result has
+startLine 1, endLine 0, totalLines 0, partial false and nextOffset null.
+
+Selection preserves BOM, Unicode, NUL and CR/LF/CRLF without splitting or dropping
+line tails. An offset beyond EOF or a first requested line longer than maxChars
+fails with `REVIEW_RANGE`; increase bounds within the limits or explicitly choose
+full review. Invalid bounds, duplicate/unknown flags or an invalid SHA produce
+`REVIEW_USAGE` before the CLI reads configuration or calls the controller. CLI
+flags take separate values, not `--limit=80`. A valid SHA pin that differs from
+the current result produces `REVIEW_REVISION_CONFLICT` before reading the body;
+inspect that change rather than silently following the new revision. No failed
+window request automatically falls back to unbounded output.
+
+Every page still performs current task/recovery checks and reads, hashes and
+strictly decodes the **entire result once** before selecting lines. Corruption
+outside the requested window also fails. This reduces returned body volume, not
+whole-file I/O, HTTP requests or the 1 MiB result ceiling. Paging every line can
+cost more than one full review; use it for relevant context or output-channel
+limits, not as a mandatory healthy-task checklist. maxChars bounds selected text,
+not the total serialized JSON bytes: metadata and escaping add output overhead.
+
+Read all context needed for acceptance, following continuation or using full
+review when necessary. A first-page excerpt is not a complete requested report or
+a sufficient review by itself. Neither paging nor a SHA pin authorizes collection,
+accepts quality, proves final chat completion or changes the worker's terminal
+state. All existing null-result notifications, aborts, recovery blocks and fresh
+collection checks still apply; no result snapshot or acceptance verdict is cached.
+
 ## Exact bytes, privacy and scope
 
 The result is read using the existing canonical task path, regular single-link
@@ -77,8 +129,9 @@ Korean, emoji, CRLF and NUL are preserved. Invalid UTF-8 fails even with a match
 hash. There is no cache: later calls verify again.
 
 The existing 1 MiB result-file limit still applies. JSON escaping can make stdout
-larger than 1 MiB. Consume the entire JSON with a suitable output limit, or use the
-exported function; do not treat a truncated console preview as the full result.
+larger than 1 MiB. Consume the entire JSON with a suitable output limit, use the
+exported function or choose an explicit bounded window above; do not treat a
+truncated console preview as the full result.
 The body is intentionally returned to the authorized local parent. Keep stdout
 and saved review evidence private like the original result; do not copy it into
 shared diagnostics, unrelated chats or public PR comments. Review handles one
