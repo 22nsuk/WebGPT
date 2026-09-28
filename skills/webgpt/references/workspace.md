@@ -248,9 +248,17 @@ For metadata-only or multiple-task waits, scope the wait to the IDs owned by thi
 
 ```js
 // Import from the actual installed script URL; no user-specific adapter is needed.
-const { request, waitForTasks, collectTask } = await import(clientModuleUrl);
+const { request, waitForTasks, reviewTask, collectTask } = await import(clientModuleUrl);
 const notice = await waitForTasks(ownedTaskIds);
-// Inspect a returned result and its relevant evidence before acknowledging it.
+// Handle notices and select finishedTaskId from this batch's terminal events.
+const result = await reviewTask(finishedTaskId);
+```
+
+Repeat the read step for each finished task. `waitForTasks` supplies metadata, not the verified body.
+A null `result.review` requires handling its notices, not collection. Inspect `result.review.content`,
+relevant changes and checks, then record the parent's disposition. Only afterward, for that same task:
+
+```js
 const collected = await collectTask(finishedTaskId);
 ```
 
