@@ -2,8 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { buildArtifactInput, serializeArtifactInput, MAX_SOURCE_BYTES, MAX_WINDOW_BYTES, MAX_INPUT_BYTES } from './artifact-input.mjs';
@@ -305,4 +305,45 @@ test('CLI filesystem errors do not disclose absolute paths, and help does not re
   assert.equal(help.status, 0);
   assert.match(help.stdout, /Parent-only/);
   assert.equal(help.stderr, '');
+});
+
+
+test('CLI runs through a symlinked installation directory and still creates verified evidence', t => {
+  const f = fixture(t, 'linked installation');
+  const alias = join(f.dir, 'skill scripts 한글');
+  fs.symlinkSync(dirname(script), alias, process.platform === 'win32' ? 'junction' : 'dir');
+  const out = join(f.dir, 'evidence.json');
+  const result = spawnSync(process.execPath, [join(alias, 'artifact-input.mjs'),
+    '--source', f.source, '--label', f.label, '--out', out], { encoding: 'utf8', timeout: 10000 });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stderr, '');
+  assert.notEqual(result.stdout, '', 'successful CLI execution must return its evidence receipt');
+  const bytes = fs.readFileSync(out);
+  assert.equal(JSON.parse(result.stdout).sha256, hash(bytes));
+  assert.equal(JSON.parse(bytes.toString('utf8')).source.sha256, hash('linked installation'));
+});
+
+test('CLI runs through a leaf symlink without confusing it with an imported module', t => {
+  const f = fixture(t);
+  const alias = join(f.dir, 'artifact-link.mjs');
+  try { fs.symlinkSync(script, alias, 'file'); }
+  catch (error) { if (process.platform === 'win32' && error.code === 'EPERM') { t.skip('symlink creation not permitted'); return; } throw error; }
+  const result = spawnSync(process.execPath, [alias, '--help'], { encoding: 'utf8', timeout: 10000 });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Parent-only/);
+  assert.equal(result.stderr, '');
+});
+
+test('importing the helper from a script, eval or stdin does not run the CLI', t => {
+  const f = fixture(t);
+  const body = `import { buildArtifactInput } from ${JSON.stringify(pathToFileURL(script).href)};\n` +
+    `if (typeof buildArtifactInput !== 'function') throw Error('missing export');\n`;
+  const importer = join(f.dir, 'import-only.mjs');
+  fs.writeFileSync(importer, body);
+  for (const args of [[importer], ['--input-type=module', '-e', body], ['--input-type=module', '-']]) {
+    const result = spawnSync(process.execPath, args, { encoding: 'utf8', input: body, timeout: 10000 });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, '');
+    assert.equal(result.stderr, '');
+  }
 });

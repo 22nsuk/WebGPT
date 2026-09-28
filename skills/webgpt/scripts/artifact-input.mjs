@@ -1,7 +1,7 @@
 // Parent-only evidence preparation. Never imported by the worker or controller.
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
-import { isAbsolute, resolve } from 'node:path';
+import { isAbsolute } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 
@@ -160,7 +160,7 @@ function run(argv) {
   process.stdout.write(JSON.stringify({ ok: true, inputBytes: Buffer.byteLength(text), sha256: hash(text) }) + '\n');
 }
 
-if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
+if (process.argv[1] && process.argv[1] !== '-' && pathToFileURL(fs.realpathSync(process.argv[1])).href === import.meta.url) {
   try { run(process.argv.slice(2)); }
   catch (error) {
     // Native filesystem/parser messages can contain private paths or supplied arguments.
