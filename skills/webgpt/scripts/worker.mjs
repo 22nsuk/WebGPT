@@ -23,7 +23,7 @@ export const tools = [
   {name:'delete_file',description:'Directly delete an existing local project file after reading it. Requires matching expectedSha256; original and path are saved for recovery. No directory or recursive deletion.',inputSchema:schema({token:str,path:str,expectedSha256:str}),annotations:{readOnlyHint:false,destructiveHint:true,openWorldHint:false}},
   {name:'get_task',description:'Read the assigned task and input names using its private task token. No repository or Git setup needed.',inputSchema:schema({token:str}),annotations:{readOnlyHint:true,openWorldHint:false}},
   {name:'read_input',description:'Read one explicitly supplied input by name; no filesystem access. Optional offset (1-based), limit (lines) or maxChars returns complete lines with partial/range/nextOffset and the whole-input SHA256. Without options returns the original full text. Follow nextOffset for required context; an excerpt is not the full input.',inputSchema:{...schema({token:str,name:str}),properties:{token:str,name:str,...windowProperties}},annotations:{readOnlyHint:true,openWorldHint:false}},
-  {name:'submit_result',description:'Save the task deliverable, evidence and limitations, and notify the supervisor. No file changes required. Terminal: stops backup checks. Retry identical submission safely. Do not delete the chat.',inputSchema:schema({token:str,status:{type:'string',enum:['completed','failed','cancelled']},summary:str,result:str}),annotations:{readOnlyHint:false,destructiveHint:false,idempotentHint:true,openWorldHint:false}}
+  {name:'submit_result',description:'Save the finished task deliverable, evidence, real artifact references and limitations after feasible in-scope work and checks. Text submission does not transfer binary files. No file changes required. Terminal: stops backup checks; stop assigned changes and finish the final chat answer. Retry identical submission safely. Do not delete the chat.',inputSchema:schema({token:str,status:{type:'string',enum:['completed','failed','cancelled']},summary:str,result:str}),annotations:{readOnlyHint:false,destructiveHint:false,idempotentHint:true,openWorldHint:false}}
 ];
 export async function start({dir,port=43137,controlPort=43139,publicMcp=false,backupMs=900000,waitMs=55000,closeGraceMs=5000,now=Date.now,configFile=configurationFile(),audit=false,entryPath}={}) {
   const entryRoot=dirname(validatedEntryPath(import.meta.url,entryPath));
@@ -379,7 +379,18 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
       try{protocolVersion=negotiateProtocol(m.params?.protocolVersion);}catch{return error(200,m.id,-32602,'invalid protocolVersion');}
     }
     if(m.method==='ping')result={};
-    else if(m.method==='initialize')result={protocolVersion,capabilities:{tools:{}},serverInfo:{name:'webgpt-worker',version:'1.4.1-fork.4'},instructions:'Read get_task with your private task token and perform the assigned task. Use read_input for supplied inputs. No workspace or file changes are required for text-only work. Use local file tools only when needed and granted; requested edits are applied directly, with revision hashes from read_file and no per-file grants. Review-only tasks cannot write. Coordinate disjoint edits if other workers share the project. Submit result once with the deliverable, any change receipts, evidence and limitations. No Git, PR, shell, or process control. Supervisor verifies results and retains task chats by default. Delete a task chat only when the user explicitly requests deletion of that chat.'};
+    else if(m.method==='initialize')result={protocolVersion,capabilities:{tools:{}},serverInfo:{name:'webgpt-worker',version:'1.4.1-fork.4'},
+      // Connection-level guidance, not task data or authority over other tools.
+      instructions:[
+        'Read get_task with your private task token and follow its scope, inputs, destination and restrictions. Use read_input for supplied text.',
+        'Git is not required. Work using supplied inputs or separate apps needs no workspace unless local project files are needed.',
+        'This MCP bridge provides no Git, PR, shell, process control or binary transfer. Separately available tools may be used only when authorized for the assigned outcome; do not assume their availability or bypass restrictions.',
+        'Complete feasible assigned analysis, creation or editing, checks, corrections and delivery before submit_result. A requested review, plan or draft stays within that scope; do not add unrequested changes, sending or publication.',
+        'Use local file tools only when needed and granted. Preserve originals and revision hashes from read_file; read-only grants cannot write. Coordinate disjoint edits when sharing a project.',
+        'Return the requested deliverable, real accessible artifact references, change receipts, check evidence and limitations. A sandbox file or textual submission does not prove binary delivery or local placement.',
+        'If a step is blocked, finish independent work and identify the smallest remaining parent action instead of handing back work you can complete.',
+        'After submit_result, stop assigned changes and finish the final chat answer. Supervisor verifies results and retains task chats by default. Delete a task chat only when the user explicitly requests deletion of that chat.'
+      ].join(' ')};
     else if(m.method==='tools/list')result={tools};
     else if(m.method==='tools/call'){
       let record,started;
