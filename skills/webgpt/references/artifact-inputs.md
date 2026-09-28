@@ -34,7 +34,12 @@ The installed `scripts/artifact-input.mjs` uses Node.js 22+ built-ins only. The
 parent explicitly selects an authorized, stable local source and a new output file
 in a private directory it owns. Prefer a closed log or preserved artifact over a
 file still being written. Paths are absolute; the label is a shareable alias, not
-a path. The default is **metadata only**: size and whole-source SHA-256, no content.
+a path. Source/output strings must be well-formed Unicode: an unpaired surrogate
+is rejected before filesystem access rather than silently selecting or creating a
+different replacement-character filename. Deliberate `�`, paired emoji and ordinary
+Unicode paths are preserved; no normalization is applied. This does not recover
+path bytes already replaced by an embedding caller. The default is **metadata only**:
+size and whole-source SHA-256, no content.
 
 ```text
 node <skill>/scripts/artifact-input.mjs --source <absolute-artifact> --label build-log --out <new-private-json>
@@ -62,6 +67,13 @@ A failed output write can leave partial evidence: preserve and inspect it; do no
 register it as success or automatically retry/remove it. On success stdout contains
 `ok`, the output byte count and SHA-256 of the **evidence file**, not its contents.
 Do not pipe that receipt into registration as though it were the evidence.
+
+The CLI can run from a symlinked installation, including with Node
+[`--preserve-symlinks-main`](https://nodejs.org/api/cli.html#--preserve-symlinks-main)
+(with or without `--preserve-symlinks`). Entry detection resolves both the invoked
+path and module location; importing the helper still does not execute its CLI.
+This is about the installed script, not source-file permission: linked sources
+remain rejected. Exit zero alone is not an evidence receipt.
 
 Every invocation hashes the whole source once using a 64 KiB read buffer and
 retains only selected bytes. Sources over **256 MiB** reject before opening; actual
