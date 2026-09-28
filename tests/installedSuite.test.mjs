@@ -10,12 +10,14 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { runInstalledSuite, cleanupInstallation } from './helpers/installed-suite.mjs';
 
 async function fixture(t) {
-  const root = await fs.mkdtemp(join(tmpdir(), 'webgpt-installed-runner-'));
+  const root = await fs.mkdtemp(join(tmpdir(), 'webgpt installed # 한국어 % '));
   t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
   const write = async (name, text) => {
     const path = join(root, name);
     await fs.mkdir(join(path, '..'), { recursive: true }); await fs.writeFile(path, text);
   };
+  // Use the copied skill's real reporter, including URL-sensitive installation paths.
+  await write('scripts/test-feedback.mjs', await fs.readFile(new URL('../skills/webgpt/scripts/test-feedback.mjs', import.meta.url)));
   return { root, write };
 }
 
@@ -44,6 +46,7 @@ test('installed runner executes nested files with two active slots and visible p
   assert.equal(peak, 2); assert.equal(active, 0);
   assert.ok(messages[0].startsWith('START ')); assert.ok(messages[1].startsWith('START '));
   assert.equal(messages.filter(line => line.startsWith('DONE ')).length, 3);
+  assert.equal(messages.length, 6, 'healthy runs emit only existing START/DONE progress');
 });
 
 test('unexpected progress failure waits for the other slot and preserves its failure evidence', async t => {
@@ -131,4 +134,75 @@ for (const primary of [undefined, Error('original test failure')]) test(`cleanup
       return true;
     });
   } finally { mock.mock.restore(); }
+});
+
+
+test('installed feedback retains an early assertion after later output displaces its TAP detail', async t => {
+  const f = await fixture(t), messages = [];
+  await f.write('early.test.mjs', `import test from 'node:test';
+import assert from 'node:assert/strict';
+await test('early 한국어 🧪 assertion', () => assert.equal('actual 한국어 🧪', 'expected 한국어 🧪'));
+await test('later noisy pass', t => t.diagnostic('x'.repeat(1100000)));
+`);
+  await f.write('later.test.mjs', `import test from 'node:test'; test('independent file still runs', () => {});`);
+  await assert.rejects(runInstalledSuite(f.root, { progress: line => messages.push(line) }), error => {
+    assert.equal(error.errors.length, 1);
+    assert.match(error.cause.message, /early\.test\.mjs; code=1, signal=null/);
+    assert.equal(error.cleanupSafe, false, 'feedback must not change descendant-cleanup authority');
+    return true;
+  });
+  assert.equal(messages.filter(line => line.startsWith('DONE ')).length, 1);
+  const detail = messages.find(line => line.includes('\nstdout tail:\n'));
+  const [stdout, stderr] = detail.split('\nstdout tail:\n')[1].split('\nstderr tail:\n');
+  assert.doesNotMatch(stdout, /early 한국어|actual 한국어|expected 한국어/, 'the ordinary tail really lost the assertion');
+  assert.match(stdout, /# fail 1/);
+  assert.ok(stderr.includes('node-test-failure-events'), 'missing compact installed failure evidence');
+  const feedback = JSON.parse(stderr), failure = feedback.failures.find(item => item.name === 'early 한국어 🧪 assertion');
+  assert.equal(feedback.processExitCode, null); assert.equal(feedback.revision, null);
+  assert.equal(failure.file, await fs.realpath(join(f.root, 'early.test.mjs')));
+  assert.equal(failure.line, 3); assert.equal(failure.code, 'ERR_ASSERTION');
+  assert.match(failure.message, /actual 한국어 🧪/); assert.match(failure.message, /expected 한국어 🧪/);
+  assert.ok(failure.stack.includes('early.test.mjs'));
+  assert.equal(failure.truncated, false);
+  assert.ok(Buffer.byteLength(stderr) <= 32 * 1024);
+  assert.ok(messages.every(line => line.length < 140000));
+});
+
+test('installed feedback keeps its failure and byte bounds rather than echoing all output', async t => {
+  const f = await fixture(t), messages = [];
+  await f.write('many.test.mjs', `import test from 'node:test';
+for (let i=0;i<20;i++) await test('failure '+i, () => { throw Error('한🧪'.repeat(2000)); });
+await test('later noise', () => new Promise(resolve => process.stdout.write('z'.repeat(1100000)+'\\n', resolve)));
+`);
+  await assert.rejects(runInstalledSuite(f.root, { progress: line => messages.push(line) }), /1 installed test file\(s\) failed/);
+  const detail = messages.find(line => line.includes('\nstdout tail:\n'));
+  const stderr = detail.split('\nstderr tail:\n')[1];
+  assert.ok(stderr.includes('node-test-failure-events'), 'missing bounded installed failure evidence');
+  const feedback = JSON.parse(stderr);
+  assert.equal(feedback.observedFailures, 20);
+  assert.ok(feedback.failures.length > 0 && feedback.failures.length <= 12);
+  assert.equal(feedback.omittedFailures, 20 - feedback.failures.length);
+  assert.ok(feedback.failures.every(item => item.truncated));
+  assert.ok(feedback.failures.every(item => !item.message.includes('\ufffd')));
+  assert.ok(Buffer.byteLength(stderr) <= 32 * 1024);
+  assert.ok(messages.every(line => line.length < 140000));
+});
+
+for (const missing of [true, false]) test(`installed runner fails closed when its own reporter is ${missing ? 'missing' : 'broken'}`, async t => {
+  const f = await fixture(t), marker = join(f.root, 'test-ran'), messages = [];
+  await f.write('must-not-run.test.mjs', `import test from 'node:test'; import {writeFileSync} from 'node:fs';
+test('must not start without the installed reporter', () => writeFileSync(${JSON.stringify(marker)}, 'ran'));
+`);
+  if (missing) await fs.rm(join(f.root, 'scripts', 'test-feedback.mjs'));
+  else await f.write('scripts/test-feedback.mjs', "throw Error('broken installed reporter');\n");
+  await assert.rejects(runInstalledSuite(f.root, { progress: line => messages.push(line) }), error => {
+    assert.equal(error.cleanupSafe, false);
+    // Reporter startup failures need not use the assertion-failure exit code.
+    assert.match(error.cause.message, /code=[1-9]\d*, signal=null$/);
+    return true;
+  });
+  assert.equal(existsSync(marker), false, 'no fallback to a repository reporter or TAP-only run');
+  assert.equal(messages.filter(line => line.startsWith('DONE ')).length, 0);
+  assert.ok(messages.some(line => line.includes(missing ? 'test-feedback.mjs' : 'broken installed reporter')));
+  assert.ok(messages.every(line => line.length < 140000));
 });

@@ -2,7 +2,8 @@
 import fs from 'node:fs/promises';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { performance } from 'node:perf_hooks';
 
 const execute = promisify(execFile);
@@ -42,13 +43,18 @@ async function runFile(directory, file, timeoutMs, progress) {
   const started = performance.now();
   progress(`START ${file}`);
   const env = { ...process.env }; delete env.NODE_TEST_CONTEXT;
-  const child = spawn(process.execPath, ['--test', '--test-concurrency=2', '--test-reporter=tap', file], {
+  // Load the installed copy, never a repository fallback. Keep early failures
+  // available even when later TAP diagnostics displace them from the stdout tail.
+  const feedback = pathToFileURL(resolve(directory, 'scripts/test-feedback.mjs')).href;
+  const child = spawn(process.execPath, ['--test', '--test-concurrency=2', '--test-reporter=tap',
+    `--test-reporter=${feedback}`, '--test-reporter-destination=stdout', '--test-reporter-destination=stderr', file], {
     cwd: directory, env, windowsHide: true, detached: process.platform !== 'win32',
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let stdout = '', stderr = '', spawnError;
-  child.stdout.on('data', bytes => { stdout = (stdout + bytes.toString()).slice(-tailLimit); });
-  child.stderr.on('data', bytes => { stderr = (stderr + bytes.toString()).slice(-tailLimit); });
+  // Decode across pipe chunks so Unicode in the bounded report stays intact.
+  child.stdout.setEncoding('utf8').on('data', text => { stdout = (stdout + text).slice(-tailLimit); });
+  child.stderr.setEncoding('utf8').on('data', text => { stderr = (stderr + text).slice(-tailLimit); });
   child.on('error', error => { spawnError = error; });
   const closed = new Promise(resolve => child.once('close', (code, signal) => resolve({ code, signal })));
   let exit = await within(closed, timeoutMs);
