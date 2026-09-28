@@ -347,3 +347,30 @@ test('importing the helper from a script, eval or stdin does not run the CLI', t
     assert.equal(result.stderr, '');
   }
 });
+
+
+test('eval imports ignore unrelated positional arguments without leaking paths', t => {
+  const f = fixture(t);
+  const body = `await import(${JSON.stringify(pathToFileURL(script).href)});`;
+  const unrelated = join(f.dir, 'private-nonexistent-argument');
+  const result = spawnSync(process.execPath, ['--input-type=module', '-e', body, unrelated],
+    { encoding: 'utf8', timeout: 10000 });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, '');
+  assert.equal(result.stderr, '');
+});
+
+test('dynamic import remains side-effect free after its caller entry is renamed', t => {
+  const f = fixture(t);
+  const importer = join(f.dir, 'private-importer.mjs');
+  const moved = join(f.dir, 'moved-importer.mjs');
+  fs.writeFileSync(importer, `import fs from 'node:fs';\n` +
+    `fs.renameSync(${JSON.stringify(importer)}, ${JSON.stringify(moved)});\n` +
+    `await import(${JSON.stringify(pathToFileURL(script).href)});\n`);
+  const result = spawnSync(process.execPath, [importer], { encoding: 'utf8', timeout: 10000 });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, '');
+  assert.equal(result.stderr, '');
+  assert.equal(fs.existsSync(importer), false);
+  assert.equal(fs.existsSync(moved), true);
+});

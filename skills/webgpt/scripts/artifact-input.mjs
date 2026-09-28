@@ -160,7 +160,14 @@ function run(argv) {
   process.stdout.write(JSON.stringify({ ok: true, inputBytes: Buffer.byteLength(text), sha256: hash(text) }) + '\n');
 }
 
-if (process.argv[1] && process.argv[1] !== '-' && pathToFileURL(fs.realpathSync(process.argv[1])).href === import.meta.url) {
+function isCliEntry() {
+  if (!process.argv[1] || process.argv[1] === '-') return false;
+  try { return pathToFileURL(fs.realpathSync(process.argv[1])).href === import.meta.url; }
+  // Eval arguments and renamed importers need not name an existing entry file.
+  catch { return false; }
+}
+
+if (isCliEntry()) {
   try { run(process.argv.slice(2)); }
   catch (error) {
     // Native filesystem/parser messages can contain private paths or supplied arguments.
