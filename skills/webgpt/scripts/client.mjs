@@ -1,7 +1,7 @@
-import { readFileSync, realpathSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, isAbsolute } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { isCliEntry } from './cli-entry.mjs';
 import { readVerifiedResult, verifySavedResult } from './results.mjs';
 import { setTimeout as delay } from 'node:timers/promises';
 
@@ -313,7 +313,7 @@ export async function reconcileTasks(config = configuration(), { signal, ids } =
   }) };
 }
 
-if (process.argv[1] && process.argv[1] !== '-' && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
+if (isCliEntry(import.meta)) {
   const [action, ...args] = process.argv.slice(2);
   try {
     let result;

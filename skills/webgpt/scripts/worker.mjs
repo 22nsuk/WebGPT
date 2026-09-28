@@ -3,7 +3,8 @@ import { randomUUID, randomBytes, createHash, timingSafeEqual } from 'node:crypt
 import { mkdirSync, writeFileSync, readFileSync, existsSync, renameSync, unlinkSync, readdirSync, realpathSync, lstatSync } from 'node:fs';
 import { resolve, relative, isAbsolute, sep, dirname, basename } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
+import { isCliEntry } from './cli-entry.mjs';
 import { grantWorkspace, listWorkspace, probeWorkspace, readWorkspace, changeWorkspace, inspectRecovery } from './workspace.mjs';
 import { configuration, configurationFile } from './client.mjs';
 import { hasPendingResults, inspectPendingResults, storeResult, verifySavedResult } from './results.mjs';
@@ -530,7 +531,7 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
   return {mcpPort:mcp.address().port,controlPort:control.address().port,key,close};
   }catch(e){release();throw e;}
 }
-if(process.argv[1]&&process.argv[1]!=='-'&&import.meta.url===pathToFileURL(realpathSync(process.argv[1])).href){
+if(isCliEntry(import.meta)){
   let config, service, stopRequested=false;
   const stop=()=>{
     stopRequested=true;

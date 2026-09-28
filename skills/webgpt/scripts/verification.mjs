@@ -4,7 +4,7 @@
 import { randomUUID, createHash } from 'node:crypto';
 import { mkdirSync, writeFileSync, realpathSync, lstatSync, readdirSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { isCliEntry } from './cli-entry.mjs';
 import { isDeepStrictEqual } from 'node:util';
 import { configuration, reconcileTasks } from './client.mjs';
 import { readDiagnosticBytes } from './audit.mjs';
@@ -178,7 +178,7 @@ export async function checkVerification(path, config = configuration()) {
   return report;
 }
 
-if (process.argv[1] && process.argv[1] !== '-' && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
+if (isCliEntry(import.meta)) {
   try {
     const [action, ...args] = process.argv.slice(2);
     if (action === 'prepare' && args.length === 3) console.log(JSON.stringify(prepareVerification(...args)));

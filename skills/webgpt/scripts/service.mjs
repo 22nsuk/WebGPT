@@ -2,9 +2,9 @@
 // WinSW must use onfailure=none: this launcher owns the finite retry budget.
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdirSync, realpathSync } from 'node:fs';
+import { mkdirSync } from 'node:fs';
 import { resolve, isAbsolute, dirname } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { isCliEntry } from './cli-entry.mjs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { configuration } from './client.mjs';
 import { acquireRuntimeLock, startupExitCode, fault } from './runtime.mjs';
@@ -112,7 +112,7 @@ export async function runService(env = process.env, { spawnWorker = spawn, pause
     log('service_exited', { exitCode: result, stopReason });
   }
 }
-if (process.argv[1] && process.argv[1] !== '-' && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
+if (isCliEntry(import.meta)) {
   try {
     if (process.argv.length !== 3 || !['run', 'stop'].includes(process.argv[2])) throw fault('CONFIG_INVALID', 'usage: service.mjs run|stop');
     if (process.argv[2] === 'stop') console.log(JSON.stringify(await requestServiceStop()));
