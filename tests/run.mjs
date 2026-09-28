@@ -8,7 +8,8 @@ const root = fileURLToPath(new URL('../', import.meta.url));
 const files = directory => readdirSync(new URL('../' + directory + '/', import.meta.url), { withFileTypes: true })
   .flatMap(entry => entry.isDirectory() ? files(directory + '/' + entry.name)
     : entry.isFile() && entry.name.endsWith('.test.mjs') ? [directory + '/' + entry.name] : []).sort();
-const feedback = fileURLToPath(new URL('../skills/webgpt/scripts/test-feedback.mjs', import.meta.url));
+// Reporters are ESM specifiers: a Windows drive path is not a file URL.
+const feedback = new URL('../skills/webgpt/scripts/test-feedback.mjs', import.meta.url).href;
 const installation = 'tests/installation.test.mjs';
 const phases = [
   ['repository', [...files('skills/webgpt/scripts'), ...files('tests').filter(file => file !== installation)]],

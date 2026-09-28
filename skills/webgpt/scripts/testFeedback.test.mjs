@@ -1,9 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import reporter from './test-feedback.mjs';
@@ -73,16 +72,17 @@ test('real Node reporters preserve failing exit status, normal output and compac
   const file = join(dir, 'fixture.mjs');
   writeFileSync(file, "import test from 'node:test'; import assert from 'node:assert/strict';\n"
     + "test('pass',()=>{});test('real assertion',()=>assert.equal(1,2));\n");
-  const path = fileURLToPath(new URL('./test-feedback.mjs', import.meta.url));
+  const reporterUrl = new URL('./test-feedback.mjs', import.meta.url).href;
   const env = { ...process.env }; delete env.NODE_TEST_CONTEXT;
-  const args = ['--test', '--test-reporter=tap', `--test-reporter=${path}`,
+  const args = ['--test', '--test-reporter=tap', `--test-reporter=${reporterUrl}`,
     '--test-reporter-destination=stdout', '--test-reporter-destination=stderr', file];
   await assert.rejects(promisify(execFile)(process.execPath, args, { timeout: 15000, env }), error => {
     assert.equal(error.code, 1);
     assert.match(error.stdout, /not ok .*real assertion/);
     const value = JSON.parse(error.stderr);
     assert.equal(value.failures[0].name, 'real assertion');
-    assert.equal(value.failures[0].file, file);
+    // Node reports the resolved source path (e.g. macOS /var -> /private/var).
+    assert.equal(value.failures[0].file, realpathSync(file));
     assert.equal(value.failures[0].code, 'ERR_ASSERTION');
     assert.match(value.failures[0].message, /1 !== 2/);
     return true;

@@ -40,8 +40,13 @@ For a project's authorized `node --test` workflow, the installed
 `scripts/test-feedback.mjs` is an optional second reporter:
 
 ```text
-node --test --test-reporter=tap --test-reporter="<skill>/scripts/test-feedback.mjs" --test-reporter-destination=stdout --test-reporter-destination="<private-dir>/test-feedback.jsonl" <owned-test-file>
+node --test --test-reporter=tap --test-reporter="<reporter-file-url>" --test-reporter-destination=stdout --test-reporter-destination="<private-dir>/test-feedback.jsonl" <owned-test-file>
 ```
+
+Use the reporter's absolute `file:` URL as `<reporter-file-url>` (for example,
+`file:///C:/path/to/webgpt/scripts/test-feedback.mjs` on Windows). Generate it with
+Node's `pathToFileURL(absoluteReporterPath).href` so spaces, Unicode and reserved
+characters are encoded correctly; a bare Windows drive path is not an ESM URL.
 
 The parent creates/selects a private output directory and preserves the original
 command status and normal log. Use a new output path per run; Node's reporter

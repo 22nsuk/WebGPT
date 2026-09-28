@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -39,7 +39,7 @@ for (const failure of [null, 'repository', 'installation']) {
         assert.equal(feedback.evidence, 'node-test-failure-events');
         assert.ok(feedback.failures.length > 0);
         const expectedFile = failure === 'repository' ? join(scripts, 'a.test.mjs') : join(tests, 'installation.test.mjs');
-        assert.ok(feedback.failures.some(item => item.file === expectedFile));
+        assert.ok(feedback.failures.some(item => item.file === realpathSync(expectedFile)), result.stderr);
         assert.match(result.stdout, /not ok/);
       } else assert.equal(result.stderr, '');
       const entries = readFileSync(trace, 'utf8').trim().split('\n').map(JSON.parse);
