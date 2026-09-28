@@ -1,8 +1,7 @@
 // Local, read-only and task-scoped. This cannot test ChatGPT, repair a tunnel,
 // acknowledge a result, recover state or attribute unscoped traffic to a task.
 import { join } from 'node:path';
-import { realpathSync } from 'node:fs';
-import { pathToFileURL } from 'node:url';
+import { isCliEntry } from './cli-entry.mjs';
 import { configuration } from './client.mjs';
 import { parseState, parseStateMarker, assertNoStateStage } from './runtime.mjs';
 import { verifySavedResult, inspectPendingResults } from './results.mjs';
@@ -87,7 +86,7 @@ export function diagnoseTask(id, config = configuration()) {
   };
 }
 
-if (process.argv[1] && process.argv[1] !== '-' && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
+if (isCliEntry(import.meta)) {
   try {
     if (process.argv.length !== 3) throw Error('usage: diagnose.mjs <task-id>');
     console.log(JSON.stringify(diagnoseTask(process.argv[2])));

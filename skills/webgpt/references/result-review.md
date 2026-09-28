@@ -94,6 +94,27 @@ inspection costs remain. Collection still performs its own fresh precondition,
 recovery and post-retirement checks; do not cache or skip them based on a prior
 review. Subsequent external changes can therefore still block collection.
 
+## Embedding and linked installations
+
+Importing the core client, worker, service, diagnosis or verification module from
+an ordinary ESM script, `--eval` or standard input does not run its CLI. Pass task
+IDs explicitly to the exported functions; an eval argument is not an executable
+filename. A renamed importer also must not make a later import fail while trying
+to resolve that old filename.
+
+Core CLIs support directory-linked installations (Windows junctions included),
+with `--preserve-symlinks-main` alone or together with `--preserve-symlinks`.
+They use Node's [entrypoint metadata](https://nodejs.org/api/esm.html#importmetamain)
+when available and retain a fallback for earlier supported Node 22 releases.
+This detects invocation only: it does not rewrite `process.argv`, broaden grants,
+validate task identity or bypass the worker/service installation checks. A link
+to one script does not supply missing sibling modules.
+
+Install the complete matching skill, including `scripts/cli-entry.mjs`, through
+the existing stopped-update procedure. No connector schema or stored-task
+migration is needed. Exit 0 without the expected JSON is not a completed CLI
+operation; preserve the existing task and investigate rather than resend it.
+
 ## Reuse setup evidence, not live authorization
 
 Within the same unchanged parent session/Node host/installation revision/config,
