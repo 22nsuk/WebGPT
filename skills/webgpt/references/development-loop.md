@@ -1,23 +1,44 @@
 # Focused development without a remote shell
 
 Use the normal [parent workflow](parent-workflow.md): one coherent assignment,
-`review` → parent checks/disposition → `collect`. This page is for code/test work,
+worker validation/correction → `review` → gap-only parent checks/disposition → `collect`. This page is for code/test work,
 not another preflight checklist. The seven tools, project grant, 1 MiB UTF-8 file
 limit, recovery evidence and separate acceptance/collection remain the boundary.
 
-## 1. Send one useful validation handoff
+<a id="1-send-one-useful-validation-handoff"></a>
 
-Before dispatch, agree on the owned change and the project's existing focused
-checks. The worker supplies changed paths/receipts, rationale, expected behavior
-and proposed checks; a proposed command is evidence, not permission to execute it.
-The parent reviews executable changes and runs authorized checks in its local
-host. Where separately connected GitHub tools are available and publication/CI is
-assigned, the worker can inspect those actual remote results directly instead of
-asking the parent to copy them. This does not provide local execution through MCP.
+## 1. Keep validation and correction with the worker
 
-Run the relevant independent checks together before one focused correction, rather
-than opening a new task for every assertion. Stop a dependent check if its required
-build/setup failed and record NOT_RUN, not a speculative result. Return:
+Before dispatch, name the authoritative source revision/workspace, desired outcome,
+authorized actions and any known parent-only check. The worker owns the available
+checks and corrective iterations, not just test-code authoring. Discover only the
+needed capabilities in that worker session; an absent MCP shell does not mean an
+absent sandbox or GitHub connection, and a listed tool does not authorize its use.
+
+Use an available authorized worker sandbox for suitable checks of an exact source
+copy, or inspect the task branch's actual CI through connected GitHub tools when
+publication is authorized. Record which files/revision and environment were tested;
+a partial copy is not a full checkout, and sandbox/CI PASS is not local-installation
+PASS. Use only inputs authorized for that environment; never transfer credentials
+or bypass approvals to obtain execution. Review executable changes and side effects
+before running checks within the granted permissions.
+
+Fix actionable failures and inspect subsequent results within the same active
+assignment before `submit_result`. Do not return an initial patch for the parent
+to debug when the worker can complete the remaining authorized work. Batch related
+findings; do not create one task per assertion. Stop dependent checks after failed
+setup/build and mark them NOT_RUN. Do not rerun unchanged failures until green.
+
+### Parent assistance is the exception
+
+When a required check genuinely needs the parent's host, unavailable inputs or a
+user-only approval, finish independent worker work and report the smallest gap:
+why that environment is needed, the exact proposed check, expected evidence and
+tested revision. A proposed command is evidence, not permission to execute it.
+The parent reviews the command/side effects, runs only authorized missing checks
+and returns related failures together. There is no live execution request queue:
+use the existing terminal handoff/new-assignment lifecycle below, not a new tool,
+blocked pseudo-callback or early success claim. Include:
 
 ```text
 Revision: tested commit plus dirty-file whole SHA-256 / relevant change receipts
@@ -129,16 +150,20 @@ Use these arguments only when the actual installed connector advertises them.
 Update matching scripts through the existing stopped-worker process and refresh
 its schema when needed; do not silently drop `oldText` on an older worker (that
 would turn replacement text into a whole-file overwrite). Existing callers need
-no migration. For binary, >1 MiB and native CLI evidence, use the optional parent-only
-[artifact input helper](artifact-inputs.md): fingerprint the approved source once,
-select bounded text/hex windows, review the new evidence file and pass its text in
-named `inputs`. Native execution and large/binary writes remain with the parent;
-the helper adds no worker tool, command queue, upload or permission expansion.
+no migration. When required binary, >1 MiB or native CLI evidence exists only on
+the parent's host, use the optional parent-only [artifact input helper](artifact-inputs.md):
+fingerprint the approved source once, select bounded text/hex windows, review the
+new evidence and pass its text in named `inputs`. First reuse adequate evidence
+already accessible to the worker; do not make the parent extract it again. The
+helper adds no worker tool, command queue, upload or permission expansion. It does
+not authorize native execution or large/binary writes on the parent's host.
 
 ## 3. Keep the healthy route short
 
-Reuse the unchanged session's established setup evidence and the `review` result;
-keep per-task grants, per-send checks, parent acceptance and fresh `collect` checks.
+Reuse the unchanged session's setup evidence, the `review` result and sufficient
+revision-bound worker/CI checks. Additional parent tests need a concrete risk,
+missing evidence, changed files or environment gap, not a blanket duplicate suite.
+Keep per-task grants, per-send checks, parent acceptance and fresh `collect` checks.
 Do not add `ready`, full reconciliation, a connection probe, a full directory walk
 or this page to every healthy iteration. Read the affected recovery guide only for
 an actual interruption/conflict/notice. Batch real findings, not extra diagnostics.

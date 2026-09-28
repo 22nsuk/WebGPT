@@ -1,7 +1,9 @@
 # GitHub publication through a separate connected app
 
-Use this guide when the user assigns web ChatGPT branch/commit/PR publication or CI and review
-follow-through. The WebGPT MCP remains a project-text/result bridge. Its seven-tool inventory and
+Use this guide for authorized web-worker branch/commit/PR publication and CI/review follow-through.
+Assign the complete PR outcome to the worker by default when publication is authorized, unless the
+user limits the task or chooses another owner. Review-only or local-edit permission is not publication
+permission; never create a PR merely to obtain CI. The WebGPT MCP remains a project-text/result bridge. Its seven-tool inventory and
 lack of shell access do not describe the capabilities of a separately connected GitHub app.
 
 ## Discover the current operation, not a presumed limitation
@@ -50,12 +52,20 @@ investigate the existing connection, not permission to fabricate a successful ca
 
 ## Keep publication ownership and repository state explicit
 
-When the user requests direct worker publication, the worker owns that operation through its
-authorized GitHub tools. The parent must not silently create the PR and credit it to the worker.
-Assign parent assistance only for an actual uncovered step, preserving the user's chosen owner.
+The worker owns authorized publication, final-head CI inspection and review corrections through its
+available GitHub tools unless explicitly assigned otherwise. The parent must not silently create the
+PR and credit it to the worker. Reserve parent assistance for a concrete unavailable operation or
+required local environment; preserve an explicit user choice of owner.
 Local execution and GitHub publication are separate: an inability to run local tests does not block
 an otherwise authorized remote branch/commit/PR flow. Report local tests as NOT_RUN and distinguish
 them from CI tests that actually ran.
+
+For a repository/PR-only outcome, use the remote task branch as the authoritative work surface when
+no local changes/inputs are required. Omit an unnecessary local workspace grant; the worker can read
+and publish through GitHub, with optional authorized sandbox checks. Do not ask the parent to clone,
+apply patches or synchronize a checkout that was never part of the deliverable. If local dirty files
+or unpushed commits are task inputs, retain the local route or an explicitly approved exact snapshot;
+remote HEAD is not a substitute. Do not silently transfer private inputs into a remote branch or sandbox.
 
 Resolve the exact repository, base revision and task branch before writing. Reuse an existing task
 branch/PR only after reconciling ownership and current state. Preserve unrelated files and changes.
@@ -66,10 +76,11 @@ workspace receipt does not prove remote publication: compare the final remote di
 intended files and record the commit SHA.
 
 When the worker also edited a local checkout through MCP, remote commits do not update that
-checkout's HEAD or index. The parent must fetch the published ref and compare HEAD, index, current
-files and task receipts against the remote commit, preserving unrelated staged and unstaged work.
-Reconcile a matching task-owned checkout through authorized local Git operations, or record an
-explicit retained-work disposition and the authoritative published checkout. Do not blindly reset,
+checkout's HEAD or index. If local integration is required, the parent fetches the published ref and
+compares HEAD, index, current files and task receipts, preserving unrelated staged and unstaged work.
+Reconcile that checkout through authorized local Git operations, or record an explicit retained-work
+disposition, authoritative remote revision and outstanding local integration. Do not claim local
+integration complete merely because a PR exists. Do not blindly reset,
 clean or duplicate-commit the edits. Record the resulting local/remote revisions and any remaining
 changes before reporting integration complete; remote publication alone is not local reconciliation.
 
