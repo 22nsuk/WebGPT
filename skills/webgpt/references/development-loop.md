@@ -71,9 +71,16 @@ The report is not automatically redacted: names, paths, assertions and stacks ca
 contain private data. Review before sharing and retain the full private log when
 fields were clipped or events omitted. Nothing is automatically posted to a chat
 or PR. WebGPT's repository runner adds this reporter beside TAP, preserving its
-phase ordering, concurrency, exit handling and installed-layout checks. The outer
-installed-layout summary may name the harness; use its existing per-file log tail
-for nested failures, not a claim that the summary contains every assertion.
+phase ordering, concurrency, exit handling and installed-layout checks. Each installed
+test-file runner also loads the reporter from the copied skill, not the repository.
+On failure, its existing `stderr tail` includes that file's bounded failure events,
+even when later TAP diagnostics have displaced the assertion from `stdout tail`.
+The outer installed-layout summary may still name only the harness: inspect the
+matching `[installed] FAIL` detail first, rather than rerunning just to recover an
+early assertion. Limits apply per test-file process, not to the whole installation;
+omitted events, startup/timeout failures and other missing evidence still need the
+ordinary logs. A missing/broken installed reporter fails the check, with no fallback.
+Healthy runs keep the existing START/DONE progress and add no failure report.
 
 ## 2. Send only a small, exact edit when appropriate
 

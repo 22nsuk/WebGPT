@@ -13,9 +13,11 @@ and completion delivery; no separate callback receiver, arbitrary HTTP tool or s
 
 The parent imports `request` from the installed `scripts/client.mjs`, or uses the CLI with a local
 JSON payload file. The client reads `controller.key` privately; never send that key to WebGPT.
-Run the parent helpers in ordinary Node. Before registering browser work, run
-`node <skill>/scripts/client.mjs dispatch preflight`; a browser REPL need not expose Node's
-`process` or filesystem lifecycle. Keep browser actions in its authorized documented tool.
+Run the parent helpers in ordinary Node. Run `node <skill>/scripts/client.mjs dispatch preflight`
+once per unchanged parent session/host/install/configuration, not for each registration. Recheck
+affected capabilities after restart, relevant configuration/endpoint/schema/account/profile changes
+or an error; never cache per-task grants or per-send UI checks. A browser REPL need not expose
+Node's `process` or filesystem lifecycle. Keep browser actions in its authorized documented tool.
 
 ```text
 node <skill>/scripts/client.mjs register <private-task.json>
@@ -141,13 +143,18 @@ This is the protocol available to the worker, not a sequence to copy into ordina
   missing files keep `exists:false` without range metadata. An offset beyond the file is rejected.
   Complete lines retain their original LF, CRLF or CR endings. If the first requested line exceeds
   the character budget, increase it or use the full-file call; a line tail is never silently omitted.
-  `sha256` always covers the **entire original file**, not the excerpt. Compare it between windows;
-  restart reading after a revision change. Read the whole file before a replacement write so an
-  excerpt is never mistaken for the full body. The 1 MiB/UTF-8/link/path checks still apply to the
-  whole file, including bytes outside the returned window.
-- For requested edits, `write_file(token,path,text,expectedSha256)` creates (`null` revision) or
-  replaces a file using its read revision; `delete_file(token,path,expectedSha256)` removes a read
-  file. These directly change local files; Codex does not apply a returned patch. No recursive
+  `sha256` always covers the **entire original file**, not the excerpt. Optional `expectedSha256`
+  pins a read to that digest and rejects a changed/deleted file; by itself it keeps the full response.
+  Compare hashes between windows and restart reading after a revision change. Read the whole file
+  before full-file replacement so an excerpt is never mistaken for the full body. The 1 MiB/UTF-8/
+  link/path checks still apply to the whole file, including bytes outside the returned window.
+- For requested edits, `write_file(token,path,text,expectedSha256,oldText?)` creates (`null` revision)
+  or replaces a file using its read revision. Optional `oldText` instead selects exactly one literal
+  span in an existing file: `text` becomes its replacement. Read relevant context and retain the
+  whole-file SHA. Use new arguments only when advertised by the installed schema; **never drop
+  `oldText` on an older worker**, which would overwrite the file with only the replacement span.
+  See [development-loop.md](development-loop.md) for exact-edit constraints and pinned reads.
+  `delete_file(token,path,expectedSha256)` removes a read file. These directly change local files; Codex does not apply a returned patch. No recursive
   deletion. Content is UTF-8, at most 1 MiB/file. MCP project-relative paths always use `/`,
   including on Windows. Drive-relative paths, NTFS stream syntax (`:`), and path components
   consisting only of dots/spaces are rejected before filesystem access on every platform.
@@ -234,13 +241,24 @@ See [fork-policy.md](fork-policy.md) for execution risks and isolation requireme
 
 ## Completion and lifecycle
 
-Prefer a wait scoped to the task IDs owned by this batch:
+For one owned task, prefer `client.mjs review <task-id>` for its SHA-verified full result without
+collection. Handle a null `review` and its notices; inspect the body, relevant changes/checks and
+record disposition before `collect`. See [result-review.md](result-review.md).
+For metadata-only or multiple-task waits, scope the wait to the IDs owned by this batch:
 
 ```js
 // Import from the actual installed script URL; no user-specific adapter is needed.
-const { request, waitForTasks, collectTask } = await import(clientModuleUrl);
+const { request, waitForTasks, reviewTask, collectTask } = await import(clientModuleUrl);
 const notice = await waitForTasks(ownedTaskIds);
-// Inspect a returned result and its relevant evidence before acknowledging it.
+// Handle notices and select finishedTaskId from this batch's terminal events.
+const result = await reviewTask(finishedTaskId);
+```
+
+Repeat the read step for each finished task. `waitForTasks` supplies metadata, not the verified body.
+A null `result.review` requires handling its notices, not collection. Inspect `result.review.content`,
+relevant changes and checks, then record the parent's disposition. Only afterward, for that same task:
+
+```js
 const collected = await collectTask(finishedTaskId);
 ```
 
