@@ -272,13 +272,13 @@ for (const scenario of ['discarded', 'unconfirmed']) test(`ordinary collection C
 });
 
 
-// Inject native read failures, not a fabricated reconciliation body. Restore the
-// binding explicitly so cleanup and independent evidence reads are unaffected.
+// Fail opening the selected state file for reading, covering both whole-file
+// and bounded descriptor readers. Restore before cleanup and evidence reads.
 function failStateRead(t, path, enabled = () => true) {
-  const read = fs.readFileSync;
-  const mock = t.mock.method(fs, 'readFileSync', (file, ...args) => {
+  const open = fs.openSync;
+  const mock = t.mock.method(fs, 'openSync', (file, ...args) => {
     if (file === path && enabled()) throw Object.assign(Error('PRIVATE_STATE_READ_FAILURE'), { code: 'EIO' });
-    return read(file, ...args);
+    return open(file, ...args);
   });
   syncBuiltinESMExports();
   return () => { mock.mock.restore(); syncBuiltinESMExports(); };
