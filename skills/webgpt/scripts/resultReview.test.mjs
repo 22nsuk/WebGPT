@@ -241,10 +241,14 @@ for (const problem of ['none', 'pending-result', 'journal', 'changed-result']) t
   assert.equal(submitted.structuredContent.sha256, digest(text));
   const state = fs.readFileSync(join(dir, 'state.json'));
   assert.equal((await reviewTask('owned', config)).review.content, text);
+  const first = (await reviewTask('owned', config, { limit: 1, expectedSha256: digest(text) })).review;
+  assert.equal(first.content, text.slice(0, text.indexOf('\n') + 1));
+  assert.equal(first.partial, true); assert.equal(first.nextOffset, 2); assert.equal(first.sha256, digest(text));
   assert.deepEqual(fs.readFileSync(join(dir, 'state.json')), state);
   assert.equal((await callTool(worker, 'get_task', { token }))?.isError, false);
   if (problem === 'changed-result') {
     fs.writeFileSync(join(dir, 'owned.result.txt'), 'changed after parent review');
+    await assert.rejects(reviewTask('owned', config, { limit: 1 }), { code: 'RESULT_INVALID' });
     await assert.rejects(collectTask('owned', config), { code: 'RESULT_INVALID' });
     assert.deepEqual(fs.readFileSync(join(dir, 'state.json')), state);
   } else if (problem !== 'none') {
@@ -255,6 +259,7 @@ for (const problem of ['none', 'pending-result', 'journal', 'changed-result']) t
     const review = await reviewTask('owned', config);
     assert.equal(review.review, null);
     assert.equal(review.attention, problem === 'journal' ? 'inspect_recovery' : 'inspect_uncommitted_result');
+    assert.deepEqual(await reviewTask('owned', config, { limit: 1 }), review);
     await assert.rejects(collectTask('owned', config), { code: 'COLLECTION_RECOVERY_REQUIRED' });
     assert.deepEqual(fs.readFileSync(join(dir, 'state.json')), state);
   } else {
@@ -328,4 +333,128 @@ test('unrelated readiness warnings do not replace freshly verified task evidence
   const f = await fixture(t);
   f.reconcile(value => { value.health.ok = false; value.health.issues = ['WORKSPACE_UNAVAILABLE']; return value; });
   assert.equal((await reviewTask('owned', f.config)).review.content, text);
+});
+
+test('review windows reconstruct exact lines and preserve terminal status and full-read shape', async t => {
+  const lines = ['\uFEFF한국어 🧪\r\n', '\u0000literal "quotes" \\ path\n', 'CR only\r', 'last'];
+  for (const status of ['completed', 'failed', 'cancelled']) {
+    const content = lines.join(''), f = await fixture(t, { content, status });
+    let offset = 1, restored = '';
+    while (offset !== null) {
+      const result = await reviewTask('owned', f.config, { offset, limit: 1, expectedSha256: f.event.sha256 });
+      assert.deepEqual(result.review, { ...f.event, content: lines[offset - 1], integrity: 'verified',
+        partial: true, startLine: offset, endLine: offset, totalLines: 4, nextOffset: offset === 4 ? null : offset + 1 });
+      assert.equal(result.browserChecked, false); restored += result.review.content; offset = result.review.nextOffset;
+    }
+    assert.equal(restored, content);
+    assert.deepEqual((await reviewTask('owned', f.config, { expectedSha256: f.event.sha256 })).review,
+      { ...f.event, content, integrity: 'verified' }, 'a pin alone does not opt into a window');
+    assert.equal(fs.readFileSync(join(f.dir, 'state.json'), 'utf8'), 'owned-evidence');
+    assert.ok(f.calls.every(call => call.method === 'GET'));
+  }
+  const f = await fixture(t, { content: '' });
+  assert.deepEqual((await reviewTask('owned', f.config, { limit: 1 })).review,
+    { ...f.event, content: '', integrity: 'verified', partial: false, startLine: 1, endLine: 0, totalLines: 0, nextOffset: null });
+});
+
+test('review windows validate options before I/O and never silently widen an impossible range', async t => {
+  const f = await fixture(t, { content: '1234\n5678\nlast' });
+  for (const options of [{ offset: 0 }, { offset: Number.MAX_SAFE_INTEGER + 1 }, { limit: 5001 }, { limit: '1' },
+    { maxChars: 0 }, { maxChars: 200001 }, { maxChars: 1.5 }, { expectedSha256: null }, { expectedSha256: 'private-invalid-pin' }])
+    await assert.rejects(reviewTask('owned', f.config, options), { code: 'REVIEW_USAGE' });
+  assert.equal(f.calls.length, 0);
+  const page = (await reviewTask('owned', f.config, { maxChars: 5 })).review;
+  assert.equal(page.content, '1234\n'); assert.equal(page.nextOffset, 2);
+  for (const options of [{ maxChars: 4 }, { offset: 4 }])
+    await assert.rejects(reviewTask('owned', f.config, options), { code: 'REVIEW_RANGE' });
+  assert.equal((await reviewTask('owned', f.config)).review.content, '1234\n5678\nlast');
+  const many = 'a\n'.repeat(450); fs.writeFileSync(f.artifact, many); f.event.sha256 = digest(many);
+  const defaults = (await reviewTask('owned', f.config, { offset: 1 })).review;
+  assert.equal(defaults.endLine, 400); assert.equal(defaults.nextOffset, 401);
+});
+
+test('review windows reduce returned bytes while still reading and verifying the entire result once', async t => {
+  const line = 'x'.repeat(63) + '\n', content = line.repeat(16384);
+  const f = await fixture(t, { content });
+  const full = await reviewTask('owned', f.config); let page;
+  const reads = await observeResultReads(t, f, async () => {
+    page = await reviewTask('owned', f.config, { maxChars: 128 });
+  });
+  assert.deepEqual(reads, { opens: 1, bytes: 1024 * 1024 });
+  assert.equal(page.review.content, line.repeat(2)); assert.equal(page.review.sha256, digest(content));
+  assert.equal(page.review.partial, true); assert.equal(page.review.totalLines, 16384); assert.equal(page.review.nextOffset, 3);
+  const fullBytes = Buffer.byteLength(JSON.stringify(full)), windowBytes = Buffer.byteLength(JSON.stringify(page));
+  assert.ok(windowBytes < fullBytes / 100);
+  t.diagnostic(JSON.stringify({ sourceBytes: Buffer.byteLength(content), fullJsonBytes: fullBytes, windowJsonBytes: windowBytes,
+    selectedCodeUnits: page.review.content.length, resultReads: reads.opens, bytesVerified: reads.bytes }));
+  assert.equal(f.calls.length, 4); assert.ok(f.calls.every(call => call.method === 'GET'));
+});
+
+test('review windows pin the whole revision and reject corruption outside the visible lines', async t => {
+  const f = await fixture(t, { content: 'same first line\nold tail\n' }), pin = f.event.sha256;
+  const first = (await reviewTask('owned', f.config, { limit: 1 })).review;
+  assert.equal(first.content, 'same first line\n');
+  const changed = 'same first line\nnew tail\n'; fs.writeFileSync(f.artifact, changed); f.event.sha256 = digest(changed);
+  const reads = await observeResultReads(t, f, () => assert.rejects(
+    reviewTask('owned', f.config, { limit: 1, expectedSha256: pin }), { code: 'REVIEW_REVISION_CONFLICT' }));
+  assert.equal(reads.opens, 0);
+  f.event.sha256 = pin;
+  await assert.rejects(reviewTask('owned', f.config, { limit: 1 }), { code: 'RESULT_INVALID' });
+  const invalid = Buffer.concat([Buffer.from('same first line\n'), Buffer.from([0xff])]);
+  fs.writeFileSync(f.artifact, invalid); f.event.sha256 = digest(invalid);
+  await assert.rejects(reviewTask('owned', f.config, { limit: 1 }), { code: 'RESULT_INVALID' });
+  assert.equal(fs.readFileSync(join(f.dir, 'state.json'), 'utf8'), 'owned-evidence');
+});
+
+test('review windows CLI accepts explicit bounds and rejects ambiguous options without private diagnostics', async t => {
+  const f = await fixture(t); fs.writeFileSync(join(f.dir, 'owned'), '{"id":"other"}');
+  const args = ['review', 'owned', '--offset', '2', '--limit', '1', '--max-chars', '100', '--expected-sha256', f.event.sha256];
+  const response = await f.runCli(args), value = JSON.parse(response.stdout);
+  assert.equal(response.stderr, ''); assert.equal(value.review.content, text.slice(text.indexOf('\n') + 1));
+  assert.equal(value.review.startLine, 2); assert.equal(value.review.nextOffset, null); assert.equal(value.review.partial, true);
+  const before = f.calls.length;
+  for (const flags of [['--limit'], ['--limit', '1', '--limit', '2'], ['--limit', '1.2'], ['--offset', '0'],
+    ['--offset', '9007199254740992'], ['--max-chars', '200001'], ['--expected-sha256', 'private-invalid-pin'],
+    ['--file', 'private.json'], ['--resume', 'owned'], ['--unknown', 'private'], ['--limit=1'], ['--', 'private']]) {
+    await assert.rejects(f.runCli(['review', 'owned', ...flags]), error => {
+      assert.equal(error.code, 1); assert.equal(error.stdout, ''); assert.match(error.stderr, /REVIEW_USAGE/);
+      assert.ok(!error.stderr.includes(f.dir)); assert.doesNotMatch(error.stderr, /private/); return true;
+    });
+  }
+  assert.equal(f.calls.length, before);
+  for (const [flags, code] of [[['--max-chars', '1'], 'REVIEW_RANGE'],
+    [['--expected-sha256', '0'.repeat(64)], 'REVIEW_REVISION_CONFLICT']]) {
+    await assert.rejects(f.runCli(['review', 'owned', ...flags]), error => {
+      assert.equal(error.code, 1); assert.equal(error.stdout, ''); assert.ok(error.stderr.includes(code));
+      for (const secret of [f.dir, text, f.event.sha256]) assert.ok(!error.stderr.includes(secret)); return true;
+    });
+  }
+  // Usage validation must precede even a malformed local configuration read.
+  fs.writeFileSync(join(f.dir, 'config.json'), 'private invalid configuration');
+  const requests = f.calls.length;
+  await assert.rejects(f.runCli(['review', 'owned', '--limit', '0']), error => {
+    assert.equal(error.stdout, ''); assert.match(error.stderr, /REVIEW_USAGE/);
+    assert.doesNotMatch(error.stderr, /private/); return true;
+  });
+  assert.equal(f.calls.length, requests);
+});
+
+test('review windows retain recovery, current-state and abort gates before any result read', async t => {
+  const f = await fixture(t), options = { limit: 1, expectedSha256: f.event.sha256 };
+  const reads = await observeResultReads(t, f, async () => {
+    for (const field of ['recoveryRequired', 'journalIssues', 'pendingResults']) {
+      f.reconcile(value => { value.tasks[0][field] = ['owned evidence']; return value; });
+      const result = await reviewTask('owned', f.config, options);
+      assert.equal(result.review, null); assert.equal(result.browserChecked, false);
+      assert.equal(result.attention, field === 'pendingResults' ? 'inspect_uncommitted_result' : 'inspect_recovery');
+    }
+    f.reconcile(value => { value.health.stateVerified = false; return value; });
+    await assert.rejects(reviewTask('owned', f.config, options), { code: 'REVIEW_UNCONFIRMED' });
+    const before = f.calls.length, controller = new AbortController(), reason = Error('owned stop'); controller.abort(reason);
+    await assert.rejects(reviewTask('owned', f.config, { ...options, signal: controller.signal }), error => error === reason);
+    assert.equal(f.calls.length, before);
+    f.respond((_req, res) => res.end(JSON.stringify({ ...empty(), resultRecoveryRequired: [{ id: 'owned' }] })));
+    assert.equal((await reviewTask('owned', f.config, options)).review, null);
+  });
+  assert.deepEqual(reads, { opens: 0, bytes: 0 }); assert.ok(f.calls.every(call => call.method === 'GET'));
 });
