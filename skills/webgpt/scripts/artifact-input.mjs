@@ -166,10 +166,12 @@ function isCliEntry() {
   // Keep this built-in-only helper usable through a preserved leaf symlink.
   // A relative cli-entry.mjs import would resolve beside that link, not its target.
   // cliImports.test.mjs owns the shared entry contract for both implementations.
-  if (typeof import.meta.main === 'boolean') return import.meta.main;
+  // A true native identity is conclusive. A preload of this same URL sees false
+  // and is cached before main runs, so it still needs the guarded path check.
+  if (import.meta.main === true) return true;
   const entry = process.argv[1];
   if (typeof entry !== 'string' || !entry || entry === '-' || !entry.isWellFormed() || entry.includes('\0')) return false;
-  // On earlier Node 22, eval/print positional arguments are data, not an entry.
+  // Eval/print positional arguments are data, not an entry.
   if (process.execArgv.some(arg => /^--(?:eval|print)(?:=|$)/.test(arg) || /^-[ep](?:[^-]|$)/.test(arg))) return false;
   const url = new URL(import.meta.url);
   if (url.protocol !== 'file:' || url.search || url.hash) return false;
@@ -182,9 +184,17 @@ function isCliEntry() {
   }
 }
 
+const cliExecuted = Symbol.for('webgpt.artifact-input.cli-executed');
 try {
-  if (isCliEntry()) run(process.argv.slice(2));
+  if (!globalThis[cliExecuted] && isCliEntry()) {
+    // Canonical and preserved-symlink URLs can evaluate separately in one CLI
+    // process. Claim execution before run, including failures, across both URLs.
+    globalThis[cliExecuted] = true;
+    run(process.argv.slice(2));
+  }
 } catch (error) {
+  // A failed preload lookup must also block a later main-URL invocation.
+  globalThis[cliExecuted] = true;
   // Native filesystem/parser messages can contain private paths or supplied arguments.
   const code = typeof error.code === 'string' && /^[A-Z0-9_]+$/.test(error.code) ? error.code : 'ERROR';
   process.stderr.write(JSON.stringify({ ok: false, code,
