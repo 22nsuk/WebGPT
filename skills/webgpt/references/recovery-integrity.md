@@ -4,6 +4,9 @@ Use alongside [operations-windows.md](operations-windows.md). This describes loc
 recovery evidence, not permission to install services, change ACLs, reset state,
 execute delegated code, or restart a parent/browser automatically.
 
+Implementation ownership, the read-limit inventory and deliberately different
+state/streaming paths are documented in [file-read-contract.md](file-read-contract.md).
+
 ## A result file is not a committed result
 
 `submit_result` publishes UTF-8 result bytes, then commits terminal task state.

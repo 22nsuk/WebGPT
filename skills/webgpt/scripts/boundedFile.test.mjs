@@ -1,0 +1,131 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import { constants } from 'node:buffer';
+import { syncBuiltinESMExports } from 'node:module';
+import { join } from 'node:path';
+import { readBoundedFile } from './bounded-read.mjs';
+import { readFixture, observeFileRead } from './test-fixtures/file-read.mjs';
+
+const invalid = reason => Object.assign(Error('fixture file rejected'), { code: 'FIXTURE_INVALID', reason });
+const rejected = reason => ({ code: 'FIXTURE_INVALID', reason });
+function fixture(t, bytes = Buffer.from('exact 한국어 🧪\r\n')) {
+  const file = join(readFixture(t), 'input'); fs.writeFileSync(file, bytes);
+  return { file, bytes };
+}
+
+test('bounded file validates policy before filesystem access', t => {
+  const lookup = t.mock.method(fs, 'lstatSync', () => assert.fail('no filesystem access'));
+  syncBuiltinESMExports();
+  try {
+    for (const limit of [undefined, null, -1, 0.5, '1', NaN, Infinity, constants.MAX_LENGTH, Number.MAX_SAFE_INTEGER])
+      assert.throws(() => readBoundedFile('unused', limit, invalid), RangeError);
+    for (const factory of [undefined, null, {}, 1])
+      assert.throws(() => readBoundedFile('unused', 1, factory), TypeError);
+    assert.equal(lookup.mock.callCount(), 0);
+  } finally { lookup.mock.restore(); syncBuiltinESMExports(); }
+});
+
+test('bounded file distinguishes absent and empty files even at a zero-byte limit', t => {
+  const { file } = fixture(t, Buffer.alloc(0));
+  assert.equal(readBoundedFile(file + '.missing', 0, invalid), null);
+  const trace = observeFileRead(t, file);
+  let result;
+  try { result = readBoundedFile(file, 0, invalid); } finally { trace.restore(); }
+  assert.deepEqual(result.bytes, Buffer.alloc(0)); assert.equal(result.stat.size, 0);
+  assert.deepEqual(trace.evidence, { opens: 1, closes: 1, reads: 1, bytes: 0 });
+});
+
+for (const bytes of [Buffer.from([0, 255, 192, 128]), Buffer.from('\uFEFF한국어 🧪\r\n')]) {
+  test(`bounded file preserves opaque ${bytes.length}-byte input and opened metadata through short reads`, t => {
+    const { file } = fixture(t, bytes), trace = observeFileRead(t, file, { chunkSize: 3 });
+    let result;
+    try { result = readBoundedFile(file, bytes.length, invalid); } finally { trace.restore(); }
+    assert.deepEqual(result.bytes, bytes);
+    assert.equal(result.stat.dev, fs.statSync(file).dev); assert.equal(result.stat.ino, fs.statSync(file).ino);
+    assert.equal(trace.evidence.bytes, bytes.length); assert.equal(trace.evidence.closes, 1);
+  });
+}
+
+for (const kind of ['oversized', 'directory', 'hardlink', 'symlink', 'dangling']) {
+  test(`bounded file rejects known ${kind} before opening content and preserves evidence`, t => {
+    const { file, bytes } = fixture(t), target = file + '.target';
+    if (kind === 'directory') { fs.unlinkSync(file); fs.mkdirSync(file); }
+    if (kind === 'hardlink') fs.linkSync(file, target);
+    if (kind === 'symlink' || kind === 'dangling') {
+      fs.renameSync(file, target);
+      try { fs.symlinkSync(kind === 'dangling' ? target + '.missing' : target, file, 'file'); }
+      catch (error) {
+        if (process.platform === 'win32' && ['EPERM', 'EACCES', 'ENOTSUP'].includes(error.code))
+          return t.skip('native file symlink creation is unavailable');
+        throw error;
+      }
+    }
+    const trace = observeFileRead(t, file);
+    try { assert.throws(() => readBoundedFile(file, kind === 'oversized' ? bytes.length - 1 : 4096, invalid), rejected('metadata')); }
+    finally { trace.restore(); }
+    assert.equal(trace.evidence.opens, 0); assert.equal(trace.evidence.bytes, 0);
+    if (kind === 'directory') assert.ok(fs.lstatSync(file).isDirectory());
+    else if (kind === 'symlink' || kind === 'dangling') {
+      assert.ok(fs.lstatSync(file).isSymbolicLink()); assert.deepEqual(fs.readFileSync(target), bytes);
+      assert.equal(fs.existsSync(target + '.missing'), false);
+    } else assert.deepEqual(fs.readFileSync(file), bytes);
+  });
+}
+
+for (const property of ['size', 'nlink', 'isFile']) test(`bounded file rechecks opened ${property} before reading`, t => {
+  const { file, bytes } = fixture(t), trace = observeFileRead(t, file);
+  const native = fs.fstatSync;
+  const mock = t.mock.method(fs, 'fstatSync', (...args) => {
+    const info = native(...args);
+    if (property === 'size') info.size = bytes.length + 1;
+    if (property === 'nlink') info.nlink = 2;
+    if (property === 'isFile') info.isFile = () => false;
+    return info;
+  });
+  syncBuiltinESMExports();
+  try { assert.throws(() => readBoundedFile(file, bytes.length, invalid), rejected('metadata')); }
+  finally { mock.mock.restore(); syncBuiltinESMExports(); trace.restore(); }
+  assert.equal(trace.evidence.bytes, 0); assert.equal(trace.evidence.closes, 1);
+  assert.deepEqual(fs.readFileSync(file), bytes);
+});
+
+for (const [method, code, closed] of [
+  ['lstatSync', 'EACCES', 0], ['openSync', 'ENOENT', 0], ['fstatSync', 'EIO', 1],
+  ['readSync', 'EIO', 1], ['closeSync', 'EIO', 1],
+]) test(`bounded file preserves native ${method} ${code} rather than domain success or absence`, t => {
+  const { file, bytes } = fixture(t), trace = observeFileRead(t, file), native = fs[method];
+  const failure = Object.assign(Error('native fixture failure'), { code });
+  const mock = t.mock.method(fs, method, (...args) => {
+    if (method === 'closeSync') native(...args); // Actually close the fixture, then surface its injected failure.
+    throw failure;
+  });
+  syncBuiltinESMExports();
+  try { assert.throws(() => readBoundedFile(file, bytes.length, invalid), error => error === failure); }
+  finally { mock.mock.restore(); syncBuiltinESMExports(); trace.restore(); }
+  assert.equal(trace.evidence.closes, closed); assert.deepEqual(fs.readFileSync(file), bytes);
+});
+
+test('bounded file allows within-budget growth; it is not an initial-size snapshot', t => {
+  const { file } = fixture(t, Buffer.from('a')), grown = Buffer.from('abcdef');
+  const trace = observeFileRead(t, file, { beforeRead: () => fs.writeFileSync(file, grown), chunkSize: 2 });
+  let result;
+  try { result = readBoundedFile(file, grown.length, invalid); } finally { trace.restore(); }
+  assert.deepEqual(result.bytes, grown); assert.equal(result.stat.size, 1);
+  assert.equal(trace.evidence.bytes, grown.length); assert.equal(trace.evidence.closes, 1);
+});
+
+test('bounded file rejects overflow before domain decoding and preserves the rejection identity', t => {
+  const { file } = fixture(t, Buffer.alloc(0)), failure = Error('domain overflow');
+  const trace = observeFileRead(t, file, { beforeRead: () => fs.writeFileSync(file, 'xx') });
+  try { assert.throws(() => readBoundedFile(file, 0, reason => {
+    assert.equal(reason, 'overflow'); return failure;
+  }), error => error === failure); } finally { trace.restore(); }
+  assert.equal(trace.evidence.bytes, 1); assert.equal(trace.evidence.closes, 1);
+});
+
+test('native read instrumentation ignores its own growth writes and counts only the reader', t => {
+  const { file } = fixture(t), trace = observeFileRead(t, file, { beforeRead: () => fs.writeFileSync(file, 'changed') });
+  try { assert.equal(readBoundedFile(file, 128, invalid).bytes.toString(), 'changed'); } finally { trace.restore(); }
+  assert.equal(trace.evidence.opens, 1); assert.equal(trace.evidence.closes, 1); assert.equal(trace.evidence.bytes, 7);
+});

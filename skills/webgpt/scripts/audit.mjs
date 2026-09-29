@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { closeSync, constants, fstatSync, lstatSync, openSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fault } from './runtime.mjs';
-import { readBytesUpTo } from './bounded-read.mjs';
+import { readBoundedFile } from './bounded-read.mjs';
 
 export const AUDIT_LIMIT = 1024 * 1024;
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
@@ -100,18 +100,7 @@ export function createAuditWriter(dir, enabled = false, { warn = () => console.e
   };
 }
 
-// The cap is enforced by actual reads, including one sentinel byte, not just stat.
+// Diagnostics keep their own allowance and unavailable error, not a separate read loop.
 export function readDiagnosticBytes(file, limit) {
-  const info = stat(file);
-  if (!info) return null;
-  regular(info, limit);
-  const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
-  try {
-    const opened = fstatSync(fd);
-    regular(opened, limit);
-    if (opened.dev !== info.dev || opened.ino !== info.ino) throw unavailable();
-    const bytes = readBytesUpTo(fd, limit + 1);
-    if (bytes.length > limit) throw unavailable();
-    return bytes;
-  } finally { closeSync(fd); }
+  return readBoundedFile(file, limit, unavailable)?.bytes ?? null;
 }

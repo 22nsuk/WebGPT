@@ -3,33 +3,25 @@ import { randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
 import { isAbsolute, resolve } from 'node:path';
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs';
-import { readBytesUpTo } from './bounded-read.mjs';
+import { readBoundedFile, readBytesUpTo } from './bounded-read.mjs';
 
 export const fault = (code, message) => Object.assign(Error(message), { code, retryable: false });
 const record = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const stat = path => { try { return lstatSync(path); } catch (e) { if (e.code === 'ENOENT') return null; throw e; } };
 
-// These fixed-size control files are not the variable-size task inventory.
-// Bound the actual read even if another writer grows the file after stat.
-function readMetadataBytes(file, limit, code) {
-  const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
-  try {
-    const info = fstatSync(fd);
-    if (!info.isFile() || info.nlink !== 1 || info.size > limit)
-      throw fault(code, 'invalid runtime metadata; preserve evidence');
-    const bytes = readBytesUpTo(fd, limit + 1);
-    if (bytes.length > limit) throw fault(code, 'runtime metadata exceeds its byte limit; preserve evidence');
-    return bytes;
-  } finally { closeSync(fd); }
-}
-
 function readOwner(lock) {
-  const directory = stat(lock), file = stat(resolve(lock, 'owner.json'));
-  if (!directory?.isDirectory() || directory.isSymbolicLink() || !file?.isFile()
-      || file.isSymbolicLink() || file.nlink !== 1 || file.size > 4096)
+  // Preserve native owner-lookup I/O errors before the legacy unreadable-owner
+  // boundary. The shared reader independently validates the file it will open.
+  const directory = stat(lock), present = stat(resolve(lock, 'owner.json'));
+  if (!directory?.isDirectory() || directory.isSymbolicLink() || !present)
     throw fault('LOCK_UNCERTAIN', 'runtime lock owner is missing or invalid; preserve it for inspection');
   let owner;
-  try { owner = JSON.parse(readMetadataBytes(resolve(lock, 'owner.json'), 4096, 'LOCK_UNCERTAIN').toString('utf8')); } catch {
+  try {
+    const saved = readBoundedFile(resolve(lock, 'owner.json'), 4096,
+      () => fault('LOCK_UNCERTAIN', 'runtime lock owner is missing or invalid; preserve it for inspection'));
+    if (!saved) throw fault('LOCK_UNCERTAIN', 'runtime lock owner is missing; preserve it for inspection');
+    owner = JSON.parse(saved.bytes.toString('utf8'));
+  } catch {
     throw fault('LOCK_UNCERTAIN', 'runtime lock owner is unreadable; preserve it for inspection');
   }
   if (!record(owner) || !Number.isSafeInteger(owner.pid) || owner.pid < 1 || typeof owner.host !== 'string' || !owner.host)
@@ -150,7 +142,7 @@ export function writeStateBytes(path, bytes) {
     if (!staged.isFile() || staged.nlink !== 1
         || (process.platform !== 'win32' && (staged.mode & 0o077))) throw stateStageConflict();
     if (created) writeFileSync(fd, bytes);
-    else if (staged.size !== bytes.length || !readFileSync(fd).equals(bytes)) throw stateStageConflict();
+    else if (staged.size !== bytes.length || !readBytesUpTo(fd, bytes.length + 1).equals(bytes)) throw stateStageConflict();
     fsyncSync(fd); // Required on retries too: a previous flush may have failed.
   } finally { closeSync(fd); }
   const current = stat(temporary);
@@ -172,11 +164,9 @@ export function parseStateMarker(bytes) {
 }
 
 export function readStateMarker(path) {
-  const info = stat(path);
-  if (!info) return false;
-  if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || info.size > initializedBytes.length)
-    throw fault('STATE_INVALID', 'invalid state initialization marker; preserve evidence, do not reset');
-  return parseStateMarker(readMetadataBytes(path, initializedBytes.length, 'STATE_INVALID'));
+  const saved = readBoundedFile(path, initializedBytes.length,
+    () => fault('STATE_INVALID', 'invalid state initialization marker; preserve evidence, do not reset'));
+  return parseStateMarker(saved?.bytes ?? null);
 }
 
 export function createStateMarker(path) {

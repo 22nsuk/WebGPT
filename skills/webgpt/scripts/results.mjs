@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync, renameSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fault } from './runtime.mjs';
-import { readBytesUpTo } from './bounded-read.mjs';
+import { readBoundedFile, readBytesUpTo } from './bounded-read.mjs';
 
 const MAX_BYTES = 1024 * 1024;
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -19,16 +19,9 @@ function regular(info) {
     throw fault('RESULT_INVALID', 'saved result must be a regular single-link file <=1 MiB');
 }
 function readCandidate(file) {
-  let info;
-  try { info = lstatSync(file); } catch (error) { if (error.code === 'ENOENT') return null; throw error; }
-  regular(info);
-  const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
-  try {
-    regular(fstatSync(fd));
-    const bytes = readBytesUpTo(fd, MAX_BYTES + 1);
-    if (bytes.length > MAX_BYTES) throw fault('RESULT_INVALID', 'saved result exceeds 1 MiB');
-    return { bytes, sha256: digest(bytes) };
-  } finally { closeSync(fd); }
+  const saved = readBoundedFile(file, MAX_BYTES, reason => fault('RESULT_INVALID',
+    reason === 'overflow' ? 'saved result exceeds 1 MiB' : 'saved result must be a regular single-link file <=1 MiB'));
+  return saved ? { bytes: saved.bytes, sha256: digest(saved.bytes) } : null;
 }
 
 function verifiedResultBytes(event, dir) {

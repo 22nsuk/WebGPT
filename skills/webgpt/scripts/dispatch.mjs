@@ -2,9 +2,9 @@
 // Extend the one private task ledger; completion remains authoritative in the controller.
 // Storage and evidence handling: ../references/dispatch-storage.md.
 import { createHash, randomUUID } from 'node:crypto';
-import { closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync, writeFileSync, renameSync, unlinkSync, realpathSync } from 'node:fs';
+import { closeSync, constants, fsyncSync, lstatSync, openSync, writeFileSync, renameSync, unlinkSync, realpathSync } from 'node:fs';
 import { dirname, basename, isAbsolute, join } from 'node:path';
-import { readBytesUpTo } from './bounded-read.mjs';
+import { readBoundedFile } from './bounded-read.mjs';
 
 const MAX_BYTES = 2 * 1024 * 1024;
 const phases = ['registered', 'prepared', 'sending', 'uncertain', 'submitted'];
@@ -167,25 +167,8 @@ function safeSummary(d) {
 function fileInfo(file) {
   try { return lstatSync(file); } catch (e) { if (e.code === 'ENOENT') return null; throw e; }
 }
-function regular(info) {
-  if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || info.size > MAX_BYTES) fail('LEDGER');
-  return info;
-}
-function regularFile(file) {
-  const info = fileInfo(file);
-  return info ? regular(info) : null;
-}
 function readBytes(file) {
-  const before = regularFile(file);
-  if (!before) return null;
-  const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
-  try {
-    const opened = regular(fstatSync(fd));
-    if (opened.dev !== before.dev || opened.ino !== before.ino) fail('LEDGER');
-    const bytes = readBytesUpTo(fd, MAX_BYTES + 1);
-    if (bytes.length > MAX_BYTES) fail('LEDGER');
-    return bytes;
-  } finally { closeSync(fd); }
+  return readBoundedFile(file, MAX_BYTES, () => new DispatchError('LEDGER'))?.bytes ?? null;
 }
 function createPrivateFile(file, bytes) {
   // On Windows, do not even attempt exclusive creation through a known dangling
