@@ -89,7 +89,7 @@ function snapshot(path) {
   if(!saved)return {exists:false,text:null,sha256:null};
   const {bytes,stat}=saved,text=bytes.toString('utf8');
   if(text.includes('\0') || !Buffer.from(text).equals(bytes))throw Error('UTF-8 text file required');
-  return {exists:true,text,sha256:hash(bytes),mode:stat.mode & 0o777};
+  return {exists:true,text,sha256:hash(bytes),mode:Number(stat.mode & 0o777n)};
 }
 // Optional bounded reads keep the original whole-file snapshot/revision contract.
 // Return complete lines (including their original endings); never silently drop a long-line tail.

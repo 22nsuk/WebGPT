@@ -29,22 +29,23 @@ export function readBytesUpTo(fd, ceiling) {
 // One owner for materializing bounded file reads. Domain callers still own path
 // authorization, decoding, hashes and error policy. null means only initial
 // ENOENT; an error after observing a file never becomes successful absence.
-// The descriptor is bound to that observation, not an atomic filesystem snapshot.
+// Keep full-width device/inode values: Number can alias distinct 64-bit identities.
+// The returned stat is BigIntStats; the descriptor is not an atomic snapshot.
 export function readBoundedFile(file, limit, invalid) {
   if (!Number.isSafeInteger(limit) || limit < 0 || limit >= constants.MAX_LENGTH)
     throw RangeError('invalid file read limit');
   if (typeof invalid !== 'function') throw TypeError('file rejection factory required');
   const regular = info => {
-    if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || info.size > limit)
+    if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1n || info.size > limit)
       throw invalid('metadata');
   };
   let before;
-  try { before = lstatSync(file); }
+  try { before = lstatSync(file, { bigint: true }); }
   catch (error) { if (error.code === 'ENOENT') return null; throw error; }
   regular(before);
   const fd = openSync(file, flags.O_RDONLY | flags.O_NOFOLLOW);
   try {
-    const stat = fstatSync(fd);
+    const stat = fstatSync(fd, { bigint: true });
     regular(stat);
     if (stat.dev !== before.dev || stat.ino !== before.ino) throw invalid('identity');
     const bytes = readBytesUpTo(fd, limit + 1);

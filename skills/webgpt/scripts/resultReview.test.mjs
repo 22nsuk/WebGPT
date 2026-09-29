@@ -169,7 +169,10 @@ test('review display uses the bytes it verified rather than reopening after veri
 
 test('review bounds growth after stat and closes the failed read', async t => {
   const f = await fixture(t); const stat = fs.fstatSync;
-  const mock = t.mock.method(fs, 'fstatSync', fd => { const info = stat(fd); fs.writeFileSync(f.artifact, Buffer.alloc(1024 * 1024 + 10)); return info; });
+  const mock = t.mock.method(fs, 'fstatSync', (fd, ...args) => {
+    const info = stat(fd, ...args);
+    fs.writeFileSync(f.artifact, Buffer.alloc(1024 * 1024 + 10)); return info;
+  });
   syncBuiltinESMExports();
   try {
     const reads = await observeResultReads(t, f, () => assert.rejects(reviewTask('owned', f.config), { code: 'RESULT_INVALID' }));

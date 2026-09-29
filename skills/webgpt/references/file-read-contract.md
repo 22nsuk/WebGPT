@@ -12,8 +12,16 @@ checks the named file with `lstat`, opens it read-only with `O_NOFOLLOW` where
 available, and rechecks the opened regular single-link file and its device/inode.
 It reads at most `limit + 1` bytes through `readBytesUpTo`, rejects overflow before
 returning a prefix, and closes its descriptor on success or failure. It returns
-`{ bytes, stat }`, where `stat` is the opening observation, or `null` only for an
-initial `ENOENT`. Errors after observing the file are not converted to absence.
+`{ bytes, stat }`, where `stat` is the opening `BigIntStats` observation, or
+`null` only for an initial `ENOENT`. Errors after observing the file are not converted to absence.
+
+Both named and opened metadata use `bigint: true`: distinct 64-bit device/inode
+values can alias after conversion to `Number`. Keep identity comparisons exact;
+do not reject legitimate large identities merely because they exceed the safe
+integer range. Workspace snapshots convert only their masked permission bits
+back to the existing numeric `mode` field. No BigInt enters wire data or state.
+This change is limited to this bounded-reader family; it does not migrate
+persisted workspace-root identifiers or every other filesystem identity check.
 
 The rejection factory returns the domain error for `metadata`, `identity` or
 `overflow`. Native I/O errors propagate; adapters retain their existing public
@@ -72,7 +80,7 @@ Keep one owner per assertion family, not one copy per historical fix:
 
 | Test owner | Responsibility |
 | --- | --- |
-| `boundedFile.test.mjs` | Shared file-opening mechanism: opaque bytes, absence/empty input, metadata, native failures and descriptor closure; the I/O observer's hook timing, accounting and scoped restoration |
+| `boundedFile.test.mjs` | Shared file-opening mechanism: opaque bytes, absence/empty input, full-width identity, metadata, native failures and descriptor closure; the I/O observer's hook timing, accounting and scoped restoration |
 | `fileReadContract.test.mjs` | Real adapter matrix: short reads, growth/oversize rejection, error classification and identity swaps; candidate-length state retries |
 | `runtimeMetadata.test.mjs` | Marker format/absence, metadata path types, uncapped committed state, and worker/service ownership lifecycle |
 | `boundedReads.test.mjs` | Descriptor primitive and mutation/recovery/real HTTP consequences, including the second-open result retry-flush race |
@@ -90,6 +98,15 @@ subtract earlier verification bytes rather than changing the byte ceiling.
 Restore only observer-owned mocks before inspecting evidence. Specialized
 primitive read/shrink/append fault injection remains in its owning tests.
 
+A test that layers its own native fault mock over the observer owns both layers.
+Its final cleanup must first `t.mock.reset()` to disassociate those tracked mocks,
+then restore the fault mock and observer in reverse order. The observer's restore
+also synchronizes builtin ESM bindings. Manual `mock.restore()` alone leaves the
+mocks tracked: Node's later automatic reset can reinstall an observer after the
+test's assertions have passed. Do not put a whole-context reset in the shared
+observer, which must leave caller-owned mocks alone. The mechanism suite checks
+original descriptors and ESM bindings again after the serial fault tests finish.
+
 Add a bounded materializing adapter to the matrix instead of copying a file-open
 spy or the same scenario into a second suite. Retain worker/collection/recovery
 assertions: a common-reader refusal alone does not establish no mutation,
@@ -97,4 +114,5 @@ no acknowledgment or token retention. Do not remove installed-layout or
 cross-platform execution merely because it runs the same test sources.
 
 References: [Node filesystem flags and reads](https://nodejs.org/download/release/v22.16.0/docs/api/fs.html),
-[Node builtin ESM binding synchronization](https://nodejs.org/download/release/v22.16.0/docs/api/module.html#modulesyncbuiltinesmexports).
+[Node builtin ESM binding synchronization](https://nodejs.org/download/release/v22.16.0/docs/api/module.html#modulesyncbuiltinesmexports),
+[Node mock lifecycle](https://nodejs.org/download/release/v22.16.0/docs/api/test.html#mockreset).

@@ -1,11 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
+import fs, * as fsExports from 'node:fs';
 import { constants } from 'node:buffer';
 import { syncBuiltinESMExports } from 'node:module';
 import { join } from 'node:path';
 import { readBoundedFile } from './bounded-read.mjs';
 import { readFixture, observeFileRead } from './test-fixtures/file-read.mjs';
+
+// Capture before any serial test installs mocks; assertions inside a test's finally
+// cannot see the automatic MockTracker reset that runs after that test returns.
+const nativeMethods = Object.fromEntries(
+  ['lstatSync', 'openSync', 'fstatSync', 'readSync', 'readFileSync', 'closeSync', 'statSync']
+    .map(name => [name, Object.getOwnPropertyDescriptor(fs, name)]));
 
 const invalid = reason => Object.assign(Error('fixture file rejected'), { code: 'FIXTURE_INVALID', reason });
 const rejected = reason => ({ code: 'FIXTURE_INVALID', reason });
@@ -32,7 +38,7 @@ test('bounded file distinguishes absent and empty files even at a zero-byte limi
   const trace = observeFileRead(t, file);
   let result;
   try { result = readBoundedFile(file, 0, invalid); } finally { trace.restore(); }
-  assert.deepEqual(result.bytes, Buffer.alloc(0)); assert.equal(result.stat.size, 0);
+  assert.deepEqual(result.bytes, Buffer.alloc(0)); assert.equal(result.stat.size, 0n);
   assert.deepEqual(trace.evidence, { opens: 1, closes: 1, reads: 1, bytes: 0 });
 });
 
@@ -42,7 +48,7 @@ for (const bytes of [Buffer.from([0, 255, 192, 128]), Buffer.from('\uFEFF한국�
     let result;
     try { result = readBoundedFile(file, bytes.length, invalid); } finally { trace.restore(); }
     assert.deepEqual(result.bytes, bytes);
-    assert.equal(result.stat.dev, fs.statSync(file).dev); assert.equal(result.stat.ino, fs.statSync(file).ino);
+    assert.equal(result.stat.dev, fs.statSync(file, { bigint: true }).dev); assert.equal(result.stat.ino, fs.statSync(file, { bigint: true }).ino);
     assert.equal(trace.evidence.bytes, bytes.length); assert.equal(trace.evidence.closes, 1);
   });
 }
@@ -78,14 +84,18 @@ for (const property of ['size', 'nlink', 'isFile']) test(`bounded file rechecks 
   const native = fs.fstatSync;
   const mock = t.mock.method(fs, 'fstatSync', (...args) => {
     const info = native(...args);
-    if (property === 'size') info.size = bytes.length + 1;
-    if (property === 'nlink') info.nlink = 2;
+    if (property === 'size') info.size = BigInt(bytes.length) + 1n;
+    if (property === 'nlink') info.nlink = 2n;
     if (property === 'isFile') info.isFile = () => false;
     return info;
   });
   syncBuiltinESMExports();
   try { assert.throws(() => readBoundedFile(file, bytes.length, invalid), rejected('metadata')); }
-  finally { mock.mock.restore(); syncBuiltinESMExports(); trace.restore(); }
+  finally {
+    // This test owns both layers. Disassociate them before restoring in reverse
+    // order, or automatic test cleanup can reinstall the inner layer's observer.
+    t.mock.reset(); mock.mock.restore(); trace.restore();
+  }
   assert.equal(trace.evidence.bytes, 0); assert.equal(trace.evidence.closes, 1);
   assert.deepEqual(fs.readFileSync(file), bytes);
 });
@@ -102,7 +112,7 @@ for (const [method, code, closed] of [
   });
   syncBuiltinESMExports();
   try { assert.throws(() => readBoundedFile(file, bytes.length, invalid), error => error === failure); }
-  finally { mock.mock.restore(); syncBuiltinESMExports(); trace.restore(); }
+  finally { t.mock.reset(); mock.mock.restore(); trace.restore(); }
   assert.equal(trace.evidence.closes, closed); assert.deepEqual(fs.readFileSync(file), bytes);
 });
 
@@ -111,7 +121,7 @@ test('bounded file allows within-budget growth; it is not an initial-size snapsh
   const trace = observeFileRead(t, file, { beforeRead: () => fs.writeFileSync(file, grown), chunkSize: 2 });
   let result;
   try { result = readBoundedFile(file, grown.length, invalid); } finally { trace.restore(); }
-  assert.deepEqual(result.bytes, grown); assert.equal(result.stat.size, 1);
+  assert.deepEqual(result.bytes, grown); assert.equal(result.stat.size, 1n);
   assert.equal(trace.evidence.bytes, grown.length); assert.equal(trace.evidence.closes, 1);
 });
 
@@ -132,7 +142,7 @@ for (const hook of ['beforeRead', 'afterStat']) {
     try {
       const result = readBoundedFile(file, 128, invalid);
       assert.equal(result.bytes.toString(), 'changed');
-      assert.equal(result.stat.size, bytes.length, 'retain the real pre-growth metadata observation');
+      assert.equal(result.stat.size, BigInt(bytes.length), 'retain the real pre-growth metadata observation');
     } finally { trace.restore(); }
     assert.equal(calls, 1);
     assert.equal(trace.evidence.opens, 1); assert.equal(trace.evidence.closes, 1); assert.equal(trace.evidence.bytes, 7);
@@ -158,7 +168,7 @@ test('native read instrumentation scopes stat hooks across opens and restores on
     assert.equal(calls, 0, 'unrelated file metadata must not trigger the hook');
     assert.equal(readBoundedFile(file, 128, invalid).bytes.toString(), 'first');
     const result = readBoundedFile(file, 128, invalid);
-    assert.equal(result.bytes.toString(), 'second'); assert.equal(result.stat.size, 5);
+    assert.equal(result.bytes.toString(), 'second'); assert.equal(result.stat.size, 5n);
   } finally { trace.restore(); }
   assert.equal(calls, 2); assert.equal(bytesBeforeGrowth, 5);
   assert.equal(trace.evidence.bytes - bytesBeforeGrowth, 6);
@@ -171,4 +181,41 @@ test('native read instrumentation scopes stat hooks across opens and restores on
   assert.equal(failed.evidence.opens, 1); assert.equal(failed.evidence.closes, 1); assert.equal(failed.evidence.bytes, 0);
   for (const [name, fn] of Object.entries(native)) assert.equal(fs[name], fn, `${name} restored`);
   assert.equal(fs.statSync, unrelated, 'restoration must not clear a caller-owned mock');
+});
+
+// A 64-bit identity can differ while its Number representation is identical.
+// Only the identity fields are injected; metadata, descriptors and bytes stay real.
+for (const property of ['dev', 'ino']) test(`bounded file compares full-width ${property} without Number collisions`, t => {
+  const { file, bytes } = fixture(t), first = 2n ** 60n, second = first + 1n;
+  assert.notEqual(first, second); assert.equal(Number(first), Number(second));
+  for (const changed of [false, true]) {
+    const trace = observeFileRead(t, file), nativeStat = fs.lstatSync, nativeOpened = fs.fstatSync;
+    const named = t.mock.method(fs, 'lstatSync', (path, options) => {
+      const info = nativeStat(path, options);
+      if (path === file) info[property] = options?.bigint ? first : Number(first);
+      return info;
+    });
+    const opened = t.mock.method(fs, 'fstatSync', (fd, options) => {
+      const info = nativeOpened(fd, options), value = changed ? second : first;
+      info[property] = options?.bigint ? value : Number(value);
+      return info;
+    });
+    syncBuiltinESMExports();
+    try {
+      if (changed) assert.throws(() => readBoundedFile(file, bytes.length, invalid), rejected('identity'));
+      else assert.deepEqual(readBoundedFile(file, bytes.length, invalid).bytes, bytes);
+    } finally { t.mock.reset(); opened.mock.restore(); named.mock.restore(); trace.restore(); }
+    assert.equal(trace.evidence.opens, 1); assert.equal(trace.evidence.closes, 1);
+    assert.equal(trace.evidence.bytes, changed ? 0 : bytes.length);
+    assert.deepEqual(fs.readFileSync(file), bytes);
+  }
+});
+
+// Keep this check after the fault cases: it observes their completed test cleanup,
+// not just manual restoration while the same TestContext is still active.
+test('bounded file instrumentation leaves native filesystem bindings intact after test cleanup', () => {
+  for (const [name, descriptor] of Object.entries(nativeMethods)) {
+    assert.deepEqual(Object.getOwnPropertyDescriptor(fs, name), descriptor, `${name} default binding after cleanup`);
+    assert.equal(fsExports[name], descriptor.value, `${name} ESM binding after cleanup`);
+  }
 });
