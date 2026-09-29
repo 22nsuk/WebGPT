@@ -1,7 +1,8 @@
 // Parent-only evidence preparation. Never imported by the worker or controller.
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
-import { isAbsolute } from 'node:path';
+import { isAbsolute, resolve } from 'node:path';
+import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 
@@ -163,20 +164,52 @@ function run(argv) {
 }
 
 function isCliEntry() {
-  if (!process.argv[1] || process.argv[1] === '-') return false;
+  // Keep this built-in-only helper usable through a preserved leaf symlink.
+  // A relative cli-entry.mjs import would resolve beside that link, not its target.
+  // cliImports.test.mjs owns the shared entry contract for both implementations.
+  // A true native identity is conclusive. A preload of this same URL sees false
+  // and is cached before main runs, so it still needs the guarded path check.
+  if (import.meta.main === true) return true;
+  const entry = process.argv[1];
+  if (typeof entry !== 'string' || !entry || entry === '-' || !entry.isWellFormed() || entry.includes('\0')) return false;
+  // Eval/print positional arguments are data, not an entry.
+  if (process.execArgv.some(arg => /^--(?:eval|print)(?:=|$)/.test(arg) || ['-e', '-p', '-pe'].includes(arg))) return false;
+  const url = new URL(import.meta.url);
+  if (url.protocol !== 'file:' || url.search || url.hash) return false;
   // Normalize both sides: --preserve-symlinks-main also preserves import.meta.url.
-  try { return fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url)); }
-  // Eval arguments and renamed importers need not name an existing entry file.
-  catch { return false; }
+  const entryPath = resolve(entry), modulePath = fileURLToPath(url);
+  let realEntry, realModule;
+  const errors = [];
+  try { realEntry = fs.realpathSync(entryPath); } catch (error) { errors.push(error); }
+  try { realModule = fs.realpathSync(modulePath); } catch (error) { errors.push(error); }
+  if (errors.length) {
+    // Failed lookup alone does not establish that an unrelated importer is CLI.
+    // Either spelling or one successful lookup must identify this module first.
+    const candidate = entryPath === modulePath || realEntry === modulePath || realModule === entryPath;
+    const failure = errors.find(error => error.code !== 'ENOENT' && error.code !== 'ENOTDIR');
+    if (candidate && failure) throw failure;
+    return false;
+  }
+  return realEntry === realModule;
 }
 
-if (isCliEntry()) {
-  try { run(process.argv.slice(2)); }
-  catch (error) {
-    // Native filesystem/parser messages can contain private paths or supplied arguments.
-    const code = typeof error.code === 'string' && /^[A-Z0-9_]+$/.test(error.code) ? error.code : 'ERROR';
-    process.stderr.write(JSON.stringify({ ok: false, code,
-      message: error instanceof EvidenceError ? error.message : 'Evidence preparation failed; inspect private inputs/output before retrying.' }) + '\n');
-    process.exitCode = 1;
+const cliExecuted = Symbol.for('webgpt.artifact-input.cli-executed');
+// The built-in singleton is shared by aliased modules without extending globalThis.
+// Reflect also lets the error boundary handle a non-extensible marker host safely.
+const claimCli = () => Reflect.defineProperty(process, cliExecuted, { value: true });
+try {
+  if (!process[cliExecuted] && isCliEntry()) {
+    // Canonical and preserved-symlink URLs can evaluate separately in one CLI
+    // process. Claim execution before run, including failures, across both URLs.
+    if (!claimCli()) fail('CLI_STATE_UNAVAILABLE', 'Cannot record CLI execution; no evidence emitted.');
+    run(process.argv.slice(2));
   }
+} catch (error) {
+  // A failed preload lookup must also block a later main-URL invocation.
+  claimCli();
+  // Native filesystem/parser messages can contain private paths or supplied arguments.
+  const code = typeof error.code === 'string' && /^[A-Z0-9_]+$/.test(error.code) ? error.code : 'ERROR';
+  process.stderr.write(JSON.stringify({ ok: false, code,
+    message: error instanceof EvidenceError ? error.message : 'Evidence preparation failed; inspect private inputs/output before retrying.' }) + '\n');
+  process.exitCode = 1;
 }

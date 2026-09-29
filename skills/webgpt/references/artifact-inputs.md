@@ -70,10 +70,24 @@ Do not pipe that receipt into registration as though it were the evidence.
 
 The CLI can run from a symlinked installation, including with Node
 [`--preserve-symlinks-main`](https://nodejs.org/api/cli.html#--preserve-symlinks-main)
-(with or without `--preserve-symlinks`). Entry detection resolves both the invoked
-path and module location; importing the helper still does not execute its CLI.
-This is about the installed script, not source-file permission: linked sources
-remain rejected. Exit zero alone is not an evidence receipt.
+(with or without `--preserve-symlinks`). It remains built-in-only so a preserved
+leaf symlink does not need sibling modules beside the link. Entry detection uses
+Node's `import.meta.main === true` as a fast path; otherwise it excludes eval/print
+arguments and separately loaded query/fragment URLs before resolving both paths.
+A preload of the main URL can be cached with native main identity still false.
+An execution marker on Node's shared `process` object records a CLI attempt or
+failed entry lookup, without requiring an extensible global object, ensuring that
+canonical and preserved-symlink URLs run the CLI once per process, including failures.
+Importing the API does not inspect a CLI source or create an output,
+even when eval arguments name this script. Call `buildArtifactInput` explicitly
+for a read-only API operation; do not set `process.argv` and import as a CLI launcher.
+Use the actual CLI entry to create an evidence file. This is about the installed
+script, not source-file permission: linked sources remain rejected. Fallback
+permission/I/O lookup failures produce a nonzero, path-redacted diagnostic when
+the entry spelling or a successful lookup identifies this module as the entry
+candidate. An unrelated import whose entry cannot be resolved stays quiet;
+native main detection needs no such lookup. Exit zero
+alone is not an evidence receipt.
 
 Every invocation hashes the whole source once using a 64 KiB read buffer and
 retains only selected bytes. Sources over **256 MiB** reject before opening; actual

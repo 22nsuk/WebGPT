@@ -5,23 +5,24 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 const workflow = readFileSync(new URL('../.github/workflows/test.yml', import.meta.url), 'utf8').replace(/\r\n?/g, '\n');
-const allowedActions = ['actions/checkout', 'actions/setup-node'];
+// Full-matrix and pinned artifact-compatibility jobs each own one setup pair.
+const expectedActions = ['actions/checkout', 'actions/setup-node', 'actions/checkout', 'actions/setup-node'];
 function assertPinnedActions(text) {
   const lines = text.split(/\r?\n/).filter(line => /^\s*(?:-\s*)?uses\s*:/.test(line));
-  assert.equal(lines.length, allowedActions.length, 'review changes to the CI action allowlist');
+  assert.equal(lines.length, expectedActions.length, 'review changes to the CI action allowlist');
   const names = lines.map(line => {
     const match = line.match(/^\s*(?:-\s*)?uses:\s+([^\s@]+)@([a-f0-9]{40})\s+#\s+v\d+\.\d+\.\d+\s*$/);
     assert.ok(match, 'use an unquoted full commit SHA with a release-version comment');
     return match[1];
   });
-  assert.deepEqual(names.sort(), [...allowedActions].sort());
+  assert.deepEqual(names.sort(), [...expectedActions].sort());
 }
 
 test('CI actions are pinned to full SHAs with maintainable release comments', () => {
   assertPinnedActions(workflow);
 });
 
-const pinnedFixture = allowedActions.map(name => `- uses: ${name}@${'a'.repeat(40)} # v7.0.0`).join('\n');
+const pinnedFixture = expectedActions.map(name => `- uses: ${name}@${'a'.repeat(40)} # v7.0.0`).join('\n');
 for (const ref of ['v7', 'v7.0.1', 'main', '3d3c42e']) {
   test(`CI pin guard rejects ${ref} references`, () => {
     const changed = pinnedFixture.replace(/(actions\/checkout@)[a-f0-9]{40}/, `$1${ref}`);
