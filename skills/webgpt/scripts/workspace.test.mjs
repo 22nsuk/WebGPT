@@ -208,7 +208,8 @@ test('MCP create/edit/delete enforces revisions, backups and operation receipts'
     assert.ok(receipts.every(receipt=>typeof receipt.operation==='string'&&receipt.operation.length>0));
     const task=await call('get_task',{token});assert.equal(task.isError,false);assert.deepEqual(task.structuredContent.changes.map(change=>change.operation),receipts.map(receipt=>receipt.operation));
 
-    // The protocol must reject lossy paths without changing task state or receipts.
+    // Protocol argument validation rejects ill-formed strings before workspace
+    // dispatch, without changing task state or receipts.
     const native='native-\ufffd';mkdirSync(join(root,native));
     writeFileSync(join(root,native,'file.txt'),'keep');
     const nativeRead=await call('read_file',{token,path:native+'/file.txt'});
@@ -223,7 +224,7 @@ test('MCP create/edit/delete enforces revisions, backups and operation receipts'
       ['write_file',{path:'new-\udc00/deep/file.txt',text:'bad',expectedSha256:null}],
     ]) {
       const rejected=await call(name,{token,...args});
-      assert.equal(rejected.isError,true);assert.match(rejected.content[0].text,/invalid path or Git metadata/);
+      assert.equal(rejected.isError,true);assert.match(rejected.content[0].text,/invalid tool argument value/);
       assert.deepEqual(readFileSync(statePath),state);
       assert.deepEqual(readdirSync(recovery).sort(),evidence);
       assert.equal(readFileSync(join(root,native,'file.txt'),'utf8'),'keep');
