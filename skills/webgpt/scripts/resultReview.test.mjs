@@ -10,7 +10,8 @@ import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { syncBuiltinESMExports } from 'node:module';
-import { reviewTask, verifyResult, collectTask, request } from './client.mjs';
+import timers from 'node:timers/promises';
+import { reviewTask, waitForTasks, retryableControllerError, verifyResult, collectTask, request } from './client.mjs';
 import { readVerifiedResult } from './results.mjs';
 
 const text = '\uFEFF한국어 🧪\r\n\u0000literal "quotes" \\ path\n';
@@ -518,3 +519,85 @@ test('review API retains its original live abort signal through reconciliation',
   assert.equal(f.calls.length, 6); assert.ok(f.calls.every(call => call.method === 'GET'));
   assert.equal(fs.readFileSync(join(f.dir, 'state.json'), 'utf8'), 'owned-evidence');
 });
+
+
+// Exercise the shared wait policy through both public entrypoints. Reuse the
+// owned loopback fixture; no new worker, retry implementation or clock budget.
+for (const entry of ['wait', 'review']) {
+  const run = (f, options) => entry === 'wait' ? waitForTasks(['owned'], f.config, options) : reviewTask('owned', f.config, options);
+
+  test(`${entry} retry policy rejects holes and invalid values before I/O`, async t => {
+    const f = await fixture(t);
+    const reads = await observeResultReads(t, f, async () => {
+      for (const retryDelays of [Array(1), [0, , 0], [undefined], [null], [-1], [10001], [0.5],
+        [NaN], [Infinity], ['0'], [0, 0, 0, 0], null, '0', new Uint8Array([0])])
+        await assert.rejects(run(f, { retryDelays }), /invalid bounded wait retry policy/);
+    });
+    assert.deepEqual(reads, { opens: 0, bytes: 0 }); assert.equal(f.calls.length, 0);
+  });
+
+  test(`${entry} retry policy cannot grow across transport failures and healthy renewals`, async t => {
+    for (const budget of [0, 1, 3]) {
+      const f = await fixture(t), retryDelays = Array(budget).fill(0);
+      f.respond((req, res) => {
+        // The ceiling also bounds the deliberately broken pre-fix run.
+        if (f.calls.length >= 9) { res.end(JSON.stringify({ ...empty(), events: [f.event] })); return; }
+        if (f.calls.length % 2) { retryDelays.push(0); req.socket.destroy(); }
+        else res.end(JSON.stringify(empty()));
+      });
+      const reads = await observeResultReads(t, f, () => assert.rejects(run(f, { retryDelays }), retryableControllerError));
+      assert.equal(f.calls.length, 2 * budget + 1);
+      assert.ok(f.calls.every(call => call.method === 'GET' && call.path === '/wait?id=owned'));
+      assert.deepEqual(reads, { opens: 0, bytes: 0 });
+      assert.equal(fs.readFileSync(join(f.dir, 'state.json'), 'utf8'), 'owned-evidence');
+    }
+  });
+
+  test(`${entry} retry policy retains captured delay values and survives caller truncation`, async t => {
+    const observed = [];
+    const mock = t.mock.method(timers, 'setTimeout', async ms => { observed.push(ms); });
+    syncBuiltinESMExports();
+    try {
+      for (const change of [values => { values.length = 0; }, values => { values[0] = 10001; },
+        values => { delete values[0]; }]) {
+        const f = await fixture(t), retryDelays = [0]; observed.length = 0;
+        f.respond((req, res) => {
+          if (f.calls.length === 1) { change(retryDelays); req.socket.destroy(); }
+          else res.end(JSON.stringify({ ...empty(), events: [f.event] }));
+        });
+        let value;
+        await assert.doesNotReject(async () => { value = await run(f, { retryDelays }); },
+          'the original retry remains available despite caller mutation');
+        assert.deepEqual(observed, [0], 'only the original validated delay reaches the timer');
+        assert.deepEqual(value.events, [f.event]);
+        if (entry === 'review') assert.equal(value.review.content, text);
+        assert.equal(f.calls.length, entry === 'review' ? 3 : 2);
+        assert.ok(f.calls.every(call => call.method === 'GET'));
+        assert.equal(fs.readFileSync(join(f.dir, 'state.json'), 'utf8'), 'owned-evidence');
+      }
+    } finally { mock.mock.restore(); syncBuiltinESMExports(); }
+  });
+
+  test(`${entry} retry policy keeps defaults, frozen arrays and HTTP rejection classification`, async t => {
+    const observed = [];
+    const mock = t.mock.method(timers, 'setTimeout', async ms => { observed.push(ms); });
+    syncBuiltinESMExports();
+    try {
+      for (const policy of [undefined, Object.freeze([]), Object.freeze([0]), Object.freeze([0, 0, 10000])]) {
+        const f = await fixture(t), expected = policy ?? [250, 1000, 3000]; observed.length = 0;
+        f.respond((req, res) => {
+          if (f.calls.length <= expected.length) req.socket.destroy();
+          else res.end(JSON.stringify({ ...empty(), events: [f.event] }));
+        });
+        assert.deepEqual((await run(f, { retryDelays: policy })).events, [f.event]);
+        assert.equal(observed.length, expected.length);
+        observed.forEach((ms, i) => assert.ok(ms >= expected[i] && ms <= expected[i] + Math.min(expected[i] / 4, 250)));
+        assert.equal(f.calls.length, expected.length + (entry === 'review' ? 2 : 1));
+        const before = f.calls.length; observed.length = 0;
+        f.respond((_req, res) => { res.writeHead(401); res.end('{}'); });
+        await assert.rejects(run(f, { retryDelays: policy }), { statusCode: 401 });
+        assert.equal(f.calls.length, before + 1); assert.deepEqual(observed, []);
+      }
+    } finally { mock.mock.restore(); syncBuiltinESMExports(); }
+  });
+}

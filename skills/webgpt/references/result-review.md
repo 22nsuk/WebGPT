@@ -37,6 +37,16 @@ original signal remains live: cancel through its `AbortController`, not by
 replacing `options.signal`. This captures request options, not result/state
 verification; all current-evidence checks below still run.
 
+The shared `waitForTasks` also captures the retry array's indexed values before
+its first request, so both wait and review keep the same finite retry policy even
+if the caller later appends, removes or changes entries. Use a new invocation to
+change that policy, or the original signal to cancel the pending wait. The default
+base delays remain `[250, 1000, 3000]` ms with the existing jitter; custom policies
+accept zero to three integer entries in 0–10000 ms. `[]` disables failure retries,
+not healthy empty-poll renewals. Sparse arrays (missing entries) and invalid values
+fail before controller/result access; frozen valid arrays work without modification.
+This is a per-invocation retry budget, not a total task timeout or a state snapshot.
+
 It returns the scoped wait envelope (`events`, `backupDue`, `settled`, and any
 existing recovery/interruption fields) plus:
 
