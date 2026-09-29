@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync, unlinkSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync, rmdirSync, unlinkSync, existsSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -284,7 +284,48 @@ test('fixture teardown recognizes an unreaped Linux child without weakening lock
   }
 });
 
-test('actual supervisor death permits verified drain or dead-owner recovery and resumes saved tasks', async t => {
+function fixtureRemainingOwner(lock) {
+  try { return JSON.parse(readFileSync(join(lock, 'owner.json'))); }
+  catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+    // Release unlinks owner.json before removing the directory. Windows may
+    // still expose that directory while termination/deletion finishes. Keep
+    // an ownerless directory unresolved, never count it as a completed drain.
+    return existsSync(lock) ? undefined : null;
+  }
+}
+
+async function fixtureRefusesUncertainLock(dir) {
+  let unexpectedService;
+  try {
+    await assert.rejects(async () => {
+      unexpectedService = await start({ dir, port: 0, controlPort: 0 });
+    }, { code: 'LOCK_UNCERTAIN' });
+  } finally { await unexpectedService?.close(); }
+}
+
+test('fixture lock observation distinguishes an unfinished release from a retained owner or drained lock', async t => {
+  const base = mkdtempSync(join(tmpdir(), 'webgpt-drain-observation-')), lock = join(base, 'worker.lock');
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+  mkdirSync(lock);
+  const file = join(lock, 'owner.json'), owner = { pid: process.pid };
+  writeFileSync(file, JSON.stringify(owner));
+  assert.deepEqual(fixtureRemainingOwner(lock), owner);
+  writeFileSync(file, '{');
+  assert.throws(() => fixtureRemainingOwner(lock), SyntaxError);
+  unlinkSync(file); // runtime release removes owner.json before the directory.
+  assert.equal(fixtureRemainingOwner(lock), undefined, 'an ownerless directory is not a completed drain');
+  const state = Buffer.from('preserved task evidence');
+  writeFileSync(join(base, 'state.json'), state);
+  await fixtureRefusesUncertainLock(base);
+  assert.equal(fixtureRemainingOwner(lock), undefined, 'uncertain ownership must remain unresolved');
+  assert.deepEqual(readFileSync(join(base, 'state.json')), state);
+  assert.deepEqual(readdirSync(lock), []);
+  rmdirSync(lock);
+  assert.equal(fixtureRemainingOwner(lock), null);
+});
+
+test('actual supervisor death resumes saved tasks or preserves an interrupted release for inspection', async t => {
   const { requestServiceStop } = await import('./service.mjs');
   const base = mkdtempSync(join(tmpdir(), 'webgpt-owner-death-')), dir = join(base, 'runtime'), configPath = join(base, 'config.json');
   const config = { dataDir: dir, mcpPort: 12340, controlPort: 12341 };
@@ -322,20 +363,38 @@ test('actual supervisor death permits verified drain or dead-owner recovery and 
   try {
     const first = launch(); await ready(first, 'initial supervisor readiness');
     const task = await request('register', { id: 'retained', instructions: '', inputs: {} }, config);
+    const savedState = readFileSync(join(dir, 'state.json'));
     assert.ok(Number.isSafeInteger(first.workerPid));
     first.parent.kill('SIGKILL'); await first.exit;
     // Windows may terminate the descendant tree together with the supervisor.
     // A surviving child must drain through IPC; a killed child leaves ownership
     // evidence that the replacement must verify and archive before starting.
+    // Killing during unlink(owner)/rmdir instead leaves uncertain evidence.
     const workerLock = join(dir, 'worker.lock');
-    // A disappearing lock is not a completed child exit: release unlinks owner.json
-    // before removing the directory. Wait for the owned descendant and inherited
-    // output pipes to finish before classifying any remaining recovery evidence.
+    // Supervisor pipe closure alone does not prove the orphan worker exited.
+    // Wait for the known descendant, then classify filesystem evidence separately.
     await until(() => first.streamsClosed && fixtureProcessTerminated(first.workerPid), undefined, 'orphan worker drain');
-    const needsRecovery = existsSync(workerLock);
+    let remainingOwner;
+    const settleDeadline = Date.now() + 1000;
+    await until(() => {
+      remainingOwner = fixtureRemainingOwner(workerLock);
+      return remainingOwner !== undefined || Date.now() >= settleDeadline;
+    },
+      undefined, 'worker lock release settlement');
+    if (remainingOwner === undefined) {
+      // A persistent ownerless lock is a legitimate interrupted-release outcome,
+      // not authority to recover. Verify the real replacement worker refuses it.
+      await fixtureRefusesUncertainLock(dir);
+      assert.deepEqual(readFileSync(join(dir, 'state.json')), savedState);
+      assert.equal(fixtureRemainingOwner(workerLock), undefined);
+      assert.equal(readdirSync(dir).some(name => name.startsWith('worker.lock.stale-')), false);
+      t.diagnostic('interrupted owner release preserved; replacement correctly refused LOCK_UNCERTAIN');
+      return;
+    }
+    const needsRecovery = remainingOwner !== null;
     if (needsRecovery) {
       assert.equal(processState(first.workerPid), 'dead');
-      assert.equal(JSON.parse(readFileSync(join(workerLock, 'owner.json'))).pid, first.workerPid);
+      assert.equal(remainingOwner.pid, first.workerPid);
     }
     const second = launch(); await ready(second, 'replacement supervisor readiness');
     assert.notEqual(second.workerPid, first.workerPid);
