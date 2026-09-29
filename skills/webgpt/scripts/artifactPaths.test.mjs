@@ -108,6 +108,12 @@ test('preserved symlink imports remain side-effect free', t => {
 for (const mode of ['import', 'require']) {
   test(`artifact ${mode} with CLI-shaped eval arguments does no source I/O or output creation`, t => {
     const { dir, source } = fixture(t), out = join(dir, 'must-not-create.json');
+    const [major, minor] = process.versions.node.split('.').map(Number);
+    // Node 22.0-22.11 requires the ESM require flag; through 22.12 the loader
+    // emits ExperimentalWarning. Limit compatibility flags to this child case.
+    const flags = mode === 'import' ? ['--input-type=module']
+      : major === 22 && minor < 13
+        ? [...(minor < 12 ? ['--experimental-require-module'] : []), '--disable-warning=ExperimentalWarning'] : [];
     const load = mode === 'import' ? `await import(${JSON.stringify(pathToFileURL(script).href)})`
       : `require(${JSON.stringify(script)})`;
     const body = `${mode === 'import' ? "import fs from 'node:fs'; import assert from 'node:assert/strict';"
@@ -123,7 +129,7 @@ for (const mode of ['import', 'require']) {
       fs.lstatSync = stat; fs.openSync = open;
       assert.equal(m.buildArtifactInput({ source, label: 'fixture' }).source.sha256, ${JSON.stringify(hash('approved evidence\n'))});
       assert.equal(fs.existsSync(out), false, 'the explicit read-only API still does not write output');`;
-    const result = node([...(mode === 'import' ? ['--input-type=module'] : []), '-e', body, script,
+    const result = node([...flags, '-e', body, script,
       '--source', source, '--label', 'fixture', '--out', out]);
     assert.equal(result.error, undefined); assert.equal(result.signal, null);
     assert.equal(result.status, 0, result.stderr);
