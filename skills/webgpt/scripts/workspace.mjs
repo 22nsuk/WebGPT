@@ -4,7 +4,7 @@ import { basename, dirname, isAbsolute, parse, resolve, sep } from 'node:path';
 import { homedir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { readBytesUpTo } from './bounded-read.mjs';
+import { readBoundedFile } from './bounded-read.mjs';
 import { readWindowOptions, textWindow } from './text-window.mjs';
 import { windowsReplacementFailure } from './windows-replacement-diagnostics.mjs';
 
@@ -84,15 +84,12 @@ function target(grant,path,writing=false,createParents=false,directory=false) {
   return cursor;
 }
 function snapshot(path) {
-  if(!metadata(path)) return {exists:false,text:null,sha256:null};
-  const fd=openSync(path,constants.O_RDONLY|constants.O_NOFOLLOW);
-  try {
-    const stat=fstatSync(fd);
-    if(!stat.isFile() || stat.nlink!==1 || stat.size>MAX_BYTES) throw Error('file must be regular, unlinked and <=1 MiB');
-    const bytes=readBytesUpTo(fd,MAX_BYTES+1),text=bytes.toString('utf8');
-    if(bytes.length>MAX_BYTES || text.includes('\0') || !Buffer.from(text).equals(bytes)) throw Error('UTF-8 text file required');
-    return {exists:true,text,sha256:hash(bytes),mode:stat.mode & 0o777};
-  } finally {closeSync(fd);}
+  const saved=readBoundedFile(path,MAX_BYTES,reason=>Error(reason==='overflow'
+    ?'UTF-8 text file required':'file must be regular, unlinked and <=1 MiB'));
+  if(!saved)return {exists:false,text:null,sha256:null};
+  const {bytes,stat}=saved,text=bytes.toString('utf8');
+  if(text.includes('\0') || !Buffer.from(text).equals(bytes))throw Error('UTF-8 text file required');
+  return {exists:true,text,sha256:hash(bytes),mode:stat.mode & 0o777};
 }
 // Optional bounded reads keep the original whole-file snapshot/revision contract.
 // Return complete lines (including their original endings); never silently drop a long-line tail.
