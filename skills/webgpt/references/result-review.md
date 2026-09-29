@@ -93,6 +93,31 @@ This is a current observation, not an atomic transaction spanning parent review.
 Collection still independently rechecks recovery and result bytes before retirement;
 external changes after review can block collection. Do not skip or cache those checks.
 
+## Scoped selection cost and freshness
+
+Scoped `wait` and `reconcile` use a request-owned ID membership set and the same
+server selection routine, rather than searching the entire inventory separately
+for every requested ID. Each wait observation selects the current task objects
+once and derives its response, settled decision and initial deadline from that
+selection. A later wake reselects from current committed in-memory state; it does
+not reuse task objects from before a registration, cancellation or collection.
+
+Returned task/event ordering remains inventory order. Reconciliation's `scope`
+still echoes the unique requested IDs in request order. Unknown IDs reject the
+whole request rather than widening it or returning a partial selection. Unscoped
+waits still omit `settled` and observe newly registered tasks. The client reuses
+one membership set to check every returned event/backup/recovery field, retaining
+its separate exact-order, completeness and duplicate checks for reconciliation.
+
+This removes repeated linear membership searches, not the full state-file read,
+global readiness/recovery work, or any result integrity check. The request-local
+set is not a task index, new authorization, persisted schema or verification cache.
+Query limits, timeout/retry behavior, unrelated-wake handling, current-state checks
+on each wake, and conditional collection remain unchanged. No caller option or
+extra parent operation is required. Multiple tasks still belong to `wait`, not a
+multi-result `review`. Operation-count regression tests are not end-to-end latency,
+CPU, memory, token or live-browser performance measurements.
+
 ## Optional bounded result windows
 
 For a long result, request the relevant complete lines instead of sending the

@@ -186,6 +186,14 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
     t.recoveryRequired=[...pending];
   }
   if(tasks.length)persist();
+  // Scope membership belongs to the request, not a second persisted task index.
+  // Re-select current task objects after each wake; persist replaces the array.
+  const selectTasks=ids=>{
+    if(!ids.size)return tasks;
+    const selected=tasks.filter(t=>ids.has(t.id));
+    if(selected.length!==ids.size)throw Error('unknown task');
+    return selected; // Preserve inventory order, independent of request order.
+  };
   const pendingResultTasks=(selected=tasks)=>selected.filter(t=>t.status==='running'&&hasPendingResults(t,dir)).map(t=>t.id);
   const view=(selected=tasks)=>{
     const resultRecoveryRequired=pendingResultTasks(selected).map(id=>({id}));
@@ -416,28 +424,33 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
         const report=readiness();return json(res,report.ok?200:503,report);
       }
       if(req.method==='GET'&&url.pathname==='/reconcile'){
-        const ids=[...new Set(url.searchParams.getAll('id'))];
+        const ids=new Set(url.searchParams.getAll('id'));
         if([...url.searchParams.keys()].some(key=>key!=='id')
-            ||ids.some(id=>!/^[a-zA-Z0-9_-]{1,80}$/.test(id)))throw Error('invalid reconciliation query');
-        const selected=ids.length?tasks.filter(t=>ids.includes(t.id)):tasks;
-        if(ids.length&&selected.length!==ids.length)throw Error('unknown task');
+            ||[...ids].some(id=>!/^[a-zA-Z0-9_-]{1,80}$/.test(id)))throw Error('invalid reconciliation query');
+        const selected=selectTasks(ids);
         // Health remains global. Only retained-task detail inspection is scoped;
         // full reconcile still audits every journal, original and result candidate.
         // Share only this synchronous response's observed diagnostics, not receipts
         // or a cross-request integrity verdict. Collection checks independently.
         const journalIssues=new Map(),health=readiness(journalIssues);
-        return json(res,200,{health,tasks:selected.map(t=>reconciliationTask(t,journalIssues.get(t))),...(ids.length?{scope:ids}:{})});
+        return json(res,200,{health,tasks:selected.map(t=>reconciliationTask(t,journalIssues.get(t))),...(ids.size?{scope:[...ids]}:{})});
       }
       if(stopping)return json(res,503,{error:'worker is stopping',code:'SHUTTING_DOWN',retryable:true});
       if(req.method==='GET'&&['/wait','/status','/tasks'].includes(url.pathname))verifyState();
       if(req.method==='GET'&&url.pathname==='/wait'){
-        const ids=url.searchParams.getAll('id');
+        const ids=new Set(url.searchParams.getAll('id'));
         if([...url.searchParams.keys()].some(key=>key!=='id'))throw Error('invalid wait query');
-        if(ids.some(id=>!tasks.some(t=>t.id===id)))throw Error('unknown task');
-        const selected=()=>ids.length?tasks.filter(t=>ids.includes(t.id)):tasks;
-        const snapshot=()=>({...view(selected()),...((stopping||storageFailure||stateFailure)?{interrupted:true}:{}),...(ids.length?{settled:!selected().some(t=>t.status==='running')}:{})});
-        const ready=v=>v.interrupted||v.events.length||v.backupDue.length||v.recoveryRequired?.length||v.resultRecoveryRequired?.length||!selected().some(t=>t.status==='running');
-        const v=snapshot();if(ready(v))return json(res,200,v);
+        const snapshot=()=>{
+          const selected=selectTasks(ids);
+          let settled=true,nextCheck=Infinity;
+          for(const task of selected)if(task.status==='running'){
+            settled=false;nextCheck=Math.min(nextCheck,task.nextCheck);
+          }
+          const value={...view(selected),...((stopping||storageFailure||stateFailure)?{interrupted:true}:{}),...(ids.size?{settled}:{})};
+          return {value,nextCheck,ready:value.interrupted||value.events.length||value.backupDue.length
+            ||value.recoveryRequired?.length||value.resultRecoveryRequired?.length||settled};
+        };
+        const initial=snapshot();if(initial.ready)return json(res,200,initial.value);
         let timer;
         const done=(timeout=false)=>{
           // The file may change while this long poll is parked. Remove this
@@ -447,14 +460,13 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
             clearTimeout(timer);
             json(res,e.statusCode??503,{error:e.message,...(e.code?{code:e.code}:{}),retryable:false});return;
           }
-          const v=snapshot();
-          if(!timeout&&!ready(v)){waiters.add(done);return;} // An unrelated task must not wake this wait.
+          const current=snapshot();
+          if(!timeout&&!current.ready){waiters.add(done);return;} // An unrelated task must not wake this wait.
           clearTimeout(timer);waiters.delete(done);
-          if(!res.destroyed)json(res,200,v);
+          if(!res.destroyed)json(res,200,current.value);
         };
         waiters.add(done);
-        const due=Math.min(...selected().filter(t=>t.status==='running').map(t=>t.nextCheck-now()));
-        timer=setTimeout(()=>done(true),Math.max(1,Math.min(waitMs,due)));
+        timer=setTimeout(()=>done(true),Math.max(1,Math.min(waitMs,initial.nextCheck-now())));
         res.on('close',()=>{clearTimeout(timer);waiters.delete(done);});return;
       }
       if(req.method==='GET'&&req.url==='/status')return json(res,200,view());
