@@ -70,10 +70,18 @@ Do not pipe that receipt into registration as though it were the evidence.
 
 The CLI can run from a symlinked installation, including with Node
 [`--preserve-symlinks-main`](https://nodejs.org/api/cli.html#--preserve-symlinks-main)
-(with or without `--preserve-symlinks`). Entry detection resolves both the invoked
-path and module location; importing the helper still does not execute its CLI.
-This is about the installed script, not source-file permission: linked sources
-remain rejected. Exit zero alone is not an evidence receipt.
+(with or without `--preserve-symlinks`). It remains built-in-only so a preserved
+leaf symlink does not need sibling modules beside the link. Entry detection uses
+Node's `import.meta.main` when available; the earlier Node 22 fallback excludes
+eval/print arguments and separately loaded query/fragment URLs before resolving
+both paths. Importing the API does not inspect a CLI source or create an output,
+even when eval arguments name this script. Call `buildArtifactInput` explicitly
+for a read-only API operation; do not set `process.argv` and import as a CLI launcher.
+Use the actual CLI entry to create an evidence file. This is about the installed
+script, not source-file permission: linked sources remain rejected. Fallback
+permission/I/O lookup failures produce a nonzero, path-redacted diagnostic rather
+than a successful no-op; native main detection needs no such lookup. Exit zero
+alone is not an evidence receipt.
 
 Every invocation hashes the whole source once using a 64 KiB read buffer and
 retains only selected bytes. Sources over **256 MiB** reject before opening; actual

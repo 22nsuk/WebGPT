@@ -163,20 +163,31 @@ function run(argv) {
 }
 
 function isCliEntry() {
-  if (!process.argv[1] || process.argv[1] === '-') return false;
+  // Keep this built-in-only helper usable through a preserved leaf symlink.
+  // A relative cli-entry.mjs import would resolve beside that link, not its target.
+  // cliImports.test.mjs owns the shared entry contract for both implementations.
+  if (typeof import.meta.main === 'boolean') return import.meta.main;
+  const entry = process.argv[1];
+  if (typeof entry !== 'string' || !entry || entry === '-' || !entry.isWellFormed() || entry.includes('\0')) return false;
+  // On earlier Node 22, eval/print positional arguments are data, not an entry.
+  if (process.execArgv.some(arg => /^--(?:eval|print)(?:=|$)/.test(arg) || /^-[ep](?:[^-]|$)/.test(arg))) return false;
+  const url = new URL(import.meta.url);
+  if (url.protocol !== 'file:' || url.search || url.hash) return false;
   // Normalize both sides: --preserve-symlinks-main also preserves import.meta.url.
-  try { return fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url)); }
-  // Eval arguments and renamed importers need not name an existing entry file.
-  catch { return false; }
+  try { return fs.realpathSync(entry) === fs.realpathSync(fileURLToPath(url)); }
+  catch (error) {
+    // A renamed importer need not exist; permission/I/O failures are not absence.
+    if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return false;
+    throw error;
+  }
 }
 
-if (isCliEntry()) {
-  try { run(process.argv.slice(2)); }
-  catch (error) {
-    // Native filesystem/parser messages can contain private paths or supplied arguments.
-    const code = typeof error.code === 'string' && /^[A-Z0-9_]+$/.test(error.code) ? error.code : 'ERROR';
-    process.stderr.write(JSON.stringify({ ok: false, code,
-      message: error instanceof EvidenceError ? error.message : 'Evidence preparation failed; inspect private inputs/output before retrying.' }) + '\n');
-    process.exitCode = 1;
-  }
+try {
+  if (isCliEntry()) run(process.argv.slice(2));
+} catch (error) {
+  // Native filesystem/parser messages can contain private paths or supplied arguments.
+  const code = typeof error.code === 'string' && /^[A-Z0-9_]+$/.test(error.code) ? error.code : 'ERROR';
+  process.stderr.write(JSON.stringify({ ok: false, code,
+    message: error instanceof EvidenceError ? error.message : 'Evidence preparation failed; inspect private inputs/output before retrying.' }) + '\n');
+  process.exitCode = 1;
 }

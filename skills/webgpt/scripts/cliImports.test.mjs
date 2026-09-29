@@ -8,6 +8,7 @@ import { spawnSync } from 'node:child_process';
 
 const scripts = dirname(fileURLToPath(import.meta.url));
 const entries = [
+  ['artifact-input.mjs', 'buildArtifactInput', [], 1, /"code":"INVALID_ARGUMENT"/],
   ['client.mjs', 'reviewTask', ['review'], 1, /REVIEW_USAGE/],
   ['worker.mjs', 'start', [], 78, /"event":"startup_failed","code":"CONFIG_INVALID"/],
   ['service.mjs', 'runService', [], 78, /"event":"service_failed".*"code":"CONFIG_INVALID"/],
@@ -43,14 +44,19 @@ for (const [file, exported, args, status, diagnostic] of entries) {
   const importBody = `const m = await import(${JSON.stringify(url)}); if (typeof m[${JSON.stringify(exported)}] !== 'function') throw Error('missing export');`;
   test(`${file}: eval arguments do not become filesystem paths or trigger CLI actions`, t => {
     const { dir, run } = fixture(t);
+    quiet(run(['--input-type=module', '-e', importBody]));
     for (const argument of [join(dir, 'missing-private-argument'), script])
       quiet(run(['--input-type=module', '-e', importBody, argument, ...args]));
   });
-  test(`${file}: imports stay quiet after the importer is renamed`, t => {
+  test(`${file}: script and stdin imports stay quiet, including a renamed importer`, t => {
     const { dir, run } = fixture(t);
     const importer = join(dir, 'importer.mjs');
+    fs.writeFileSync(importer, importBody);
+    quiet(run([importer]));
     fs.writeFileSync(importer, `import fs from 'node:fs';\nfs.renameSync(${JSON.stringify(importer)}, ${JSON.stringify(join(dir, 'renamed.mjs'))});\n` + importBody);
     quiet(run([importer]));
+    assert.equal(fs.existsSync(importer), false);
+    assert.equal(fs.existsSync(join(dir, 'renamed.mjs')), true);
     quiet(run(['--input-type=module', '-', 'private-argument'], importBody));
   });
   for (const flags of [[], ['--preserve-symlinks-main'], ['--preserve-symlinks', '--preserve-symlinks-main']]) {

@@ -44,12 +44,13 @@ test('deliberate replacement characters and ordinary Unicode paths remain exact'
 
 test('CLI rejects malformed in-memory output paths without creating replacement-named files', t => {
   const { dir, source } = fixture(t);
-  // Preserve the malformed JS string in an embedding caller. Passing it through
-  // spawn's argv would replace it before the CLI could perform its own validation.
+  // A preload injects the malformed JS string before the real CLI entry runs.
+  // argv cannot carry it losslessly; importing from eval must NOT launch the CLI.
   for (const name of ['\ud800.json', '\udfff.json']) {
     const argv = [process.execPath, script, '--source', source, '--label', 'fixture', '--out', join(dir, name)];
-    const body = `process.argv = ${JSON.stringify(argv)}; await import(${JSON.stringify(pathToFileURL(script).href)});`;
-    const result = node(['--input-type=module', '-e', body]);
+    const preload = join(dir, 'argv-preload.mjs');
+    fs.writeFileSync(preload, `process.argv = ${JSON.stringify(argv)};`);
+    const result = node(['--import', pathToFileURL(preload).href, script]);
     assert.equal(result.status, 1, result.stderr);
     assert.equal(result.stdout, '');
     assert.equal(JSON.parse(result.stderr).code, 'INVALID_ARGUMENT');
@@ -103,3 +104,78 @@ test('preserved symlink imports remain side-effect free', t => {
   assert.equal(result.stdout, '');
   assert.equal(result.stderr, '');
 });
+
+for (const mode of ['import', 'require']) {
+  test(`artifact ${mode} with CLI-shaped eval arguments does no source I/O or output creation`, t => {
+    const { dir, source } = fixture(t), out = join(dir, 'must-not-create.json');
+    const load = mode === 'import' ? `await import(${JSON.stringify(pathToFileURL(script).href)})`
+      : `require(${JSON.stringify(script)})`;
+    const body = `${mode === 'import' ? "import fs from 'node:fs'; import assert from 'node:assert/strict';"
+      : "const fs = require('node:fs'), assert = require('node:assert/strict');"}
+      const source = ${JSON.stringify(source)}, out = ${JSON.stringify(out)};
+      const stat = fs.lstatSync, open = fs.openSync;
+      let observations = 0;
+      fs.lstatSync = (path, ...args) => { if (path === source) observations++; return stat(path, ...args); };
+      fs.openSync = (path, ...args) => { if (path === source) observations++; return open(path, ...args); };
+      const m = ${load};
+      assert.equal(observations, 0, 'an import must not inspect the CLI source');
+      assert.equal(fs.existsSync(out), false, 'an import must not create CLI output');
+      fs.lstatSync = stat; fs.openSync = open;
+      assert.equal(m.buildArtifactInput({ source, label: 'fixture' }).source.sha256, ${JSON.stringify(hash('approved evidence\n'))});
+      assert.equal(fs.existsSync(out), false, 'the explicit read-only API still does not write output');`;
+    const result = node([...(mode === 'import' ? ['--input-type=module'] : []), '-e', body, script,
+      '--source', source, '--label', 'fixture', '--out', out]);
+    assert.equal(result.error, undefined); assert.equal(result.signal, null);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, ''); assert.equal(result.stderr, '');
+    assert.equal(fs.existsSync(out), false);
+    assert.equal(fs.readFileSync(source, 'utf8'), 'approved evidence\n');
+  });
+}
+
+for (const suffix of ['?preloaded', '#preloaded']) {
+  test(`artifact preload ${suffix} is not a second CLI invocation`, t => {
+    const { dir, source } = fixture(t), out = join(dir, 'evidence.json');
+    const result = node(['--import', pathToFileURL(script).href + suffix, script,
+      '--source', source, '--label', 'fixture', '--out', out]);
+    assert.equal(result.error, undefined); assert.equal(result.signal, null);
+    assert.equal(result.status, 0, result.stderr); assert.equal(result.stderr, '');
+    const bytes = fs.readFileSync(out);
+    assert.deepEqual(JSON.parse(result.stdout), { ok: true, inputBytes: bytes.length, sha256: hash(bytes) });
+    assert.equal(JSON.parse(bytes).source.sha256, hash('approved evidence\n'));
+    assert.equal(fs.readFileSync(source, 'utf8'), 'approved evidence\n');
+  });
+}
+
+for (const code of ['EACCES', 'EIO']) {
+  test(`artifact entry preserves ${code} without false success or private diagnostics`, t => {
+    const { dir, source } = fixture(t), out = join(dir, 'evidence.json');
+    const preload = join(dir, 'entry-failure.mjs');
+    fs.writeFileSync(preload, `import fs from 'node:fs';
+      const original = fs.realpathSync;
+      fs.realpathSync = (path, ...args) => {
+        if (path === ${JSON.stringify(script)})
+          throw Object.assign(Error(${JSON.stringify(dir)}), { code: ${JSON.stringify(code)} });
+        return original(path, ...args);
+      };`);
+    // Preserve main's spelling so the loader does not need the lookup under test.
+    const result = node(['--preserve-symlinks-main', '--import', pathToFileURL(preload).href, script,
+      '--source', source, '--label', 'fixture', '--out', out]);
+    assert.equal(result.error, undefined); assert.equal(result.signal, null);
+    if (typeof import.meta.main === 'boolean') {
+      // Native main identity is authoritative and needs no realpath lookup.
+      assert.equal(result.status, 0, result.stderr); assert.equal(result.stderr, '');
+      const bytes = fs.readFileSync(out);
+      assert.deepEqual(JSON.parse(result.stdout), { ok: true, inputBytes: bytes.length, sha256: hash(bytes) });
+      assert.equal(JSON.parse(bytes).source.sha256, hash('approved evidence\n'));
+    } else {
+      assert.equal(result.status, 1, 'fallback lookup failures must not become successful no-ops');
+      assert.equal(result.stdout, '');
+      const diagnostic = JSON.parse(result.stderr);
+      assert.equal(diagnostic.ok, false); assert.equal(diagnostic.code, code);
+      assert.ok(!result.stderr.includes(dir), 'native errors must not expose private paths');
+      assert.equal(fs.existsSync(out), false);
+    }
+    assert.equal(fs.readFileSync(source, 'utf8'), 'approved evidence\n');
+  });
+}
