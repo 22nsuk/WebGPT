@@ -66,6 +66,9 @@ export async function request(action, payload, config = configuration(), { signa
   } else if (!read && (!payload || typeof payload !== 'object' || Array.isArray(payload))) {
     throw Error('invalid controller payload');
   }
+  // Reuse one membership set for every returned field; keep the ordered ID list
+  // for the wire query and exact reconciliation scope confirmation.
+  const scope = ids ? new Set(ids) : null;
   signal?.throwIfAborted();
   const key = readFileSync(join(config.dataDir, 'controller.key'), 'utf8');
   const query = ids ? '?' + new URLSearchParams(ids.map(id => ['id', id])) : '';
@@ -100,9 +103,9 @@ export async function request(action, payload, config = configuration(), { signa
         || (result.recoveryRequired !== undefined && !Array.isArray(result.recoveryRequired))
         || (result.resultRecoveryRequired !== undefined && !Array.isArray(result.resultRecoveryRequired)))
       throw Error('worker does not support task-scoped waits; update the idle worker and client together');
-    if (result.events.some(event => !ids.includes(event?.id)) || result.backupDue.some(id => !ids.includes(id))
-        || result.recoveryRequired?.some(event => !ids.includes(event?.id))
-        || result.resultRecoveryRequired?.some(event => !ids.includes(event?.id)))
+    if (result.events.some(event => !scope.has(event?.id)) || result.backupDue.some(id => !scope.has(id))
+        || result.recoveryRequired?.some(event => !scope.has(event?.id))
+        || result.resultRecoveryRequired?.some(event => !scope.has(event?.id)))
       throw Error('worker returned state outside the requested task scope');
   }
   if (ids && action === 'reconcile') {
@@ -111,7 +114,7 @@ export async function request(action, payload, config = configuration(), { signa
     if (!Array.isArray(result?.scope) || result.scope.length !== ids.length
         || result.scope.some((id, index) => id !== ids[index]) || !Array.isArray(result.tasks)
         || result.tasks.length !== ids.length || new Set(result.tasks.map(task => task?.id)).size !== ids.length
-        || result.tasks.some(task => !ids.includes(task?.id)))
+        || result.tasks.some(task => !scope.has(task?.id)))
       throw Error('worker did not confirm task-scoped reconciliation; update the idle worker and client together');
   }
   return result;
