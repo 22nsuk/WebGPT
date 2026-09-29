@@ -46,6 +46,10 @@ accept zero to three integer entries in 0–10000 ms. `[]` disables failure retr
 not healthy empty-poll renewals. Sparse arrays (missing entries) and invalid values
 fail before controller/result access; frozen valid arrays work without modification.
 This is a per-invocation retry budget, not a total task timeout or a state snapshot.
+Cancelling during a retry delay rejects with the original `signal.reason`, just
+as cancellation during the request does; the timer's generic `AbortError` does
+not replace it. This stops only the local wait, without cancelling or collecting
+the registered task. Non-cancellation timer errors still propagate unchanged.
 
 It returns the scoped wait envelope (`events`, `backupDue`, `settled`, and any
 existing recovery/interruption fields) plus:

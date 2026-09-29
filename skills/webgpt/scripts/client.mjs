@@ -143,7 +143,13 @@ export async function waitForTasks(ids, config = configuration(), { signal, retr
       signal?.throwIfAborted();
       if (!retryableControllerError(error) || retries >= delays.length) throw error;
       const base = delays[retries++];
-      await delay(base + Math.floor(Math.random() * Math.min(base / 4, 250)), undefined, { signal });
+      try { await delay(base + Math.floor(Math.random() * Math.min(base / 4, 250)), undefined, { signal }); }
+      catch (error) {
+        // Timers wrap cancellation in AbortError; keep the same reason identity
+        // as cancellation during the request or before the next iteration.
+        signal?.throwIfAborted();
+        throw error;
+      }
       continue;
     }
     // Successful empty long polls are renewals, not failures. They do not reset

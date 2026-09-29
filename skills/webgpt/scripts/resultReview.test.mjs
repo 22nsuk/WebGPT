@@ -600,4 +600,56 @@ for (const entry of ['wait', 'review']) {
       }
     } finally { mock.mock.restore(); syncBuiltinESMExports(); }
   });
+
+  test(`${entry} retry cancellation preserves the original reason during native backoff`, async t => {
+    const nativeDelay = timers.setTimeout;
+    for (const reason of [Object.assign(Error('owned stop'), { code: 'OWNED_STOP' }),
+      new DOMException('owned deadline', 'TimeoutError'), undefined, 'owned stop', null]) {
+      const f = await fixture(t), controller = new AbortController();
+      f.respond(req => req.socket.destroy());
+      const mock = t.mock.method(timers, 'setTimeout', (ms, value, options) => {
+        assert.equal(options.signal, controller.signal);
+        // Start the real timer before aborting; no guessed wall-clock sleep.
+        const pending = nativeDelay(ms, value, options);
+        queueMicrotask(() => controller.abort(reason));
+        return pending;
+      });
+      syncBuiltinESMExports();
+      let outcome, reads;
+      try {
+        reads = await observeResultReads(t, f, async () => {
+          outcome = await run(f, { signal: controller.signal, retryDelays: [10000] }).then(
+            () => ({ rejected: false }), error => ({ rejected: true, error }));
+        });
+        assert.equal(mock.mock.callCount(), 1, 'cancellation never schedules another backoff');
+      } finally { mock.mock.restore(); syncBuiltinESMExports(); }
+      assert.equal(outcome.rejected, true);
+      assert.strictEqual(outcome.error, controller.signal.reason, 'backoff must preserve the exact abort reason');
+      assert.deepEqual(reads, { opens: 0, bytes: 0 });
+      assert.deepEqual(f.calls, [{ method: 'GET', path: '/wait?id=owned' }]);
+      assert.equal(fs.readFileSync(join(f.dir, 'state.json'), 'utf8'), 'owned-evidence');
+      assert.equal(fs.readFileSync(f.artifact, 'utf8'), text);
+      // Stopping a local wait does not cancel or collect the owned task.
+      f.respond((_req, res) => res.end(JSON.stringify({ ...empty(), events: [f.event] })));
+      assert.deepEqual((await run(f, {})).events, [f.event]);
+      assert.equal(f.calls.length, entry === 'review' ? 3 : 2);
+    }
+  });
+
+  test(`${entry} retry cancellation does not mask or retry unrelated timer errors`, async t => {
+    const failure = Object.assign(Error('timer failure'), { cause: { code: 'ECONNRESET' } });
+    const mock = t.mock.method(timers, 'setTimeout', async () => { throw failure; });
+    syncBuiltinESMExports();
+    try {
+      for (const signal of [undefined, new AbortController().signal]) {
+        const f = await fixture(t); f.respond(req => req.socket.destroy());
+        const reads = await observeResultReads(t, f, () =>
+          assert.rejects(run(f, { signal, retryDelays: [0, 0, 0] }), error => error === failure));
+        assert.deepEqual(reads, { opens: 0, bytes: 0 });
+        assert.deepEqual(f.calls, [{ method: 'GET', path: '/wait?id=owned' }]);
+        assert.equal(fs.readFileSync(join(f.dir, 'state.json'), 'utf8'), 'owned-evidence');
+      }
+      assert.equal(mock.mock.callCount(), 2);
+    } finally { mock.mock.restore(); syncBuiltinESMExports(); }
+  });
 }
