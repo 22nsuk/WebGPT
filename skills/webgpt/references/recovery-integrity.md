@@ -280,6 +280,23 @@ based, not an instantaneous filesystem watcher; an already-open long poll can re
 open until its next event/timeout, when corrupted state must produce an error rather
 than a normal snapshot. Public `/health` remains liveness only.
 
+The initialization marker still requires the exact 28-byte `WebGPT state initialized v1\n`
+sequence, and lock `owner.json` still has its 4096-byte ceiling. Their runtime readers
+reject oversized metadata before opening the body and recheck the opened regular,
+single-link file. Actual reads stop at the respective limit plus one overflow byte
+(29 or 4097 bytes), even if the file grows after its size check. A truncated prefix
+cannot certify initialization or ownership. The descriptor closes on success and
+failure; no invalid file is rewritten or removed. Marker corruption remains
+`STATE_INVALID`, uncertain ownership remains `LOCK_UNCERTAIN`, and marker I/O
+failures retain their native error classification. An unreadable owner is not proof
+of a dead process or permission to steal its lock.
+
+These bounds apply only to the two small control-file formats, not `state.json` or
+its staged task inventory. Missing-marker/legacy migration, live-owner checks,
+dead-owner archival and explicit recovery rules are unchanged. No verdict is cached,
+and the bound is not a read timeout or isolation from hostile filesystem races.
+`scripts/runtimeMetadata.test.mjs` covers these limits with disposable files.
+
 A responsive Worker launched with an IPC owner starts graceful shutdown if that IPC channel
 closes, including during startup. Shutdown handlers are installed before startup's
 first await. This avoids leaving an unmanaged child after the local launcher exits.

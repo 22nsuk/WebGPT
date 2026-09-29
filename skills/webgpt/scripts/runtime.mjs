@@ -3,10 +3,25 @@ import { randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
 import { isAbsolute, resolve } from 'node:path';
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs';
+import { readBytesUpTo } from './bounded-read.mjs';
 
 export const fault = (code, message) => Object.assign(Error(message), { code, retryable: false });
 const record = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const stat = path => { try { return lstatSync(path); } catch (e) { if (e.code === 'ENOENT') return null; throw e; } };
+
+// These fixed-size control files are not the variable-size task inventory.
+// Bound the actual read even if another writer grows the file after stat.
+function readMetadataBytes(file, limit, code) {
+  const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const info = fstatSync(fd);
+    if (!info.isFile() || info.nlink !== 1 || info.size > limit)
+      throw fault(code, 'invalid runtime metadata; preserve evidence');
+    const bytes = readBytesUpTo(fd, limit + 1);
+    if (bytes.length > limit) throw fault(code, 'runtime metadata exceeds its byte limit; preserve evidence');
+    return bytes;
+  } finally { closeSync(fd); }
+}
 
 function readOwner(lock) {
   const directory = stat(lock), file = stat(resolve(lock, 'owner.json'));
@@ -14,7 +29,7 @@ function readOwner(lock) {
       || file.isSymbolicLink() || file.nlink !== 1 || file.size > 4096)
     throw fault('LOCK_UNCERTAIN', 'runtime lock owner is missing or invalid; preserve it for inspection');
   let owner;
-  try { owner = JSON.parse(readFileSync(resolve(lock, 'owner.json'), 'utf8')); } catch {
+  try { owner = JSON.parse(readMetadataBytes(resolve(lock, 'owner.json'), 4096, 'LOCK_UNCERTAIN').toString('utf8')); } catch {
     throw fault('LOCK_UNCERTAIN', 'runtime lock owner is unreadable; preserve it for inspection');
   }
   if (!record(owner) || !Number.isSafeInteger(owner.pid) || owner.pid < 1 || typeof owner.host !== 'string' || !owner.host)
@@ -157,7 +172,11 @@ export function parseStateMarker(bytes) {
 }
 
 export function readStateMarker(path) {
-  return parseStateMarker(readStateBytes(path));
+  const info = stat(path);
+  if (!info) return false;
+  if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || info.size > initializedBytes.length)
+    throw fault('STATE_INVALID', 'invalid state initialization marker; preserve evidence, do not reset');
+  return parseStateMarker(readMetadataBytes(path, initializedBytes.length, 'STATE_INVALID'));
 }
 
 export function createStateMarker(path) {
