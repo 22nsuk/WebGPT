@@ -124,8 +124,51 @@ test('bounded file rejects overflow before domain decoding and preserves the rej
   assert.equal(trace.evidence.bytes, 1); assert.equal(trace.evidence.closes, 1);
 });
 
-test('native read instrumentation ignores its own growth writes and counts only the reader', t => {
-  const { file } = fixture(t), trace = observeFileRead(t, file, { beforeRead: () => fs.writeFileSync(file, 'changed') });
-  try { assert.equal(readBoundedFile(file, 128, invalid).bytes.toString(), 'changed'); } finally { trace.restore(); }
-  assert.equal(trace.evidence.opens, 1); assert.equal(trace.evidence.closes, 1); assert.equal(trace.evidence.bytes, 7);
+for (const hook of ['beforeRead', 'afterStat']) {
+  test(`native read instrumentation ignores its own growth writes at ${hook}`, t => {
+    const { file, bytes } = fixture(t);
+    let calls = 0;
+    const trace = observeFileRead(t, file, { [hook]() { calls++; fs.writeFileSync(file, 'changed'); } });
+    try {
+      const result = readBoundedFile(file, 128, invalid);
+      assert.equal(result.bytes.toString(), 'changed');
+      assert.equal(result.stat.size, bytes.length, 'retain the real pre-growth metadata observation');
+    } finally { trace.restore(); }
+    assert.equal(calls, 1);
+    assert.equal(trace.evidence.opens, 1); assert.equal(trace.evidence.closes, 1); assert.equal(trace.evidence.bytes, 7);
+  });
+}
+
+test('native read instrumentation scopes stat hooks across opens and restores only its own mocks', t => {
+  const { file } = fixture(t, Buffer.from('first')), other = file + '.other';
+  fs.writeFileSync(other, 'unrelated');
+  const native = Object.fromEntries(['openSync', 'fstatSync', 'readSync', 'readFileSync', 'closeSync'].map(name => [name, fs[name]]));
+  const unrelated = t.mock.method(fs, 'statSync', fs.statSync);
+  t.after(() => { unrelated.mock.restore(); syncBuiltinESMExports(); });
+  let calls = 0, bytesBeforeGrowth;
+  const trace = observeFileRead(t, file, { afterStat() {
+    if (++calls === 2) {
+      bytesBeforeGrowth = trace.evidence.bytes;
+      fs.writeFileSync(file, 'second');
+    }
+  } });
+  try {
+    const fd = fs.openSync(other, 'r');
+    try { assert.equal(fs.fstatSync(fd).size, 9); } finally { fs.closeSync(fd); }
+    assert.equal(calls, 0, 'unrelated file metadata must not trigger the hook');
+    assert.equal(readBoundedFile(file, 128, invalid).bytes.toString(), 'first');
+    const result = readBoundedFile(file, 128, invalid);
+    assert.equal(result.bytes.toString(), 'second'); assert.equal(result.stat.size, 5);
+  } finally { trace.restore(); }
+  assert.equal(calls, 2); assert.equal(bytesBeforeGrowth, 5);
+  assert.equal(trace.evidence.bytes - bytesBeforeGrowth, 6);
+  assert.equal(trace.evidence.opens, 2); assert.equal(trace.evidence.closes, 2);
+
+  const failure = Error('stat hook fixture');
+  const failed = observeFileRead(t, file, { afterStat() { throw failure; } });
+  try { assert.throws(() => readBoundedFile(file, 128, invalid), error => error === failure); }
+  finally { failed.restore(); }
+  assert.equal(failed.evidence.opens, 1); assert.equal(failed.evidence.closes, 1); assert.equal(failed.evidence.bytes, 0);
+  for (const [name, fn] of Object.entries(native)) assert.equal(fs[name], fn, `${name} restored`);
+  assert.equal(fs.statSync, unrelated, 'restoration must not clear a caller-owned mock');
 });

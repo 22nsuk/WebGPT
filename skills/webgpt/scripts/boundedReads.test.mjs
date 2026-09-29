@@ -12,6 +12,7 @@ import { verifySavedResult, inspectPendingResults, storeResult } from './results
 import { start } from './worker.mjs';
 import { request, collectTask } from './client.mjs';
 import { readBytesUpTo } from './bounded-read.mjs';
+import { observeFileRead } from './test-fixtures/file-read.mjs';
 
 const LIMIT = 1024 * 1024;
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -25,49 +26,29 @@ function fixture(t, cleanup = true) {
   return { base, root, dir, path, file, grant: grantWorkspace({ root, mode: 'edit' }) };
 }
 function growAfterStat(t, file, operation, { at = 1 } = {}) {
-  const opened = new Set();
-  const native = { open: fs.openSync, stat: fs.fstatSync, read: fs.readSync, close: fs.closeSync };
-  let metadataReads = 0, bytesRead = 0, grew = false;
-  t.mock.method(fs, 'openSync', (path, ...args) => {
-    const fd = native.open(path, ...args);
-    if (path === file) opened.add(fd);
-    return fd;
-  });
-  t.mock.method(fs, 'fstatSync', (fd, ...args) => {
-    const info = native.stat(fd, ...args);
-    if (opened.has(fd) && ++metadataReads === at) {
-      // Another writer can change the file after this returned size was observed.
-      fs.writeFileSync(file, Buffer.alloc(2 * LIMIT, 120));
-      grew = true;
-    }
-    return info;
-  });
-  t.mock.method(fs, 'readSync', (fd, ...args) => {
-    const count = native.read(fd, ...args);
-    if (grew && opened.has(fd)) bytesRead += count;
-    return count;
-  });
-  t.mock.method(fs, 'closeSync', fd => {
-    const result = native.close(fd); opened.delete(fd); return result;
-  });
-  syncBuiltinESMExports();
+  let metadataReads = 0, bytesBeforeGrowth = 0, grew = false;
+  const trace = observeFileRead(t, file, { afterStat() {
+    if (++metadataReads !== at) return;
+    // Retry-flush first verifies the original; count only reads after this race.
+    bytesBeforeGrowth = trace.evidence.bytes;
+    fs.writeFileSync(file, Buffer.alloc(2 * LIMIT, 120));
+    grew = true;
+  } });
   const finish = () => {
-    t.mock.restoreAll(); syncBuiltinESMExports();
+    trace.restore();
     assert.equal(grew, true, 'the regression must reach the post-stat growth window');
-    assert.equal(opened.size, 0, 'every opened descriptor must close on rejection');
+    assert.equal(trace.evidence.opens, trace.evidence.closes, 'every opened descriptor must close on rejection');
+    const bytesRead = trace.evidence.bytes - bytesBeforeGrowth;
     assert.ok(bytesRead <= LIMIT + 1, `read ${bytesRead} bytes; limit plus sentinel is ${LIMIT + 1}`);
     assert.equal(fs.statSync(file).size, 2 * LIMIT, 'a rejected read must not rewrite its input');
   };
   // Async operations are used only for the real loopback integration tests.
-  try {
-    const result = operation();
-    if (result?.then) return result.finally(finish);
-    finish();
-    return result;
-  } catch (error) {
-    t.mock.restoreAll(); syncBuiltinESMExports();
-    throw error;
-  }
+  let result;
+  try { result = operation(); }
+  catch (error) { trace.restore(); throw error; }
+  if (result?.then) return result.finally(finish);
+  finish();
+  return result;
 }
 
 for (const options of [{}, { offset: 1, limit: 1, maxChars: 100 }]) {

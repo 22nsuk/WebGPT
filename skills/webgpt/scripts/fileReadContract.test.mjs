@@ -19,16 +19,18 @@ const spec = { taskId: 'owned', mode: 'pro', prompt: 'private fixture', target: 
 // New bounded materializing readers belong in this matrix, not a copied read loop.
 async function fixture(t, kind) {
   const dir = readFixture(t);
-  let file = join(dir, 'data.txt'), limit = MiB, run, expected, invalid;
+  let file = join(dir, 'data.txt'), limit = MiB, run, expected, invalid, probes = 0;
   if (kind === 'marker') {
     file = join(dir, 'state.initialized'); createStateMarker(file); limit = 28;
     run = () => readStateMarker(file); expected = true; invalid = { code: 'STATE_INVALID' };
   } else if (kind === 'owner') {
     const lock = join(dir, 'worker.lock'); fs.mkdirSync(lock);
     file = join(lock, 'owner.json'); limit = 4096;
-    fs.writeFileSync(file, JSON.stringify({ pid: process.pid, host: 'fixture' }));
+    // Preserve the metadata suite's exact 4096-byte owner/short-read boundary.
+    const owner = JSON.stringify({ pid: process.pid, host: 'fixture' });
+    fs.writeFileSync(file, owner.padEnd(limit, ' '));
     run = () => {
-      try { acquireRuntimeLock(dir, { host: 'fixture', probe: () => 'alive' }); }
+      try { acquireRuntimeLock(dir, { host: 'fixture', probe: () => { probes++; return 'alive'; } }); }
       catch (error) { if (error.code === 'LOCK_HELD') return 'live'; throw error; }
       assert.fail('a live owner cannot be acquired');
     };
@@ -58,7 +60,7 @@ async function fixture(t, kind) {
     }
     expected = 'registered';
   }
-  return { dir, file, limit, run, expected, invalid, bytes: fs.readFileSync(file) };
+  return { dir, file, limit, run, expected, invalid, bytes: fs.readFileSync(file), probes: () => probes };
 }
 
 for (const kind of ['marker', 'owner', 'result', 'workspace', 'diagnostic', 'dispatch-ledger', 'dispatch-payload']) {
@@ -69,6 +71,8 @@ for (const kind of ['marker', 'owner', 'result', 'workspace', 'diagnostic', 'dis
     assert.equal(trace.evidence.opens, 1); assert.equal(trace.evidence.closes, 1);
     assert.equal(trace.evidence.bytes, f.bytes.length);
     assert.deepEqual(fs.readFileSync(f.file), f.bytes);
+    assert.equal(f.probes(), kind === 'owner' ? 1 : 0);
+    if (kind === 'marker' || kind === 'owner') assert.equal(f.bytes.length, f.limit);
   });
 
   test(`${kind} read contract rejects growth without returning a bounded prefix`, async t => {
@@ -79,6 +83,8 @@ for (const kind of ['marker', 'owner', 'result', 'workspace', 'diagnostic', 'dis
     assert.equal(trace.evidence.bytes, f.limit + 1);
     assert.equal(trace.evidence.opens, 1); assert.equal(trace.evidence.closes, 1);
     assert.deepEqual(fs.readFileSync(f.file), grown);
+    assert.equal(f.probes(), 0);
+    assert.equal(fs.existsSync(join(f.dir, 'worker.recovery.lock')), false);
   });
 
   test(`${kind} read contract rejects an initially oversized file without content I/O`, async t => {
@@ -89,6 +95,8 @@ for (const kind of ['marker', 'owner', 'result', 'workspace', 'diagnostic', 'dis
     finally { trace.restore(); }
     assert.equal(trace.evidence.bytes, 0); assert.equal(trace.evidence.opens, 0);
     assert.deepEqual(fs.readFileSync(f.file), grown);
+    assert.equal(f.probes(), 0);
+    assert.equal(fs.existsSync(join(f.dir, 'worker.recovery.lock')), false);
   });
 
   test(`${kind} read contract retains its native read-failure classification`, async t => {
@@ -102,6 +110,8 @@ for (const kind of ['marker', 'owner', 'result', 'workspace', 'diagnostic', 'dis
     finally { trace.restore(); }
     assert.equal(trace.evidence.bytes, 0); assert.equal(trace.evidence.closes, 1);
     assert.deepEqual(fs.readFileSync(f.file), f.bytes);
+    assert.equal(f.probes(), 0);
+    assert.equal(fs.existsSync(join(f.dir, 'worker.recovery.lock')), false);
   });
 
   test(`${kind} read contract binds the opened file to the checked identity`, async t => {
@@ -116,6 +126,8 @@ for (const kind of ['marker', 'owner', 'result', 'workspace', 'diagnostic', 'dis
     assert.equal(trace.evidence.opens, 1); assert.equal(trace.evidence.closes, 1);
     assert.deepEqual(fs.readFileSync(held), f.bytes);
     assert.deepEqual(fs.readFileSync(f.file), f.bytes);
+    assert.equal(f.probes(), 0);
+    assert.equal(fs.existsSync(join(f.dir, 'worker.recovery.lock')), false);
   });
 }
 

@@ -11,8 +11,8 @@ export function readFixture(t) {
   return dir;
 }
 
-export function observeFileRead(t, file, { beforeOpen, beforeRead, chunkSize = Infinity } = {}) {
-  const native = { open: fs.openSync, read: fs.readSync, whole: fs.readFileSync, close: fs.closeSync };
+export function observeFileRead(t, file, { beforeOpen, afterStat, beforeRead, chunkSize = Infinity } = {}) {
+  const native = { open: fs.openSync, stat: fs.fstatSync, read: fs.readSync, whole: fs.readFileSync, close: fs.closeSync };
   const descriptors = new Set(), mocks = [];
   const evidence = { opens: 0, closes: 0, bytes: 0, reads: 0 };
   let entered = false, whole = false, injecting = false;
@@ -24,6 +24,12 @@ export function observeFileRead(t, file, { beforeOpen, beforeRead, chunkSize = I
     const fd = native.open(path, ...args);
     if (path === file) { descriptors.add(fd); evidence.opens++; }
     return fd;
+  }));
+  mocks.push(t.mock.method(fs, 'fstatSync', (fd, ...args) => {
+    const info = native.stat(fd, ...args);
+    // Keep the actual observation: growth happens after stat, not before it.
+    if (descriptors.has(fd) && !injecting) inject(afterStat);
+    return info;
   }));
   mocks.push(t.mock.method(fs, 'readSync', (fd, buffer, offset, length, position) => {
     if (!descriptors.has(fd) || whole) return native.read(fd, buffer, offset, length, position);
