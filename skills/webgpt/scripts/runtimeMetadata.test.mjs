@@ -1,15 +1,14 @@
-// Fixed-size runtime metadata must not become an unbounded whole-file read.
-// Grow only disposable fixtures at the read boundary; no sleeps or memory stress.
+// Metadata-specific formats, path types and ownership lifecycle. Shared size,
+// growth, short-read and I/O-error cases live in fileReadContract.test.mjs.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { syncBuiltinESMExports } from 'node:module';
+import { observeFileRead } from './test-fixtures/file-read.mjs';
 import { acquireRuntimeLock, createStateMarker, parseState, parseStateMarker, readStateBytes, readStateMarker } from './runtime.mjs';
 
 const marker = Buffer.from('WebGPT state initialized v1\n');
-const large = Buffer.alloc(2 * 1024 * 1024, 120);
 function fixture(t, kind = 'marker') {
   const dir = fs.realpathSync.native(fs.mkdtempSync(join(tmpdir(), 'webgpt-metadata-')));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
@@ -17,103 +16,21 @@ function fixture(t, kind = 'marker') {
   if (kind === 'owner') fs.mkdirSync(join(dir, 'worker.lock'));
   const bytes = kind === 'marker' ? marker : Buffer.from(JSON.stringify({ pid: 1, host: 'fixture', instanceId: 'original' }));
   fs.writeFileSync(file, bytes);
-  let probes = 0;
-  return { dir, file, bytes, limit: kind === 'marker' ? marker.length : 4096,
+  return { dir, file, bytes,
     invalid: { code: kind === 'marker' ? 'STATE_INVALID' : 'LOCK_UNCERTAIN' },
     run: () => kind === 'marker' ? readStateMarker(file)
-      : acquireRuntimeLock(dir, { host: 'fixture', probe: () => { probes++; return 'alive'; } }),
-    probes: () => probes };
+      : acquireRuntimeLock(dir, { host: 'fixture', probe: () => 'alive' }) };
 }
-function observeReads(t, file, operation, { beforeRead = () => {}, chunkSize = Infinity } = {}) {
-  const native = { open: fs.openSync, read: fs.readSync, whole: fs.readFileSync, close: fs.closeSync };
-  const opened = new Set(), observed = { bytes: 0, opens: 0 };
-  let inWholeRead = false;
-  t.mock.method(fs, 'openSync', (path, ...args) => {
-    const fd = native.open(path, ...args);
-    const flags = args[0];
-    const reading = flags === 'r' || typeof flags === 'number' && !(flags & (fs.constants.O_WRONLY | fs.constants.O_RDWR));
-    if (path === file && reading) { opened.add(fd); observed.opens++; }
-    return fd;
-  });
-  t.mock.method(fs, 'readSync', (fd, buffer, offset, length, position) => {
-    const tracked = opened.has(fd) && !inWholeRead;
-    if (tracked) beforeRead();
-    const count = native.read(fd, buffer, offset, tracked ? Math.min(length, chunkSize) : length, position);
-    if (tracked) observed.bytes += count;
-    return count;
-  });
-  // Count the previous implementation's real whole-file read too. A passing
-  // rejection alone must not hide how many bytes were consumed before it failed.
-  t.mock.method(fs, 'readFileSync', (path, ...args) => {
-    if (path !== file && !opened.has(path)) return native.whole(path, ...args);
-    beforeRead(); inWholeRead = true;
-    try {
-      const bytes = native.whole(path, ...args);
-      observed.bytes += Buffer.byteLength(bytes);
-      return bytes;
-    } finally { inWholeRead = false; }
-  });
-  t.mock.method(fs, 'closeSync', fd => {
-    const result = native.close(fd); opened.delete(fd); return result;
-  });
-  syncBuiltinESMExports();
-  try { operation(); }
-  finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
-  assert.equal(opened.size, 0, 'all opened metadata descriptors must close');
-  return observed;
-}
-
 for (const kind of ['marker', 'owner']) {
-  test(`${kind} metadata rejects an oversized file before reading its body`, t => {
-    const f = fixture(t, kind); fs.writeFileSync(f.file, large);
-    const reads = observeReads(t, f.file, () => assert.throws(f.run, f.invalid));
-    assert.deepEqual(reads, { bytes: 0, opens: 0 });
-    t.diagnostic(JSON.stringify({ kind, scenario: 'oversized', sourceBytes: large.length, ...reads }));
-    assert.deepEqual(fs.readFileSync(f.file), large);
-    assert.equal(f.probes(), 0);
-  });
-
-  test(`${kind} metadata bounds actual growth at the read boundary`, t => {
-    const f = fixture(t, kind); let grew = false;
-    const reads = observeReads(t, f.file, () => assert.throws(f.run, f.invalid), {
-      beforeRead: () => { if (!grew) { fs.writeFileSync(f.file, large); grew = true; } },
-    });
-    assert.equal(grew, true, 'exercise content reading, not an earlier validation failure');
-    assert.ok(reads.bytes <= f.limit + 1, `read ${reads.bytes} bytes; ceiling is ${f.limit + 1}`);
-    t.diagnostic(JSON.stringify({ kind, scenario: 'growth', sourceBytes: large.length, ceiling: f.limit + 1, ...reads }));
-    assert.deepEqual(fs.readFileSync(f.file), large);
-    assert.equal(f.probes(), 0);
-    assert.equal(fs.existsSync(join(f.dir, 'worker.recovery.lock')), false);
-  });
-
-  test(`${kind} metadata preserves exact-limit contents with short reads`, t => {
-    const f = fixture(t, kind);
-    const bytes = kind === 'owner' ? Buffer.concat([f.bytes, Buffer.alloc(f.limit - f.bytes.length, 32)]) : f.bytes;
-    fs.writeFileSync(f.file, bytes);
-    const reads = observeReads(t, f.file, () => {
-      if (kind === 'marker') assert.equal(f.run(), true);
-      else assert.throws(f.run, { code: 'LOCK_HELD' });
-    }, { chunkSize: 3 });
-    assert.equal(reads.bytes, bytes.length);
-    assert.deepEqual(fs.readFileSync(f.file), bytes);
-    assert.equal(f.probes(), kind === 'marker' ? 0 : 1);
-  });
-
-  test(`${kind} metadata keeps I/O error classification and closes the descriptor`, t => {
-    const f = fixture(t, kind), failure = Object.assign(Error('fixture read failure'), { code: 'EIO' });
-    observeReads(t, f.file, () => assert.throws(f.run,
-      kind === 'marker' ? error => error === failure : f.invalid), { beforeRead: () => { throw failure; } });
-    assert.deepEqual(fs.readFileSync(f.file), f.bytes);
-    assert.equal(f.probes(), 0);
-  });
-
   test(`${kind} metadata rejects directories and hardlinks without reading or modifying them`, t => {
     const f = fixture(t, kind), original = join(f.dir, 'original');
     fs.renameSync(f.file, original);
     for (const type of ['directory', 'hardlink']) {
       if (type === 'directory') fs.mkdirSync(f.file); else fs.linkSync(original, f.file);
-      const reads = observeReads(t, f.file, () => assert.throws(f.run, f.invalid));
-      assert.deepEqual(reads, { bytes: 0, opens: 0 });
+      const trace = observeFileRead(t, f.file);
+      try { assert.throws(f.run, f.invalid); } finally { trace.restore(); }
+      assert.equal(trace.evidence.bytes, 0); assert.equal(trace.evidence.opens, 0);
+      assert.equal(trace.evidence.closes, 0);
       if (type === 'directory') fs.rmdirSync(f.file); else fs.unlinkSync(f.file);
       assert.deepEqual(fs.readFileSync(original), f.bytes);
     }
@@ -124,8 +41,10 @@ for (const kind of ['marker', 'owner']) {
     fs.renameSync(f.file, original);
     try { fs.symlinkSync(original, f.file); }
     catch (error) { if (process.platform === 'win32' && error.code === 'EPERM') return t.skip('file symlinks require Windows permission'); throw error; }
-    const reads = observeReads(t, f.file, () => assert.throws(f.run, f.invalid));
-    assert.deepEqual(reads, { bytes: 0, opens: 0 });
+    const trace = observeFileRead(t, f.file);
+    try { assert.throws(f.run, f.invalid); } finally { trace.restore(); }
+    assert.equal(trace.evidence.bytes, 0); assert.equal(trace.evidence.opens, 0);
+    assert.equal(trace.evidence.closes, 0);
     assert.equal(fs.lstatSync(f.file).isSymbolicLink(), true);
     assert.deepEqual(fs.readFileSync(original), f.bytes);
   });

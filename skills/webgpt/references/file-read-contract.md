@@ -68,15 +68,33 @@ read timeout, a power-loss guarantee, or a total-process memory/latency bound.
 
 ## Regression ownership
 
-`boundedFile.test.mjs` exercises the common mechanism, including short reads,
-opaque bytes, empty/absent files, pre-open rejection, opened metadata, native
-errors and descriptor closure. `fileReadContract.test.mjs` runs the same contract
-matrix through the real domain adapters and checks candidate-length state retry
-comparison. Its native I/O observer is in `test-fixtures/file-read.mjs`, so moving
-between a whole-file and descriptor read cannot silently bypass instrumentation.
-Add a new bounded materializing adapter to this matrix instead of copying its
-own file-open/read loop. Keep existing worker/collection/recovery tests as the
-integration check; common reader tests do not replace lifecycle assertions.
+Keep one owner per assertion family, not one copy per historical fix:
+
+| Test owner | Responsibility |
+| --- | --- |
+| `boundedFile.test.mjs` | Shared file-opening mechanism: opaque bytes, absence/empty input, metadata, native failures and descriptor closure; the I/O observer's hook timing, accounting and scoped restoration |
+| `fileReadContract.test.mjs` | Real adapter matrix: short reads, growth/oversize rejection, error classification and identity swaps; candidate-length state retries |
+| `runtimeMetadata.test.mjs` | Marker format/absence, metadata path types, uncapped committed state, and worker/service ownership lifecycle |
+| `boundedReads.test.mjs` | Descriptor primitive and mutation/recovery/real HTTP consequences, including the second-open result retry-flush race |
+
+The marker/owner matrix retains their exact 28/4096-byte short-read boundaries,
+zero ownership probes on rejection, and recovery-guard cleanup. These checks
+replace the eight overlapping metadata size/growth/short-read/error cases; they
+are not removed coverage. Type/link and lifecycle assertions remain domain-owned.
+
+These suites reuse `test-fixtures/file-read.mjs` for native I/O
+observation. Its `afterStat` hook runs after the actual descriptor observation;
+`beforeRead` runs once before content reading. Injection writes and unrelated
+files do not count as reader I/O. Retry-flush tests select their second stat and
+subtract earlier verification bytes rather than changing the byte ceiling.
+Restore only observer-owned mocks before inspecting evidence. Specialized
+primitive read/shrink/append fault injection remains in its owning tests.
+
+Add a bounded materializing adapter to the matrix instead of copying a file-open
+spy or the same scenario into a second suite. Retain worker/collection/recovery
+assertions: a common-reader refusal alone does not establish no mutation,
+no acknowledgment or token retention. Do not remove installed-layout or
+cross-platform execution merely because it runs the same test sources.
 
 References: [Node filesystem flags and reads](https://nodejs.org/download/release/v22.16.0/docs/api/fs.html),
 [Node builtin ESM binding synchronization](https://nodejs.org/download/release/v22.16.0/docs/api/module.html#modulesyncbuiltinesmexports).
