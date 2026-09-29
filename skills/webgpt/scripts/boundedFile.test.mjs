@@ -1,11 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
+import fs, * as fsExports from 'node:fs';
 import { constants } from 'node:buffer';
 import { syncBuiltinESMExports } from 'node:module';
 import { join } from 'node:path';
 import { readBoundedFile } from './bounded-read.mjs';
 import { readFixture, observeFileRead } from './test-fixtures/file-read.mjs';
+
+// Capture before any serial test installs mocks; assertions inside a test's finally
+// cannot see the automatic MockTracker reset that runs after that test returns.
+const nativeMethods = Object.fromEntries(
+  ['lstatSync', 'openSync', 'fstatSync', 'readSync', 'readFileSync', 'closeSync', 'statSync']
+    .map(name => [name, Object.getOwnPropertyDescriptor(fs, name)]));
 
 const invalid = reason => Object.assign(Error('fixture file rejected'), { code: 'FIXTURE_INVALID', reason });
 const rejected = reason => ({ code: 'FIXTURE_INVALID', reason });
@@ -85,7 +91,11 @@ for (const property of ['size', 'nlink', 'isFile']) test(`bounded file rechecks 
   });
   syncBuiltinESMExports();
   try { assert.throws(() => readBoundedFile(file, bytes.length, invalid), rejected('metadata')); }
-  finally { mock.mock.restore(); syncBuiltinESMExports(); trace.restore(); }
+  finally {
+    // This test owns both layers. Disassociate them before restoring in reverse
+    // order, or automatic test cleanup can reinstall the inner layer's observer.
+    t.mock.reset(); mock.mock.restore(); trace.restore();
+  }
   assert.equal(trace.evidence.bytes, 0); assert.equal(trace.evidence.closes, 1);
   assert.deepEqual(fs.readFileSync(file), bytes);
 });
@@ -102,7 +112,7 @@ for (const [method, code, closed] of [
   });
   syncBuiltinESMExports();
   try { assert.throws(() => readBoundedFile(file, bytes.length, invalid), error => error === failure); }
-  finally { mock.mock.restore(); syncBuiltinESMExports(); trace.restore(); }
+  finally { t.mock.reset(); mock.mock.restore(); trace.restore(); }
   assert.equal(trace.evidence.closes, closed); assert.deepEqual(fs.readFileSync(file), bytes);
 });
 
@@ -171,4 +181,13 @@ test('native read instrumentation scopes stat hooks across opens and restores on
   assert.equal(failed.evidence.opens, 1); assert.equal(failed.evidence.closes, 1); assert.equal(failed.evidence.bytes, 0);
   for (const [name, fn] of Object.entries(native)) assert.equal(fs[name], fn, `${name} restored`);
   assert.equal(fs.statSync, unrelated, 'restoration must not clear a caller-owned mock');
+});
+
+// Keep this check after the fault cases: it observes their completed test cleanup,
+// not just manual restoration while the same TestContext is still active.
+test('bounded file instrumentation leaves native filesystem bindings intact after test cleanup', () => {
+  for (const [name, descriptor] of Object.entries(nativeMethods)) {
+    assert.deepEqual(Object.getOwnPropertyDescriptor(fs, name), descriptor, `${name} default binding after cleanup`);
+    assert.equal(fsExports[name], descriptor.value, `${name} ESM binding after cleanup`);
+  }
 });

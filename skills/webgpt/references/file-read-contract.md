@@ -90,6 +90,15 @@ subtract earlier verification bytes rather than changing the byte ceiling.
 Restore only observer-owned mocks before inspecting evidence. Specialized
 primitive read/shrink/append fault injection remains in its owning tests.
 
+A test that layers its own native fault mock over the observer owns both layers.
+Its final cleanup must first `t.mock.reset()` to disassociate those tracked mocks,
+then restore the fault mock and observer in reverse order. The observer's restore
+also synchronizes builtin ESM bindings. Manual `mock.restore()` alone leaves the
+mocks tracked: Node's later automatic reset can reinstall an observer after the
+test's assertions have passed. Do not put a whole-context reset in the shared
+observer, which must leave caller-owned mocks alone. The mechanism suite checks
+original descriptors and ESM bindings again after the serial fault tests finish.
+
 Add a bounded materializing adapter to the matrix instead of copying a file-open
 spy or the same scenario into a second suite. Retain worker/collection/recovery
 assertions: a common-reader refusal alone does not establish no mutation,
@@ -97,4 +106,5 @@ no acknowledgment or token retention. Do not remove installed-layout or
 cross-platform execution merely because it runs the same test sources.
 
 References: [Node filesystem flags and reads](https://nodejs.org/download/release/v22.16.0/docs/api/fs.html),
-[Node builtin ESM binding synchronization](https://nodejs.org/download/release/v22.16.0/docs/api/module.html#modulesyncbuiltinesmexports).
+[Node builtin ESM binding synchronization](https://nodejs.org/download/release/v22.16.0/docs/api/module.html#modulesyncbuiltinesmexports),
+[Node mock lifecycle](https://nodejs.org/download/release/v22.16.0/docs/api/test.html#mockreset).
