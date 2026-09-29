@@ -280,23 +280,29 @@ function assertReady(d, before) {
       || (before.composerSha256 !== null && before.composerSha256 !== d.promptSha256)
       || (d.target.chatUrl === null && before.lastUserMessageId !== null)) fail('NOT_READY');
 }
-function prepare(ledger, save, observation) {
+// Assemble readiness once; the requested operation owns its publication barrier.
+function prepare(ledger, observation) {
   const d = getDispatch(ledger);
   if (!['registered', 'prepared'].includes(d.state)) fail('BLOCKED');
   const before = validateObservation(observation);
   assertReady(d, before);
   Object.assign(d, { state: 'prepared', before, preparedAt: now() });
-  save();
   return d;
 }
 export async function prepareDispatch(file, observation) {
-  return withLedger(file, (ledger, save) => safeSummary(prepare(ledger, save, observation)));
+  return withLedger(file, (ledger, save) => {
+    const d = prepare(ledger, observation);
+    save(); // Explicit preparation remains an independently persisted checkpoint.
+    return safeSummary(d);
+  });
 }
 function begin(ledger, save, prompt, observation) {
   const d = getDispatch(ledger);
   if (!['registered', 'prepared'].includes(d.state)) fail('BLOCKED');
   if (textDigest(prompt) !== d.promptSha256) fail('INPUT');
-  prepare(ledger, save, observation);
+  prepare(ledger, observation);
+  // No browser action or externally useful checkpoint separates preparation
+  // from begin. Publish their evidence together, not two consecutive snapshots.
   d.state = 'sending';
   d.sendingAt = now();
   save(); // Must succeed before the first browser operation that can submit a message.

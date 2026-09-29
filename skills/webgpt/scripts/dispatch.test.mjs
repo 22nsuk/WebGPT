@@ -492,14 +492,22 @@ test('dangling state fields and invalid optional booleans cannot reset an attemp
 test('an injected sending-publication failure prevents any browser side effect', async t => {
   const { file } = fixture(t);
   await registerDispatch(file, spec());
+  const before = readFileSync(file);
   const moduleUrl = new URL('./dispatch.mjs', import.meta.url).href;
   const run = spawnSync(process.execPath, ['--input-type=module', '-e', `
     import fs from 'node:fs';
     import { syncBuiltinESMExports } from 'node:module';
     import { dispatchPrompt } from ${JSON.stringify(moduleUrl)};
     const original = fs.renameSync;
-    let writes = 0;
-    fs.renameSync = (...args) => { if (++writes === 2) throw Error(${JSON.stringify(secret)}); return original(...args); };
+    const ledger = fs.realpathSync(process.argv[1]);
+    fs.renameSync = (from, to) => {
+      // Target the send barrier itself, independent of earlier checkpoints.
+      if (to === ledger && JSON.parse(fs.readFileSync(from, 'utf8')).dispatch.state === 'sending') {
+        console.log('SENDING_PUBLICATION_FAILED');
+        throw Error(${JSON.stringify(secret)});
+      }
+      return original(from, to);
+    };
     syncBuiltinESMExports();
     try { await dispatchPrompt(process.argv[1], ${JSON.stringify(prompt)}, {
       observeReady: async () => (${JSON.stringify(ready())}),
@@ -508,10 +516,12 @@ test('an injected sending-publication failure prevents any browser side effect',
     } catch (error) { console.log(error.code, error.message); }
   `, file], { encoding: 'utf8', timeout: 15000 });
   assert.equal(run.status, 0, run.stderr);
+  assert.match(run.stdout, /SENDING_PUBLICATION_FAILED/);
   assert.match(run.stdout, /DISPATCH_STORAGE/);
   assert.doesNotMatch(run.stdout, /BROWSER_CALLED/);
   safe(run.stdout + run.stderr);
-  assert.equal(read(file).dispatch.state, 'prepared');
+  assert.equal(read(file).dispatch.state, 'registered');
+  assert.deepEqual(readFileSync(file), before);
 });
 
 test('an injected confirmation-publication failure leaves sending blocked after a real send callback', async t => {
