@@ -255,7 +255,7 @@ test('ordinary collection remains strict on already retired results while explic
 for (const scenario of ['discarded', 'unconfirmed']) test(`ordinary collection CLI reports ${scenario} without false success or private output`, async t => {
   const f = await fixture(t, async ({ req, res, phase, admin }) => {
     if (phase !== 'before' || req.url !== '/collect') return;
-    if (scenario === 'discarded') await f.admin('cancel', { id: 'owned' });
+    if (scenario === 'discarded') await admin('cancel', { id: 'owned' });
     else { reply(res, {}); return true; }
   });
   const file = join(f.dir, 'config.json'); writeFileSync(file, JSON.stringify(f.config));
