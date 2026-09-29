@@ -59,7 +59,7 @@ for (const [file, exported, args, status, diagnostic] of entries) {
     assert.equal(fs.existsSync(join(dir, 'renamed.mjs')), true);
     quiet(run(['--input-type=module', '-', 'private-argument'], importBody));
   });
-  for (const flags of [[], ['--preserve-symlinks-main'], ['--preserve-symlinks', '--preserve-symlinks-main']]) {
+  for (const flags of [[], ['-expose-gc'], ['--preserve-symlinks-main'], ['--preserve-symlinks', '--preserve-symlinks-main']]) {
     test(`${file}: linked CLI runs its validation with ${flags.join(' ') || 'default flags'}`, t => {
       const { dir, run } = fixture(t);
       const alias = join(dir, 'scripts 한글 # %');

@@ -17,7 +17,102 @@ function fixture(t) {
   fs.writeFileSync(source, 'approved evidence\n');
   return { dir, source };
 }
-const node = (args, env = process.env) => spawnSync(process.execPath, args, { env, encoding: 'utf8', timeout: 10000 });
+const node = (args, env = process.env, cwd) => spawnSync(process.execPath, args, { env, cwd, encoding: 'utf8', timeout: 10000 });
+
+for (const flag of ['-prof', '-expose-gc']) {
+  test(`artifact runtime option ${flag} does not suppress direct or preloaded execution`, t => {
+    const { dir, source } = fixture(t);
+    for (const preload of [false, true]) {
+      const out = join(dir, `evidence-${preload}.json`);
+      const result = node([flag, ...(preload ? ['--import', pathToFileURL(script).href] : []), script,
+        '--source', source, '--label', 'fixture', '--out', out], process.env, dir);
+      assert.equal(result.status, 0, result.stderr); assert.equal(result.stderr, '');
+      assert.notEqual(result.stdout, '', 'a runtime option cannot suppress the receipt');
+      const bytes = fs.readFileSync(out);
+      assert.deepEqual(JSON.parse(result.stdout), { ok: true, inputBytes: bytes.length, sha256: hash(bytes) });
+      assert.equal(JSON.parse(bytes).source.sha256, hash('approved evidence\n'));
+    }
+  });
+}
+
+test('artifact locked globals allow one linked CLI execution and one redacted failure', t => {
+  const { dir, source } = fixture(t), alias = join(dir, 'scripts');
+  fs.symlinkSync(dirname(script), alias, process.platform === 'win32' ? 'junction' : 'dir');
+  const lock = join(dir, 'lock.mjs'), out = join(dir, 'evidence.json');
+  fs.writeFileSync(lock, 'Object.preventExtensions(globalThis);');
+  const flags = ['--preserve-symlinks', '--preserve-symlinks-main', '--import', pathToFileURL(lock).href,
+    '--import', pathToFileURL(script).href, join(alias, 'artifact-input.mjs')];
+  const result = node([...flags, '--source', source, '--label', 'fixture', '--out', out]);
+  assert.equal(result.status, 0, result.stderr); assert.equal(result.stderr, '');
+  const bytes = fs.readFileSync(out);
+  assert.deepEqual(JSON.parse(result.stdout), { ok: true, inputBytes: bytes.length, sha256: hash(bytes) });
+  assert.equal(JSON.parse(bytes).source.sha256, hash('approved evidence\n'));
+  const failed = node([...flags, '--unknown']);
+  assert.equal(failed.status, 1); assert.equal(failed.stdout, '');
+  assert.equal(JSON.parse(failed.stderr).code, 'ERR_PARSE_ARGS_UNKNOWN_OPTION');
+  assert.ok(!failed.stderr.includes(dir));
+});
+
+test('artifact a locked marker host reports a redacted failure without inspecting source', t => {
+  const { dir, source } = fixture(t), out = join(dir, 'must-not-create.json');
+  const lock = join(dir, 'lock-process.mjs');
+  fs.writeFileSync(lock, `import fs from 'node:fs';
+    Object.preventExtensions(process);
+    const stat = fs.lstatSync;
+    fs.lstatSync = (path, ...args) => {
+      if (path === ${JSON.stringify(source)}) throw Error('unclaimed CLI inspected source');
+      return stat(path, ...args);
+    };`);
+  const result = node(['--import', pathToFileURL(lock).href, script,
+    '--source', source, '--label', 'fixture', '--out', out]);
+  assert.equal(result.status, 1); assert.equal(result.stdout, '');
+  assert.equal(JSON.parse(result.stderr).code, 'CLI_STATE_UNAVAILABLE');
+  assert.ok(!result.stderr.includes(dir)); assert.equal(fs.existsSync(out), false);
+});
+
+for (const flag of ['-e', '-p', '-pe', '--eval', '--print', '--eval=']) {
+  test(`artifact ${flag} treats a script-shaped positional argument as data`, t => {
+    const { dir, source } = fixture(t), out = join(dir, 'must-not-create.json');
+    // Dynamic import works in CommonJS print mode on the complete Node 22 baseline.
+    const body = `void import(${JSON.stringify(pathToFileURL(script).href)})`;
+    const args = flag.endsWith('=') ? [flag + body] : [flag, body];
+    const result = node([...args, script, '--source', source, '--label', 'fixture', '--out', out]);
+    assert.equal(result.status, 0, result.stderr); assert.equal(result.stderr, '');
+    assert.equal(result.stdout, flag.includes('p') ? 'undefined\n' : '');
+    assert.equal(fs.existsSync(out), false);
+  });
+}
+
+for (const code of ['EACCES', 'EIO']) {
+  test(`artifact unrelated importer remains quiet on ${code} lookup failures`, t => {
+    const { dir, source } = fixture(t), out = join(dir, 'must-not-create.json');
+    const importer = join(dir, 'importer.mjs');
+    for (const failingPath of [importer, script]) {
+      fs.writeFileSync(importer, `import fs from 'node:fs'; import assert from 'node:assert/strict';
+        const original = fs.realpathSync, stat = fs.lstatSync;
+        fs.realpathSync = (path, ...args) => {
+          if (path === ${JSON.stringify(failingPath)})
+            throw Object.assign(Error(${JSON.stringify(dir)}), { code: ${JSON.stringify(code)} });
+          return original(path, ...args);
+        };
+        let reads = 0;
+        fs.lstatSync = (path, ...args) => { if (path === ${JSON.stringify(source)}) reads++; return stat(path, ...args); };
+        const previousExit = process.exitCode;
+        const m = await import(${JSON.stringify(pathToFileURL(script).href)});
+        assert.equal(process.exitCode, previousExit);
+        assert.equal(reads, 0);
+        assert.equal(fs.existsSync(${JSON.stringify(out)}), false);
+        fs.realpathSync = original; fs.lstatSync = stat;
+        assert.equal(m.buildArtifactInput({ source: ${JSON.stringify(source)}, label: 'fixture' }).source.sha256,
+          ${JSON.stringify(hash('approved evidence\n'))});`);
+      const result = node(['--preserve-symlinks', '--preserve-symlinks-main', importer,
+        '--source', source, '--label', 'fixture', '--out', out]);
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(result.stdout, ''); assert.equal(result.stderr, '');
+      assert.equal(fs.existsSync(out), false);
+    }
+  });
+}
 
 test('API rejects unpaired-surrogate paths before filesystem access, not by replacement', t => {
   const { dir } = fixture(t);

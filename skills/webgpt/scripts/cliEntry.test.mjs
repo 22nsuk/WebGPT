@@ -41,7 +41,7 @@ for (const main of [true, false]) {
   });
 }
 
-for (const flags of [[], ['--preserve-symlinks-main'], ['--preserve-symlinks'],
+for (const flags of [[], ['-expose-gc'], ['--preserve-symlinks-main'], ['--preserve-symlinks'],
   ['--preserve-symlinks', '--preserve-symlinks-main']]) {
   test(`fallback executes linked directory once: ${flags.join(' ') || 'default'}`, t => {
     const { dir, real, script } = fixture(t);
@@ -102,5 +102,7 @@ for (const code of ['ENOENT', 'ENOTDIR', 'EACCES', 'EIO']) {
     t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
     if (['ENOENT', 'ENOTDIR'].includes(code)) assert.equal(isCliEntry({ url: import.meta.url }), false);
     else assert.throws(() => isCliEntry({ url: import.meta.url }), value => value === error);
+    // The same lookup error in an unrelated importing application owns no CLI diagnostic.
+    assert.equal(isCliEntry({ url: new URL('./artifact-input.mjs', import.meta.url).href }), false);
   });
 }
