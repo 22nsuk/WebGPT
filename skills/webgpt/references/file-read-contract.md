@@ -48,6 +48,25 @@ within the allowance during the read. In particular, the diagnostic reader must
 not treat the original file size as a frozen log length. Domain hashes and late
 mutation/collection guards are still required.
 
+## Workspace path text
+
+The shared workspace relative-path validator requires well-formed Unicode before
+lookup, parent creation, mutation or recovery receipt acceptance. An unpaired
+UTF-16 surrogate must not be encoded as U+FFFD and silently address a different
+native filename. Reject it with the existing path diagnostic; do not normalize,
+repair or echo the supplied spelling. Genuine U+FFFD names, supplementary Unicode
+characters and ordinary non-ASCII paths remain allowed.
+
+This input check does not replace the native UTF-8 round-trip checks: those reject
+non-UTF-8 native names reached through aliases or returned by directory listing.
+The two checks protect opposite sides of the encoding boundary. SHA checks still
+pin file contents, not the identity of a malformed path string.
+
+An old applied journal with an ill-formed path is unresolved recovery evidence,
+not an accepted receipt. Preserve the journal and original backup for the existing
+manual recovery review; do not rewrite its path, replay a mutation or discard it.
+There is no automatic state migration or change to valid receipt formats.
+
 ## Deliberately different paths
 
 - A state publication retry already owns a read/write descriptor. It keeps that
@@ -84,6 +103,12 @@ Keep one owner per assertion family, not one copy per historical fix:
 | `fileReadContract.test.mjs` | Real adapter matrix: short reads, growth/oversize rejection, error classification and identity swaps; candidate-length state retries |
 | `runtimeMetadata.test.mjs` | Marker format/absence, metadata path types, uncapped committed state, and worker/service ownership lifecycle |
 | `boundedReads.test.mjs` | Descriptor primitive and mutation/recovery/real HTTP consequences, including the second-open result retry-flush race |
+| `workspace.test.mjs` | Workspace CRUD, path encoding, read-only mutation refusal and preserved bytes/revisions, retained receipt paths and actual MCP consequences |
+
+Workspace MCP cases reuse `test-fixtures/worker-http.mjs` for transport, not for
+policy assertions. The read-only deletion regression lives with the existing
+workspace permission case, including matching-SHA rejection and unchanged content
+and revision; it does not need a second fixture or standalone test file.
 
 The marker/owner matrix retains their exact 28/4096-byte short-read boundaries,
 zero ownership probes on rejection, and recovery-guard cleanup. These checks

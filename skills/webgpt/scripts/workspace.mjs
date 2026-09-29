@@ -33,8 +33,10 @@ const nativePath = path => nativeText(realpathSync.native(path,{encoding:'buffer
 // Apply one portable Git-metadata policy before filesystem access and when listing.
 // Windows aliases include case variants, trailing dots/spaces, GIT~1 and NTFS streams.
 const isGitMetadataName = name => /^(?:\.git|git~1)[ .]*(?::|$)/i.test(name);
+// Reject lossy UTF-8 encoding before lookup, parent creation or receipt acceptance.
+// A genuine U+FFFD filename is valid; never repair a caller's unpaired surrogate.
 function relativeFile(path) {
-  if (typeof path !== 'string' || !path || isAbsolute(path) || /[\\:\x00-\x1f]/.test(path)
+  if (typeof path !== 'string' || !path || !path.isWellFormed() || isAbsolute(path) || /[\\:\x00-\x1f]/.test(path)
       || path.split('/').some(p => !p.replace(/[ .]+$/, '') || isGitMetadataName(p))) throw Error('invalid path or Git metadata');
   return path;
 }

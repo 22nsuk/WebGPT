@@ -1,10 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, symlinkSync, linkSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync, symlinkSync, linkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, parse } from 'node:path';
-import { grantWorkspace, listWorkspace, readWorkspace, changeWorkspace } from './workspace.mjs';
+import { grantWorkspace, listWorkspace, readWorkspace, changeWorkspace, inspectRecovery } from './workspace.mjs';
 import { start } from './worker.mjs';
+import { callTool } from './test-fixtures/worker-http.mjs';
 
 const fixture = fn => {
   const dir=mkdtempSync(join(tmpdir(),'webgpt-files-'));
@@ -35,6 +36,12 @@ test('scope, read-only, traversal, protected files, directory links and hardlink
     assert.throws(()=>changeWorkspace(grant,dir,'task',{path,text:'bad',expectedSha256:null}));
   }
   assert.throws(()=>changeWorkspace(readonly,dir,'task',{path:'source.txt',text:'bad',expectedSha256:null}),/read-only/);
+  const before=readWorkspace(readonly,'source.txt');
+  assert.throws(()=>changeWorkspace(readonly,dir,'task',{path:'source.txt',expectedSha256:before.sha256},true),/read-only/);
+  assert.equal(readFileSync(join(root,'source.txt'),'utf8'),'safe');
+  const after=readWorkspace(readonly,'source.txt');
+  assert.equal(after.sha256,before.sha256);assert.equal(after.text,before.text);
+  assert.equal(existsSync(join(dir,'recovery')),false);
   assert.throws(()=>grantWorkspace({root,mode:'read',read:[],write:['source.txt']}),/root and mode only/);
   assert.throws(()=>grantWorkspace({root:'/',mode:'edit'}),/project root/);
   assert.throws(()=>grantWorkspace({root:parse(root).root,mode:'edit'}),/project root/);
@@ -76,10 +83,75 @@ test('one project grant can discover and edit newly chosen files without per-fil
   assert.deepEqual(listWorkspace(grant,'arbitrary').entries,[{name:'new.ts',type:'file'}]);
   assert.throws(()=>listWorkspace(grant,'../'),/invalid/);
 }));
+test('ill-formed workspace paths cannot alias native names or create recovery evidence',async t=>{
+  const operations={
+    list:(grant,dir,path)=>listWorkspace(grant,path),
+    read:(grant,dir,path)=>readWorkspace(grant,path),
+    create:(grant,dir,path)=>changeWorkspace(grant,dir,'invalid',{path,text:'bad',expectedSha256:null}),
+    edit:(grant,dir,path,sha)=>changeWorkspace(grant,dir,'invalid',{path,text:'bad',expectedSha256:sha}),
+    delete:(grant,dir,path,sha)=>changeWorkspace(grant,dir,'invalid',{path,expectedSha256:sha},true),
+  };
+  for(const [action,run] of Object.entries(operations))await t.test(action,()=>fixture(({dir,root,grant})=>{
+    for(const [bad,native] of [['\ud800','\ufffd'],['\udc00','\ufffd'],['\udc00\ud800','\ufffd\ufffd']]) {
+      const folder='dir-'+native,file=`${folder}/file-${native}.txt`;
+      mkdirSync(join(root,folder),{recursive:true});
+      mkdirSync(join(root,folder,'sub-'+native),{recursive:true});
+      writeFileSync(join(root,file),'unchanged');
+      const before=readWorkspace(grant,file),listing=listWorkspace(grant,'.');
+      const paths=action==='list'?[`dir-${bad}`,`${folder}/sub-${bad}`]
+        :action==='create'?[`new-${bad}/deep/fresh.txt`,`${folder}/new-${bad}.txt`]
+        :[`dir-${bad}/file-${native}.txt`,`${folder}/file-${bad}.txt`];
+      const children=readdirSync(join(root,folder)).sort();
+      for(const path of paths) {
+        assert.equal(path.isWellFormed(),false);
+        assert.throws(()=>run(grant,dir,path,before.sha256),{message:'invalid path or Git metadata'});
+        assert.equal(readFileSync(join(root,file),'utf8'),'unchanged');
+        assert.equal(readWorkspace(grant,file).sha256,before.sha256);
+        assert.deepEqual(listWorkspace(grant,'.'),listing);
+        assert.deepEqual(readdirSync(join(root,folder)).sort(),children);
+        assert.equal(existsSync(join(dir,'recovery')),false);
+      }
+    }
+  }));
+});
+test('well-formed replacement characters, supplementary characters and Korean names remain usable',()=>fixture(({dir,root,grant})=>{
+  for(const path of ['replacement-\ufffd.txt','emoji-\ud83d\ude00.txt','한국어.txt']) {
+    const created=changeWorkspace(grant,dir,'unicode',{path,text:'first',expectedSha256:null});
+    assert.equal(created.path,path);
+    assert.equal(readWorkspace(grant,path).sha256,created.afterSha256);
+    const listed=listWorkspace(grant,'.').entries;
+    assert.equal(listed.length,1);assert.equal(listed[0].type,'file');
+    assert.equal(readWorkspace(grant,listed[0].name).text,'first');
+    const edited=changeWorkspace(grant,dir,'unicode',{path,text:'second',expectedSha256:created.afterSha256});
+    assert.equal(edited.path,path);assert.equal(readFileSync(edited.backup,'utf8'),'first');
+    assert.equal(readFileSync(join(root,path),'utf8'),'second');
+    const deleted=changeWorkspace(grant,dir,'unicode',{path,expectedSha256:edited.afterSha256},true);
+    assert.equal(deleted.path,path);assert.equal(readFileSync(deleted.backup,'utf8'),'second');
+    assert.equal(readWorkspace(grant,path).exists,false);
+    const recovery=inspectRecovery(dir,'unicode');
+    assert.deepEqual(recovery.unresolved,[]);
+    for(const receipt of [created,edited,deleted])assert.ok(recovery.receipts.some(item=>item.operation===receipt.operation&&item.path===path));
+  }
+}));
+test('ill-formed retained receipt paths require review without rewriting journals or backups',()=>fixture(({dir,root,grant})=>{
+  const path='native-\ufffd.txt';writeFileSync(join(root,path),'original');
+  const before=readWorkspace(grant,path);
+  const receipt=changeWorkspace(grant,dir,'legacy',{path,text:'changed',expectedSha256:before.sha256});
+  assert.deepEqual(inspectRecovery(dir,'legacy'),{receipts:[receipt],unresolved:[]});
+  const journal=join(dir,'recovery','legacy',receipt.operation+'.json');
+  const entry=JSON.parse(readFileSync(journal,'utf8'));
+  const bytes=Buffer.from(JSON.stringify({...entry,path:'native-\ud800.txt'}));
+  writeFileSync(journal,bytes);
+  const backup=readFileSync(receipt.backup),names=readdirSync(join(dir,'recovery','legacy')).sort();
+  assert.deepEqual(inspectRecovery(dir,'legacy'),{receipts:[],unresolved:[journal]});
+  assert.deepEqual(readFileSync(journal),bytes);assert.deepEqual(readFileSync(receipt.backup),backup);
+  assert.equal(readFileSync(join(root,path),'utf8'),'changed');
+  assert.deepEqual(readdirSync(join(dir,'recovery','legacy')).sort(),names);
+}));
 test('MCP applies files directly, isolates tokens, blocks terminal writes and keeps old text-only tasks compatible',()=>fixture(async({dir,root})=>{
   const service=await start({dir:join(dir,'state'),port:0,controlPort:0});
   const admin=async(path,body)=>{const response=await fetch(`http://127.0.0.1:${service.controlPort}${path}`,{method:'POST',headers:{authorization:'Bearer '+service.key},body:JSON.stringify(body)});return {status:response.status,value:await response.json()};};
-  const call=async(name,args)=>{const r=await fetch(`http://127.0.0.1:${service.mcpPort}/mcp`,{method:'POST',body:JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/call',params:{name,arguments:args}})});return (await r.json()).result;};
+  const call=(name,args)=>callTool(service,name,args);
   try {
     const registration={id:'editor',instructions:'edit',inputs:{},workspace:{root,mode:'edit'}};
     const registered=await admin('/register',registration);assert.equal(registered.status,200);
@@ -101,7 +173,7 @@ test('MCP applies files directly, isolates tokens, blocks terminal writes and ke
 test('MCP create/edit/delete enforces revisions, backups and operation receipts',()=>fixture(async({dir,root})=>{
   const service=await start({dir:join(dir,'state'),port:0,controlPort:0});
   const admin=async(path,body)=>{const response=await fetch(`http://127.0.0.1:${service.controlPort}${path}`,{method:'POST',headers:{authorization:'Bearer '+service.key},body:JSON.stringify(body)});return {status:response.status,value:await response.json()};};
-  const call=async(name,args)=>{const r=await fetch(`http://127.0.0.1:${service.mcpPort}/mcp`,{method:'POST',body:JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/call',params:{name,arguments:args}})});return (await r.json()).result;};
+  const call=(name,args)=>callTool(service,name,args);
   try {
     const registered=await admin('/register',{id:'crud-regression',instructions:'exercise MCP CRUD',inputs:{},workspace:{root,mode:'edit'}});assert.equal(registered.status,200);
     const token=registered.value.token;
@@ -123,5 +195,29 @@ test('MCP create/edit/delete enforces revisions, backups and operation receipts'
     const receipts=[created.structuredContent,edited.structuredContent,deleted.structuredContent];assert.deepEqual(receipts.map(({path,action})=>({path,action})),[{path:'cycle.txt',action:'create'},{path:'cycle.txt',action:'edit'},{path:'cycle.txt',action:'delete'}]);
     assert.ok(receipts.every(receipt=>typeof receipt.operation==='string'&&receipt.operation.length>0));
     const task=await call('get_task',{token});assert.equal(task.isError,false);assert.deepEqual(task.structuredContent.changes.map(change=>change.operation),receipts.map(receipt=>receipt.operation));
+
+    // The protocol must reject lossy paths without changing task state or receipts.
+    const native='native-\ufffd';mkdirSync(join(root,native));
+    writeFileSync(join(root,native,'file.txt'),'keep');
+    const nativeRead=await call('read_file',{token,path:native+'/file.txt'});
+    assert.equal(nativeRead.isError,false);
+    const sha=nativeRead.structuredContent.sha256,bad='native-\ud800';
+    const statePath=join(dir,'state','state.json'),state=readFileSync(statePath);
+    const recovery=join(dir,'state','recovery','crud-regression'),evidence=readdirSync(recovery).sort();
+    for(const [name,args] of [
+      ['list_files',{path:bad}],['read_file',{path:bad+'/file.txt'}],
+      ['write_file',{path:bad+'/file.txt',text:'bad',expectedSha256:sha}],
+      ['delete_file',{path:bad+'/file.txt',expectedSha256:sha}],
+      ['write_file',{path:'new-\udc00/deep/file.txt',text:'bad',expectedSha256:null}],
+    ]) {
+      const rejected=await call(name,{token,...args});
+      assert.equal(rejected.isError,true);assert.match(rejected.content[0].text,/invalid path or Git metadata/);
+      assert.deepEqual(readFileSync(statePath),state);
+      assert.deepEqual(readdirSync(recovery).sort(),evidence);
+      assert.equal(readFileSync(join(root,native,'file.txt'),'utf8'),'keep');
+      assert.deepEqual(readdirSync(root),[native]);
+    }
+    const retained=await call('get_task',{token});assert.equal(retained.isError,false);
+    assert.deepEqual(retained.structuredContent.changes,task.structuredContent.changes);
   } finally {await service.close();}
 }));
