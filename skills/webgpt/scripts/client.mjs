@@ -155,21 +155,24 @@ export function verifyResult(event, config) {
 
 const reviewUsage = 'usage: client.mjs review <task-id> [--offset N] [--limit N] [--max-chars N] [--expected-sha256 SHA]';
 function reviewReadOptions(options) {
-  if (!options || typeof options !== 'object' || Array.isArray(options))
+  if (!options || typeof options !== 'object' || Array.isArray(options)
+      || Object.keys(options).some(key => !['offset', 'limit', 'maxChars', 'expectedSha256', 'signal', 'retryDelays'].includes(key)))
     throw Object.assign(Error(reviewUsage), { code: 'REVIEW_USAGE' });
-  const { offset, limit, maxChars, expectedSha256 } = options;
+  const { offset, limit, maxChars, expectedSha256, signal, retryDelays } = options;
   if (expectedSha256 !== undefined && (typeof expectedSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(expectedSha256)))
     throw Object.assign(Error(reviewUsage), { code: 'REVIEW_USAGE' });
-  try { return readWindowOptions({ offset, limit, maxChars }); }
+  try { return { range: readWindowOptions({ offset, limit, maxChars }), expectedSha256, signal, retryDelays }; }
   catch (cause) { throw Object.assign(Error(reviewUsage, { cause }), { code: 'REVIEW_USAGE' }); }
 }
 
 // One parent call waits and reads the verified result, but never accepts work,
 // collects, cancels, clears a backup deadline, or hides a recovery notice.
 export async function reviewTask(id, config = configuration(), options = {}) {
-  const range = reviewReadOptions(options); // Reject bad bounds before waiting or reading result bytes.
-  const snapshot = await waitForTasks([id], config, options);
-  options.signal?.throwIfAborted();
+  // Reject unknown names rather than silently dropping a bound/pin. Capture this
+  // invocation's values before waiting; the caller may reuse its options object.
+  const { range, expectedSha256, signal, retryDelays } = reviewReadOptions(options);
+  const snapshot = await waitForTasks([id], config, { signal, retryDelays });
+  signal?.throwIfAborted();
   if (snapshot.events.length > 1 || snapshot.events.some(event => !['completed', 'failed', 'cancelled'].includes(event.status)))
     throw Object.assign(Error('worker returned an invalid result event'), { code: 'RESULT_INVALID' });
   const blocked = snapshot.interrupted || snapshot.recoveryRequired?.length || snapshot.resultRecoveryRequired?.length;
@@ -177,7 +180,7 @@ export async function reviewTask(id, config = configuration(), options = {}) {
   if (!event) return { ...snapshot, review: null, browserChecked: false };
   // Wait notices cover running tasks, not late recovery evidence on terminal
   // tasks. Inspect only this task before exposing its body for parent acceptance.
-  const state = await readReconciliation(config, { signal: options.signal, ids: [id] });
+  const state = await readReconciliation(config, { signal, ids: [id] });
   const task = state.tasks[0];
   if (state.health?.stateVerified !== true || state.health?.issues?.includes('STATE_INVALID')
       || task.collected !== false || task.discarded !== false || task.status !== event.status
@@ -187,8 +190,8 @@ export async function reviewTask(id, config = configuration(), options = {}) {
   const attention = reconciliationAttention(task, 'verified');
   if (['inspect_recovery', 'inspect_uncommitted_result'].includes(attention))
     return { ...snapshot, review: null, attention, browserChecked: false };
-  options.signal?.throwIfAborted();
-  if (options.expectedSha256 !== undefined && event.sha256 !== options.expectedSha256)
+  signal?.throwIfAborted();
+  if (expectedSha256 !== undefined && event.sha256 !== expectedSha256)
     throw Object.assign(Error('saved result revision differs from the requested SHA'), { code: 'REVIEW_REVISION_CONFLICT' });
   // Slice only the same full-file bytes that passed the path/link/size/SHA/UTF-8
   // checks. This bounds returned text, not disk reads, and never caches a verdict.

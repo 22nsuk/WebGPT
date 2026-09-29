@@ -458,3 +458,63 @@ test('review windows retain recovery, current-state and abort gates before any r
   });
   assert.deepEqual(reads, { opens: 0, bytes: 0 }); assert.ok(f.calls.every(call => call.method === 'GET'));
 });
+
+test('review API rejects unknown option names before any controller or result access', async t => {
+  const f = await fixture(t, { content: 'first\nsecond\n' });
+  const reads = await observeResultReads(t, f, async () => {
+    for (const options of [{ maxchars: 6 }, { 'max-chars': 6 }, { expectedSHA256: '0'.repeat(64) },
+      { limit: 1, maxBytes: 6 }, { limit: 1, unexpected: undefined }, { timeoutMs: 1 }])
+      await assert.rejects(reviewTask('owned', f.config, options), { code: 'REVIEW_USAGE' });
+  });
+  assert.deepEqual(reads, { opens: 0, bytes: 0 }); assert.equal(f.calls.length, 0);
+  const options = Object.freeze({ offset: 2, limit: 1, maxChars: 7, expectedSha256: f.event.sha256,
+    signal: new AbortController().signal, retryDelays: [] });
+  const value = await reviewTask('owned', f.config, options);
+  assert.equal(value.review.content, 'second\n'); assert.equal(value.review.sha256, f.event.sha256);
+  assert.equal(fs.readFileSync(join(f.dir, 'state.json'), 'utf8'), 'owned-evidence');
+});
+
+test('review API retains the initially validated pin and bounds while caller options are reused', async t => {
+  const f = await fixture(t, { content: 'first\nsecond\n' }), wrong = '0'.repeat(64);
+  for (const [initial, later, conflict] of [[wrong, f.event.sha256, true], [wrong, undefined, true],
+    [f.event.sha256, wrong, false], [undefined, wrong, false]]) {
+    const options = { limit: 1, maxChars: 6, expectedSha256: initial };
+    const reads = await observeResultReads(t, f, async () => {
+      const pending = reviewTask('owned', f.config, options);
+      // Reuse by the caller must not rewrite this invocation after it starts waiting.
+      if (later === undefined) delete options.expectedSha256; else options.expectedSha256 = later;
+      options.limit = 2; options.maxChars = 20;
+      if (conflict) await assert.rejects(pending, { code: 'REVIEW_REVISION_CONFLICT' });
+      else {
+        const result = await pending;
+        assert.equal(result.review.content, 'first\n'); assert.equal(result.review.nextOffset, 2);
+        assert.equal(result.review.sha256, f.event.sha256); assert.equal(result.browserChecked, false);
+      }
+    });
+    assert.deepEqual(reads, conflict ? { opens: 0, bytes: 0 } : { opens: 1, bytes: 13 });
+  }
+  assert.equal(f.calls.length, 8); assert.ok(f.calls.every(call => call.method === 'GET'));
+  assert.equal(fs.readFileSync(join(f.dir, 'state.json'), 'utf8'), 'owned-evidence');
+});
+
+test('review API retains its original live abort signal through reconciliation', async t => {
+  const f = await fixture(t);
+  for (const replace of [false, true]) {
+    const controller = new AbortController(), reason = Error('owned review stopped');
+    const options = { limit: 1, signal: controller.signal };
+    f.reconcile(value => { controller.abort(reason); return value; });
+    const reads = await observeResultReads(t, f, async () => {
+      const pending = reviewTask('owned', f.config, options);
+      if (replace) options.signal = new AbortController().signal; else delete options.signal;
+      await assert.rejects(pending, error => error === reason);
+    });
+    assert.deepEqual(reads, { opens: 0, bytes: 0 });
+  }
+  f.reconcile(value => value);
+  const original = new AbortController(), options = { signal: original.signal };
+  const pending = reviewTask('owned', f.config, options);
+  options.signal = AbortSignal.abort(Error('another invocation stopped'));
+  assert.equal((await pending).review.content, text, 'a replacement signal cannot cancel the original invocation');
+  assert.equal(f.calls.length, 6); assert.ok(f.calls.every(call => call.method === 'GET'));
+  assert.equal(fs.readFileSync(join(f.dir, 'state.json'), 'utf8'), 'owned-evidence');
+});

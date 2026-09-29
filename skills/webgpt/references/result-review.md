@@ -28,6 +28,15 @@ bounded `retryDelays` options as `waitForTasks`, plus optional `offset`, `limit`
 one task ID with optional explicit read flags, not a JSON file, `--file`,
 `--resume`, or an arbitrary result pathname.
 
+The API also rejects unknown own enumerable option names with `REVIEW_USAGE` before
+controller/result access; for example, `maxchars` is not an alias for `maxChars`
+and must not silently select a full read. Each invocation captures its read
+bounds, SHA pin and signal before waiting. Changing or reusing the caller's
+options object cannot change those values for the pending invocation. The
+original signal remains live: cancel through its `AbortController`, not by
+replacing `options.signal`. This captures request options, not result/state
+verification; all current-evidence checks below still run.
+
 It returns the scoped wait envelope (`events`, `backupDue`, `settled`, and any
 existing recovery/interruption fields) plus:
 
