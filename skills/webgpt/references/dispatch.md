@@ -21,11 +21,14 @@ owned tab/chat, timestamps and bounded before/after message evidence. It never s
 or task token itself. Other existing ledger fields may contain secrets: the **whole file remains
 private**. Use a private payload file or in-memory object, not secret text in shell arguments.
 
-`registered -> prepared -> sending -> submitted|uncertain`
+`registered -> sending -> submitted|uncertain`
+
+An explicit preparation checkpoint remains available: `registered -> prepared -> sending`.
 
 Registration is idempotent only for the same task, body digest, mode, connector requirement,
 required attachment names (when declared) and initial target. It cannot reset any transmission. Preparation records the narrowly observed UI;
-`begin` publishes both readiness and `sending` before any send-capable browser action. The
+`begin` publishes fresh readiness and `sending` together in one flushed replacement before any
+send-capable browser action; it does not separately save an intermediate `prepared` state. The
 high-level helper keeps a per-ledger exclusive lock across its browser calls. Split CLI calls
 release the lock after each saved transition, but `sending` still blocks every subsequent begin.
 The helper does not retry browser actions. `sending`, `uncertain` and `submitted` all block resends.

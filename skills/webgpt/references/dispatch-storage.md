@@ -17,6 +17,21 @@ Known existing entries, including dangling links, are rejected before creation i
 attempted; exclusive creation also rejects a file appearing after that check.
 Windows privacy still depends on the existing directory ACLs. No ACL is modified.
 
+## One publication for each requested transition
+
+`beginDispatch`, CLI `begin` and the text-only adapter share one begin operation.
+It validates fresh readiness, then writes `before`, `preparedAt`, `sendingAt` and
+`sending` together in one flushed replacement. It does not first publish a
+redundant `prepared` snapshot under the same lock. Explicit `prepareDispatch` or
+CLI `prepare` still saves an independently inspectable `prepared` checkpoint;
+begin rechecks readiness rather than trusting that earlier observation.
+
+This removes one ledger reread, serialization, stage creation/write/flush/close
+and replacement per begin. It does not remove the lock, the pre-publication
+comparison or the mandatory flush before any send-capable action. The high-level
+adapter keeps its lock across browser callbacks; split callers keep the existing
+successful-begin rule. There is no new state, option, helper module or migration.
+
 ## Failed files remain evidence
 
 A failed create does not establish ownership of an existing path. A partial write,
@@ -26,7 +41,11 @@ write also leaves its lock and blocks another parent, as before. No age-based lo
 stealing, stage promotion, file deletion or browser replay is performed.
 
 Only the committed ledger's state authorizes the next operation. A failed
-`prepared` or `sending` publication happens before the send callback. A failed
+explicit `prepared` or begin's `sending` publication happens before the send callback.
+If replacement has not happened, the original `registered` or explicitly saved
+`prepared` ledger remains byte-identical; a leftover candidate is not authority.
+If replacement succeeded but its caller saw an error, committed `sending` still
+blocks another begin. No automatic retry is added in either case. A failed
 confirmation after a send leaves committed `sending`/`uncertain` blocking resends;
 a candidate containing `submitted` is not confirmation authority. Re-observe the
 owned chat and controller and use the existing confirmation/recovery procedure.
@@ -46,7 +65,8 @@ or a power-loss transaction spanning the browser and disk.
 
 Run `node --test --test-reporter=tap scripts/dispatch.test.mjs scripts/dispatchStorage.test.mjs`
 from the installed skill, and the complete repository suite before deployment.
-The fixtures test failed creation, partial writes, flush/rename barriers, input
-growth, exact-limit reads and lock/descriptor cleanup with no live browser or
+The fixtures test failed creation, partial writes, flush/close/rename barriers,
+post-publication errors, single-begin publication, input growth, exact-limit reads
+and lock/descriptor cleanup with no live browser or
 production data. Native Windows/macOS and live connector behavior require their
 own validation; local Linux results are not evidence of those checks.

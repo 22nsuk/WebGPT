@@ -153,10 +153,14 @@ test('a known dangling lock is refused before any creation-capable write', async
   assert.deepEqual(fs.readFileSync(f.file), f.before);
 });
 
-for (const phase of ['prepared', 'sending', 'submitted']) for (const failure of ['write', 'flush', 'rename']) {
-  test(`dispatch ${phase} ${failure} failure preserves stage and committed send barrier`, async t => {
+for (const [phase, initial] of [['prepared', 'registered'], ['sending', 'registered'], ['sending', 'prepared'], ['submitted', 'registered']])
+for (const failure of ['write', 'flush', 'close', 'rename', 'published']) {
+  test(`dispatch ${phase} ${failure} failure from ${initial} preserves evidence and committed send barrier`, async t => {
     const f = await fixture(t);
-    const original = { openSync: fs.openSync, writeFileSync: fs.writeFileSync, fsyncSync: fs.fsyncSync, renameSync: fs.renameSync };
+    if (initial === 'prepared') await prepareDispatch(f.file, ready());
+    const committed = fs.readFileSync(f.file);
+    const original = { openSync: fs.openSync, writeFileSync: fs.writeFileSync, fsyncSync: fs.fsyncSync,
+      closeSync: fs.closeSync, renameSync: fs.renameSync };
     const descriptors = new Map(), phases = new Map();
     let failedStage, calls = 0;
     const fault = () => { throw Object.assign(Error('PRIVATE_FIXTURE_ONLY ' + f.dir), { code: 'EIO' }); };
@@ -180,26 +184,44 @@ for (const phase of ['prepared', 'sending', 'submitted']) for (const failure of 
         if (failure === 'flush' && phases.get(descriptors.get(fd)) === phase) { failedStage = descriptors.get(fd); fault(); }
         return original.fsyncSync(fd);
       },
+      closeSync(fd) {
+        const path = descriptors.get(fd), result = original.closeSync(fd);
+        descriptors.delete(fd);
+        if (failure === 'close' && phases.get(path) === phase) { failedStage = path; fault(); }
+        return result;
+      },
       renameSync(from, to) {
         if (failure === 'rename' && phases.get(from) === phase) { failedStage = from; fault(); }
-        return original.renameSync(from, to);
+        const result = original.renameSync(from, to);
+        if (failure === 'published' && phases.get(from) === phase) { failedStage = from; fault(); }
+        return result;
       },
-    }, () => assert.rejects(dispatchPrompt(f.file, prompt, {
-      observeReady: async () => ready(), fillAndSend: async () => { calls++; }, observeSent: async () => sent(),
-    }), error => { redacted(error, f); return error.code === 'DISPATCH_STORAGE'; }));
+    }, () => assert.rejects(phase === 'prepared' ? prepareDispatch(f.file, ready()) : dispatchPrompt(f.file, prompt, {
+      observeReady: async () => ({ ...ready(), composerSha256: textDigest(prompt) }),
+      fillAndSend: async () => { calls++; }, observeSent: async () => sent(),
+    }), error => {
+      redacted(error, f);
+      return error.code === 'DISPATCH_STORAGE' && error.reason === 'io_failed'
+        && error.stage === (['rename', 'published'].includes(failure) ? 'ledger_publish' : 'ledger_write');
+    }));
     assert.ok(failedStage);
-    assert.ok(fs.existsSync(failedStage), 'preserve even partially written or unflushed evidence');
-    assert.equal(fs.readFileSync(failedStage).length > 0, true);
-    if (failure !== 'write') assert.equal(JSON.parse(fs.readFileSync(failedStage)).dispatch.state, phase);
+    if (failure === 'published') assert.equal(fs.existsSync(failedStage), false, 'actual replacement consumed the stage');
+    else {
+      assert.ok(fs.existsSync(failedStage), 'preserve even partially written or unflushed evidence');
+      assert.equal(fs.readFileSync(failedStage).length > 0, true);
+      if (failure !== 'write') assert.equal(JSON.parse(fs.readFileSync(failedStage)).dispatch.state, phase);
+    }
     const state = JSON.parse(fs.readFileSync(f.file)).dispatch.state;
-    assert.equal(state, { prepared: 'registered', sending: 'prepared', submitted: 'sending' }[phase]);
+    assert.equal(state, failure === 'published' ? phase : phase === 'submitted' ? 'sending' : initial);
+    if (phase !== 'submitted' && failure !== 'published') assert.deepEqual(fs.readFileSync(f.file), committed);
     assert.equal(calls, phase === 'submitted' ? 1 : 0);
     assert.equal(fs.existsSync(f.file + '.dispatch.lock'), false);
-    if (phase === 'submitted') {
+    if (['sending', 'submitted'].includes(state)) {
+      const previousCalls = calls;
       await assert.rejects(dispatchPrompt(f.file, prompt, {
         observeReady: async () => { calls++; }, fillAndSend: async () => { calls++; }, observeSent: async () => sent(),
       }), { code: 'DISPATCH_BLOCKED' });
-      assert.equal(calls, 1, 'retained candidate never authorizes another browser action');
+      assert.equal(calls, previousCalls, 'a committed send barrier blocks every later browser callback');
     }
   });
 }
@@ -291,4 +313,141 @@ for (const failure of ['write', 'flush']) test(`unconfirmed lock ${failure} reta
   await assert.rejects(inspectDispatch(f.file), { code: 'DISPATCH_LOCKED' });
   assert.deepEqual(fs.readFileSync(lock), evidence);
   assert.deepEqual(fs.readFileSync(f.file), f.before);
+});
+
+// Observe actual publication, not a helper call count. Every published candidate
+// must have completed its own write, flush and close; the lock is a separate file.
+async function publications(t, file, run) {
+  const native = { open: fs.openSync, write: fs.writeFileSync, flush: fs.fsyncSync,
+    close: fs.closeSync, rename: fs.renameSync };
+  const descriptors = new Map(), stages = new Map(), published = [];
+  await patched(t, {
+    openSync(path, ...args) {
+      const fd = native.open(path, ...args);
+      if (typeof path === 'string' && path.startsWith(file + '.tmp-')) descriptors.set(fd, path);
+      return fd;
+    },
+    writeFileSync(fd, bytes, ...args) {
+      const result = native.write(fd, bytes, ...args), path = descriptors.get(fd);
+      if (path) stages.set(path, { state: JSON.parse(bytes).dispatch.state,
+        bytes: Buffer.byteLength(bytes), flushed: false, closed: false });
+      return result;
+    },
+    fsyncSync(fd) {
+      const result = native.flush(fd), stage = stages.get(descriptors.get(fd));
+      if (stage) stage.flushed = true;
+      return result;
+    },
+    closeSync(fd) {
+      const result = native.close(fd), stage = stages.get(descriptors.get(fd));
+      if (stage) stage.closed = true;
+      descriptors.delete(fd);
+      return result;
+    },
+    renameSync(from, to) {
+      const result = native.rename(from, to);
+      if (to === file) published.push({ ...stages.get(from) });
+      return result;
+    },
+  }, () => run(published));
+  assert.equal(descriptors.size, 0, 'all owned stage descriptors close');
+  assert.equal(stages.size, published.length, 'successful work leaves no redundant stages');
+  for (const stage of published) {
+    assert.equal(stage.flushed, true, 'flush succeeds before publication');
+    assert.equal(stage.closed, true, 'close succeeds before publication');
+  }
+  t.diagnostic(JSON.stringify({ states: published.map(item => item.state),
+    publicationBytes: published.reduce((total, item) => total + item.bytes, 0) }));
+}
+
+for (const initial of ['registered', 'prepared']) for (const path of ['split', 'cli', 'adapter']) {
+  test(`single begin publication from ${initial} through ${path} preserves readiness and send barrier`, async t => {
+    const f = await fixture(t);
+    if (initial === 'prepared') await prepareDispatch(f.file, ready());
+    const prior = JSON.parse(fs.readFileSync(f.file));
+    prior.parentEvidence = { disposition: 'retained', nested: ['preserve this field'] };
+    fs.writeFileSync(f.file, JSON.stringify(prior), { mode: 0o600 });
+    const observation = { ...ready(), composerSha256: textDigest(prompt) };
+    const payload = join(f.dir, 'begin.json');
+    fs.writeFileSync(payload, JSON.stringify({ prompt, observation }), { mode: 0o600 });
+    let result, sends = 0;
+    await publications(t, f.file, async published => {
+      if (path === 'adapter') result = await dispatchPrompt(f.file, prompt, {
+        observeReady: async () => observation,
+        fillAndSend: async body => {
+          sends++;
+          assert.equal(body, prompt);
+          assert.equal(JSON.parse(fs.readFileSync(f.file)).dispatch.state, 'sending');
+          // The existing lock still spans the adapter. This refactor changes
+          // publication granularity, not concurrent send/inspection authority.
+          await assert.rejects(beginDispatch(f.file, { prompt, observation }), { code: 'DISPATCH_LOCKED' });
+          assert.deepEqual(published.map(item => item.state), ['sending']);
+          assert.equal(published[0].flushed, true);
+          assert.equal(published[0].closed, true);
+        },
+        observeSent: async () => sent(),
+      });
+      else result = path === 'cli' ? await dispatchCli(['begin', f.file, payload])
+        : await beginDispatch(f.file, { prompt, observation });
+      assert.deepEqual(published.map(item => item.state), path === 'adapter' ? ['sending', 'submitted'] : ['sending']);
+    });
+    assert.equal(result.state, path === 'adapter' ? 'submitted' : 'sending');
+    assert.equal(result.resendBlocked, true);
+    assert.equal(sends, path === 'adapter' ? 1 : 0);
+    const stored = JSON.parse(fs.readFileSync(f.file));
+    assert.deepEqual(stored.parentEvidence, prior.parentEvidence);
+    assert.deepEqual(stored.dispatch.before, observation, 'begin refreshes earlier preparation rather than trusting it');
+    assert.equal(stored.dispatch.registeredAt, prior.dispatch.registeredAt);
+    assert.ok(Number.isFinite(Date.parse(stored.dispatch.preparedAt)));
+    assert.ok(Number.isFinite(Date.parse(stored.dispatch.sendingAt)));
+    await assert.rejects(beginDispatch(f.file, { prompt, observation }), { code: 'DISPATCH_BLOCKED' });
+    assert.deepEqual(JSON.parse(fs.readFileSync(f.file)), stored);
+    assert.equal(fs.existsSync(f.file + '.dispatch.lock'), false);
+  });
+}
+
+test('explicit preparation still publishes its independently inspectable checkpoint', async t => {
+  const f = await fixture(t), observation = ready();
+  await publications(t, f.file, async published => {
+    const result = await prepareDispatch(f.file, observation);
+    assert.equal(result.state, 'prepared');
+    assert.equal(result.resendBlocked, false);
+    assert.deepEqual(published.map(item => item.state), ['prepared']);
+  });
+  const stored = JSON.parse(fs.readFileSync(f.file)).dispatch;
+  assert.deepEqual(stored.before, observation);
+  assert.ok(stored.preparedAt);
+  assert.equal(Object.hasOwn(stored, 'sendingAt'), false);
+  assert.equal((await inspectDispatch(f.file)).state, 'prepared');
+});
+
+for (const [reason, alter] of [
+  ['prompt', input => { input.prompt += ' different'; }],
+  ['connector', input => { input.observation.connectorSelected = false; }],
+  ['approval', input => { input.observation.approvalPending = true; }],
+  ['mode', input => { input.observation.mode = 'xhigh'; }],
+  ['target', input => { input.observation.target = { ...target, tabId: 'different' }; }],
+  ['composer', input => { input.observation.composerSha256 = textDigest('different'); }],
+  ['predecessor', input => { input.observation.lastUserMessageId = 'unexpected'; }],
+]) test(`begin rejects changed ${reason} without publishing over earlier preparation`, async t => {
+  const f = await fixture(t);
+  await prepareDispatch(f.file, ready());
+  const committed = fs.readFileSync(f.file), payload = join(f.dir, 'begin.json');
+  const input = { prompt, observation: ready() };
+  alter(input);
+  fs.writeFileSync(payload, JSON.stringify(input), { mode: 0o600 });
+  let sends = 0;
+  await publications(t, f.file, async published => {
+    const expected = { code: reason === 'prompt' ? 'DISPATCH_INPUT' : 'DISPATCH_NOT_READY' };
+    await assert.rejects(beginDispatch(f.file, input), expected);
+    await assert.rejects(dispatchCli(['begin', f.file, payload]), expected);
+    await assert.rejects(dispatchPrompt(f.file, input.prompt, {
+      observeReady: async () => input.observation,
+      fillAndSend: async () => { sends++; }, observeSent: async () => sent(),
+    }), expected);
+    assert.deepEqual(published, []);
+  });
+  assert.equal(sends, 0);
+  assert.deepEqual(fs.readFileSync(f.file), committed);
+  assert.equal(fs.existsSync(f.file + '.dispatch.lock'), false);
 });
