@@ -128,8 +128,11 @@ export function retryableControllerError(error) {
 
 export async function waitForTasks(ids, config = configuration(), { signal, retryDelays = [250, 1000, 3000] } = {}) {
   ids = taskIds(ids);
-  if (!Array.isArray(retryDelays) || retryDelays.length > 3
-      || retryDelays.some(value => !Number.isSafeInteger(value) || value < 0 || value > 10000))
+  // Capture at most three indexed values before waiting. Do not retain the
+  // caller's mutable budget or skip holes during validation.
+  const delays = Array.isArray(retryDelays) && retryDelays.length <= 3
+    ? Array.from({ length: retryDelays.length }, (_, index) => retryDelays[index]) : null;
+  if (!delays || delays.some(value => !Number.isSafeInteger(value) || value < 0 || value > 10000))
     throw Error('invalid bounded wait retry policy');
   let retries = 0;
   for (;;) {
@@ -138,8 +141,8 @@ export async function waitForTasks(ids, config = configuration(), { signal, retr
     try { result = await request('wait', { ids }, config, { signal }); }
     catch (error) {
       signal?.throwIfAborted();
-      if (!retryableControllerError(error) || retries >= retryDelays.length) throw error;
-      const base = retryDelays[retries++];
+      if (!retryableControllerError(error) || retries >= delays.length) throw error;
+      const base = delays[retries++];
       await delay(base + Math.floor(Math.random() * Math.min(base / 4, 250)), undefined, { signal });
       continue;
     }
