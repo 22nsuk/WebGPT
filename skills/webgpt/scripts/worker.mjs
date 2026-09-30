@@ -148,8 +148,8 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
   };
   const revoke=t=>{delete t.token;t.inputs={};t.instructions='';};
   const recoveryFor=task=>{
-    const recovery=inspectRecovery(dir,task.id);
-    const directory=resolve(dir,'recovery',task.id), unresolved=new Set(recovery.unresolved);
+    const id=task.id,recovery=inspectRecovery(dir,id);
+    const directory=resolve(dir,'recovery',id), unresolved=new Set(recovery.unresolved);
     // inspectRecovery binds each validated operation to its unique journal name.
     // Index candidates for this inspection only; an ID match is not receipt equality.
     const byOperation=new Map(recovery.receipts.map(receipt=>[receipt.operation,receipt]));
