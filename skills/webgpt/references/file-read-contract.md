@@ -1,8 +1,8 @@
 # File-read ownership and limits
 
-The bounded materializing read contract lives in `scripts/bounded-read.mjs`, not
+The regular-file opening and bounded materializing read contract lives in `scripts/bounded-read.mjs`, not
 in separate file-open loops in runtime, workspace, result, audit and dispatch
-adapters. This is an implementation boundary; it adds no parent workflow step,
+adapters. Committed state reuses that opening mechanism without a byte quota. This is an implementation boundary; it adds no parent workflow step,
 MCP tool, permission, stored format, migration or automatic recovery action.
 
 ## Shared mechanism, domain-owned policy
@@ -18,12 +18,20 @@ returning a prefix, and closes its descriptor on success or failure. It returns
 `{ bytes, stat }`, where `stat` is the opening `BigIntStats` observation, or
 `null` only for an initial `ENOENT`. Errors after observing the file are not converted to absence.
 
+`readUnboundedFile(file, invalid)` is the explicit committed-state path. It uses
+the same initial/type/link/identity validation and descriptor cleanup, but reads
+all bytes with `readFileSync(fd)` from that checked descriptor, not by reopening
+the path. It does not apply the marker, result or offline-diagnostic allowance.
+The public bounded API still rejects omitted, null, infinite or invalid limits;
+only the private shared implementation uses a null limit for the uncapped path.
+Both wrappers return the same `{ bytes, stat }` or initial-absence result.
+
 Both named and opened metadata use `bigint: true`: distinct 64-bit device/inode
 values can alias after conversion to `Number`. Keep identity comparisons exact;
 do not reject legitimate large identities merely because they exceed the safe
 integer range. Workspace snapshots convert only their masked permission bits
 back to the existing numeric `mode` field. No BigInt enters wire data or state.
-This change is limited to this bounded-reader family; it does not migrate
+These checks cover this shared reader family; it does not migrate
 persisted workspace-root identifiers or every other filesystem identity check.
 
 The rejection factory returns the domain error for `metadata`, `identity` or
@@ -36,6 +44,7 @@ collection policy and evidence disposition do not move into the byte reader.
 
 | Adapter / data | Read allowance | Policy retained by the adapter |
 | --- | --- | --- |
+| Runtime committed state | No new fixed quota | Existing task parsing, initialization evidence and pre-publication byte comparison; the adapter returns only bytes, never BigInt metadata |
 | Runtime initialization marker | 28 bytes | Exact existing marker; absence differs from corrupt state |
 | Runtime worker/service lock owner | 4096 bytes | Lock directory, owner identity, host/PID and uncertain ownership |
 | Result and interrupted-result candidates | 1 MiB | Task-derived paths, full SHA, terminal status, UTF-8 for display |
@@ -79,7 +88,11 @@ There is no automatic state migration or change to valid receipt formats.
   1 MiB-plus-sentinel comparison. The file-opening helper does not own either
   publication operation, its permissions, cleanup or recovery evidence.
 - `readStateBytes` continues to read the variable-sized committed task inventory
-  without a newly imposed fixed quota. State staging is bounded by the explicit
+  through the shared checked descriptor without a newly imposed fixed quota.
+  A late different-file or hardlink replacement is `STATE_INVALID`; a late
+  native open/read error is not converted to an absent or empty inventory.
+  This is not a persistent inode pin across separate calls: normal worker state
+  publication replaces the file. State staging is bounded by the explicit
   candidate length, not a new inventory limit. Arbitrarily applying the marker,
   result or offline diagnostic allowance would reject valid retained tasks.
 - The parent-only artifact scanner remains streaming: it hashes a source up to
@@ -102,9 +115,9 @@ Keep one owner per assertion family, not one copy per historical fix:
 
 | Test owner | Responsibility |
 | --- | --- |
-| `boundedFile.test.mjs` | Shared file-opening mechanism: opaque bytes, absence/empty input, full-width identity, metadata, FIFO substitution without a writer, native failures and descriptor closure; the I/O observer's hook timing, accounting and scoped restoration |
+| `boundedFile.test.mjs` | Shared file-opening mechanism: opaque bytes, absence/empty input, full-width identity, metadata, FIFO substitution without a writer for bounded and committed-state reads, native failures and descriptor closure; the I/O observer's hook timing, accounting and scoped restoration |
 | `fileReadContract.test.mjs` | Real adapter matrix: short reads, growth/oversize rejection, error classification and identity swaps; candidate-length state retries |
-| `runtimeMetadata.test.mjs` | Marker format/absence, metadata path types, uncapped committed state, and worker/service ownership lifecycle |
+| `runtimeMetadata.test.mjs` | Marker format/absence, metadata path types, uncapped committed state, late state replacements, descriptor-bound reads and error cleanup, and worker/service ownership lifecycle |
 | `boundedReads.test.mjs` | Descriptor primitive and mutation/recovery/real HTTP consequences, including the second-open result retry-flush race |
 | `workspace.test.mjs` | Workspace CRUD, path encoding, read-only mutation refusal and preserved bytes/revisions, retained receipt paths and actual MCP consequences |
 
@@ -136,11 +149,13 @@ observer, which must leave caller-owned mocks alone. The mechanism suite checks
 original descriptors and ESM bindings again after the serial fault tests finish.
 
 The FIFO mechanism regression uses the existing `beforeOpen` observer hook and
-an actual POSIX `mkfifo` fixture in a disposable child. It verifies both rejection
+an actual POSIX `mkfifo` fixture in a disposable child. Its existing harness runs
+for the bounded reader and the actual `readStateBytes` adapter, rather than
+copying FIFO setup or a second child program. It verifies both rejection
 of an already-known FIFO before open and refusal of a later replacement before
 content reads, with descriptor closure and original/replacement preservation.
 Its hard child deadline bounds a broken test; timeout is failure, not successful
-refusal. Windows skips only this POSIX-specific regression; ordinary-file and
+refusal. Windows skips only these POSIX-specific cases; ordinary-file and
 adapter contracts remain covered by their existing cross-platform suites.
 
 Add a bounded materializing adapter to the matrix instead of copying a file-open

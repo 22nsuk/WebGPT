@@ -2,7 +2,7 @@
 // Size checks alone cannot bound a file that grows after stat. Callers request
 // limit + 1 and reject the sentinel; this helper never certifies a truncated file.
 import { constants } from 'node:buffer';
-import { closeSync, constants as flags, fstatSync, lstatSync, openSync, readSync } from 'node:fs';
+import { closeSync, constants as flags, fstatSync, lstatSync, openSync, readFileSync, readSync } from 'node:fs';
 
 export function readBytesUpTo(fd, ceiling) {
   if (!Number.isSafeInteger(ceiling) || ceiling < 1 || ceiling > constants.MAX_LENGTH)
@@ -26,17 +26,28 @@ export function readBytesUpTo(fd, ceiling) {
   return chunks.length === 1 ? chunks[0] : Buffer.concat(chunks, total);
 }
 
-// One owner for materializing bounded file reads. Domain callers still own path
-// authorization, decoding, hashes and error policy. null means only initial
-// ENOENT; an error after observing a file never becomes successful absence.
-// Keep full-width device/inode values: Number can alias distinct 64-bit identities.
-// The returned stat is BigIntStats; the descriptor is not an atomic snapshot.
+// Keep explicit allowances mandatory for bounded callers. The uncapped state
+// inventory shares file validation, not a marker/result/diagnostic byte quota.
 export function readBoundedFile(file, limit, invalid) {
   if (!Number.isSafeInteger(limit) || limit < 0 || limit >= constants.MAX_LENGTH)
     throw RangeError('invalid file read limit');
+  return readRegularFile(file, limit, invalid);
+}
+
+export function readUnboundedFile(file, invalid) {
+  return readRegularFile(file, null, invalid);
+}
+
+// One owner for regular-file materialization. null limit is private to the
+// explicitly unbounded wrapper; public bounded reads still reject null limits.
+// Domain callers own authorization, decoding, hashes and error policy. Only
+// initial ENOENT means absence. BigIntStats keeps full-width identity exact;
+// descriptor validation does not provide an atomic filesystem snapshot.
+function readRegularFile(file, limit, invalid) {
   if (typeof invalid !== 'function') throw TypeError('file rejection factory required');
   const regular = info => {
-    if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1n || info.size > limit)
+    if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1n
+        || (limit !== null && info.size > limit))
       throw invalid('metadata');
   };
   let before;
@@ -50,8 +61,8 @@ export function readBoundedFile(file, limit, invalid) {
     const stat = fstatSync(fd, { bigint: true });
     regular(stat);
     if (stat.dev !== before.dev || stat.ino !== before.ino) throw invalid('identity');
-    const bytes = readBytesUpTo(fd, limit + 1);
-    if (bytes.length > limit) throw invalid('overflow');
+    const bytes = limit === null ? readFileSync(fd) : readBytesUpTo(fd, limit + 1);
+    if (limit !== null && bytes.length > limit) throw invalid('overflow');
     return { bytes, stat };
   } finally { closeSync(fd); }
 }
