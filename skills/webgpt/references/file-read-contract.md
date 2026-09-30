@@ -8,8 +8,11 @@ MCP tool, permission, stored format, migration or automatic recovery action.
 ## Shared mechanism, domain-owned policy
 
 `readBoundedFile(file, limit, invalid)` validates the explicit byte allowance,
-checks the named file with `lstat`, opens it read-only with `O_NOFOLLOW` where
-available, and rechecks the opened regular single-link file and its device/inode.
+checks the named file with `lstat`, opens it read-only with `O_NOFOLLOW` and
+`O_NONBLOCK` where available, and rechecks the opened regular single-link file
+and its device/inode. Nonblocking open prevents a path replaced by a FIFO after
+`lstat` from waiting for a writer before `fstat` can reject its type. It does not
+make a FIFO an accepted input or turn regular-file I/O into asynchronous work.
 It reads at most `limit + 1` bytes through `readBytesUpTo`, rejects overflow before
 returning a prefix, and closes its descriptor on success or failure. It returns
 `{ bytes, stat }`, where `stat` is the opening `BigIntStats` observation, or
@@ -99,7 +102,7 @@ Keep one owner per assertion family, not one copy per historical fix:
 
 | Test owner | Responsibility |
 | --- | --- |
-| `boundedFile.test.mjs` | Shared file-opening mechanism: opaque bytes, absence/empty input, full-width identity, metadata, native failures and descriptor closure; the I/O observer's hook timing, accounting and scoped restoration |
+| `boundedFile.test.mjs` | Shared file-opening mechanism: opaque bytes, absence/empty input, full-width identity, metadata, FIFO substitution without a writer, native failures and descriptor closure; the I/O observer's hook timing, accounting and scoped restoration |
 | `fileReadContract.test.mjs` | Real adapter matrix: short reads, growth/oversize rejection, error classification and identity swaps; candidate-length state retries |
 | `runtimeMetadata.test.mjs` | Marker format/absence, metadata path types, uncapped committed state, and worker/service ownership lifecycle |
 | `boundedReads.test.mjs` | Descriptor primitive and mutation/recovery/real HTTP consequences, including the second-open result retry-flush race |
@@ -131,6 +134,14 @@ mocks tracked: Node's later automatic reset can reinstall an observer after the
 test's assertions have passed. Do not put a whole-context reset in the shared
 observer, which must leave caller-owned mocks alone. The mechanism suite checks
 original descriptors and ESM bindings again after the serial fault tests finish.
+
+The FIFO mechanism regression uses the existing `beforeOpen` observer hook and
+an actual POSIX `mkfifo` fixture in a disposable child. It verifies both rejection
+of an already-known FIFO before open and refusal of a later replacement before
+content reads, with descriptor closure and original/replacement preservation.
+Its hard child deadline bounds a broken test; timeout is failure, not successful
+refusal. Windows skips only this POSIX-specific regression; ordinary-file and
+adapter contracts remain covered by their existing cross-platform suites.
 
 Add a bounded materializing adapter to the matrix instead of copying a file-open
 spy or the same scenario into a second suite. Retain worker/collection/recovery
