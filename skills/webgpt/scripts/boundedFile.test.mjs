@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs, * as fsExports from 'node:fs';
 import { constants } from 'node:buffer';
+import { spawnSync } from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
 import { join } from 'node:path';
 import { readBoundedFile } from './bounded-read.mjs';
@@ -210,6 +211,53 @@ for (const property of ['dev', 'ino']) test(`bounded file compares full-width ${
     assert.deepEqual(fs.readFileSync(file), bytes);
   }
 });
+
+// A synchronous FIFO open can stall the test process before fstat rejects it.
+// Use a disposable child with a hard stop; timeout is a failure, never a pass.
+test('bounded file rejects a known or substituted FIFO without waiting for a writer',
+  { skip: process.platform === 'win32' ? 'POSIX filesystem FIFO contract' : false }, t => {
+    const { file, bytes } = fixture(t), fifo = file + '.fifo', original = file + '.original';
+    const made = spawnSync('mkfifo', [fifo], { encoding: 'utf8', timeout: 10000, killSignal: 'SIGKILL' });
+    assert.ifError(made.error);
+    assert.equal(made.status, 0, made.stderr);
+    assert.ok(fs.lstatSync(fifo).isFIFO(), 'the fixture must be a real filesystem FIFO');
+    const child = spawnSync(process.execPath, ['--input-type=module', '--eval', `
+      import test from 'node:test';
+      import assert from 'node:assert/strict';
+      import fs from 'node:fs';
+      import { readBoundedFile } from ${JSON.stringify(new URL('./bounded-read.mjs', import.meta.url).href)};
+      import { observeFileRead } from ${JSON.stringify(new URL('./test-fixtures/file-read.mjs', import.meta.url).href)};
+      const file = ${JSON.stringify(file)}, fifo = ${JSON.stringify(fifo)}, original = ${JSON.stringify(original)};
+      const invalid = reason => Object.assign(Error('FIFO rejected'), { code: 'FIXTURE_INVALID', reason });
+      test('native FIFO refusal and descriptor cleanup', t => {
+        const known = observeFileRead(t, fifo);
+        try { assert.throws(() => readBoundedFile(fifo, 4096, invalid), { code: 'FIXTURE_INVALID', reason: 'metadata' }); }
+        finally { known.restore(); }
+        assert.deepEqual(known.evidence, { opens: 0, closes: 0, bytes: 0, reads: 0 });
+        let swaps = 0;
+        const trace = observeFileRead(t, file, { beforeOpen() {
+          fs.renameSync(file, original);
+          fs.renameSync(fifo, file);
+          swaps++;
+          process.stdout.write('FIFO_SWAPPED\\n');
+        } });
+        try { assert.throws(() => readBoundedFile(file, 4096, invalid), { code: 'FIXTURE_INVALID', reason: 'metadata' }); }
+        finally { trace.restore(); }
+        assert.equal(swaps, 1);
+        assert.deepEqual(trace.evidence, { opens: 1, closes: 1, bytes: 0, reads: 0 });
+        assert.ok(fs.lstatSync(file).isFIFO());
+        process.stdout.write('FIFO_REJECTED\\n');
+      });
+    `], { encoding: 'utf8', timeout: 10000, killSignal: 'SIGKILL' });
+    // Include the reached native-operation marker in failures, not just ETIMEDOUT.
+    assert.equal(child.error, undefined, `${child.error?.code}: ${child.stdout}\n${child.stderr}`);
+    assert.equal(child.signal, null, child.stderr);
+    assert.equal(child.status, 0, `${child.stdout}\n${child.stderr}`);
+    assert.match(child.stdout, /FIFO_SWAPPED/);
+    assert.match(child.stdout, /FIFO_REJECTED/);
+    assert.ok(fs.lstatSync(file).isFIFO(), 'rejected replacement is preserved');
+    assert.deepEqual(fs.readFileSync(original), bytes, 'the original bytes are preserved');
+  });
 
 // Keep this check after the fault cases: it observes their completed test cleanup,
 // not just manual restoration while the same TestContext is still active.

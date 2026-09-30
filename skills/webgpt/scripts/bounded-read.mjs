@@ -43,7 +43,9 @@ export function readBoundedFile(file, limit, invalid) {
   try { before = lstatSync(file, { bigint: true }); }
   catch (error) { if (error.code === 'ENOENT') return null; throw error; }
   regular(before);
-  const fd = openSync(file, flags.O_RDONLY | flags.O_NOFOLLOW);
+  // A regular path can become a FIFO after lstat. Do not wait for a writer
+  // before fstat can reject it; this is not a general filesystem I/O deadline.
+  const fd = openSync(file, flags.O_RDONLY | flags.O_NOFOLLOW | (flags.O_NONBLOCK ?? 0));
   try {
     const stat = fstatSync(fd, { bigint: true });
     regular(stat);
