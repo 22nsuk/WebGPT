@@ -197,7 +197,7 @@ export async function reviewTask(id, config = configuration(), options = {}) {
   if (state.health?.stateVerified !== true || state.health?.issues?.includes('STATE_INVALID')
       || task.collected !== false || task.discarded !== false || task.status !== event.status
       || task.artifact !== event.artifact || task.sha256 !== event.sha256
-      || ['recoveryRequired', 'journalIssues', 'pendingResults'].some(key => !Array.isArray(task[key])))
+      || !hasReconciliationTaskEvidence(task))
     throw Object.assign(Error('result review needs current task and recovery evidence'), { code: 'REVIEW_UNCONFIRMED' });
   const attention = reconciliationAttention(task, 'verified');
   if (['inspect_recovery', 'inspect_uncommitted_result'].includes(attention))
@@ -272,6 +272,12 @@ async function inspectCollection(id, config, { signal }) {
     });
   const task = snapshot.tasks.find(task => task.id === id);
   if (!task) throw Error('unknown task');
+  // Missing fields are not clean recovery or a known retirement disposition.
+  // Check before result I/O and, on resume, before any conditional collection.
+  if (!hasReconciliationTaskEvidence(task))
+    throw Object.assign(Error('collection needs complete task and recovery evidence; inspect and update the idle worker and client together'), {
+      code: 'COLLECTION_UNCONFIRMED',
+    });
   if (task.status === 'running')
     throw Object.assign(Error('task has no uncollected result: task is still running'), { code: 'TASK_RUNNING' });
   // Verify the selected result once for this observation, never a cached verdict
@@ -331,6 +337,15 @@ async function readReconciliation(config, { signal, ids }) {
   const snapshot = await request('reconcile', ids === undefined ? undefined : { ids }, config, { signal });
   if (!snapshot || !Array.isArray(snapshot.tasks)) throw Error('worker does not support reconciliation');
   return snapshot;
+}
+// Review and collection need explicit evidence, unlike a best-effort diagnostic
+// view. Empty arrays/null metadata are meaningful; omitted fields are unknown.
+function hasReconciliationTaskEvidence(task) {
+  return ['running', 'completed', 'failed', 'cancelled'].includes(task.status)
+    && typeof task.collected === 'boolean' && typeof task.discarded === 'boolean'
+    && ['recoveryRequired', 'journalIssues', 'pendingResults'].every(key => Array.isArray(task[key]))
+    && ((task.artifact === null && task.sha256 === null)
+      || (typeof task.artifact === 'string' && typeof task.sha256 === 'string' && /^[a-f0-9]{64}$/.test(task.sha256)));
 }
 function reconciliationAttention(task, integrity) {
   const recovery = task.recoveryRequired?.length || task.journalIssues?.length;
