@@ -15,6 +15,21 @@ Locks and temporary ledger files are created exclusively with mode 0600, written
 through the owned descriptor, flushed and closed before successful publication.
 Known existing entries, including dangling links, are rejected before creation is
 attempted; exclusive creation also rejects a file appearing after that check.
+After the native flush and close, the creator checks that the pathname still
+names the same regular single-link file with the expected byte length. Opened
+and final device/inode observations use BigInt without rounding. A mismatch is
+`DISPATCH_CONFLICT` at `lock_acquire` or `ledger_write`; native metadata failures
+retain `DISPATCH_STORAGE` and the same stage. A failed lock check never marks
+ownership acquired or authorizes cleanup; a failed candidate check never reaches
+rename or the next browser callback. Both candidates remain inspection evidence.
+No BigInt is saved in the ledger or returned in compact summaries.
+
+These are two metadata observations per successful exclusive creation, not a
+new content reread or another begin publication. They do not isolate an in-place
+same-inode/same-size edit, a replacement after the final observation, a competing
+writer of the destination, or lock changes later in the browser callback. The
+existing cooperative/private-directory assumptions and no-resend workflow remain.
+
 Windows privacy still depends on the existing directory ACLs. No ACL is modified.
 
 ## One publication for each requested transition
@@ -67,6 +82,12 @@ Run `node --test --test-reporter=tap scripts/dispatch.test.mjs scripts/dispatchS
 from the installed skill, and the complete repository suite before deployment.
 The fixtures test failed creation, partial writes, flush/close/rename barriers,
 post-publication errors, single-begin publication, input growth, exact-limit reads
-and lock/descriptor cleanup with no live browser or
+and lock/descriptor cleanup. The existing storage fault matrix also swaps real
+same-size candidates after flush/close at preparation, sending and confirmation.
+It requires refusal before the relevant send, retained committed barriers after
+sending, and preservation of the flushed and substituted files. Creator-specific
+cases cover lock/candidate swaps, added hardlinks, size changes, large identities
+and metadata failure cleanup; common-reader tests retain their separate ownership.
+These fixtures use no live browser or
 production data. Native Windows/macOS and live connector behavior require their
 own validation; local Linux results are not evidence of those checks.
