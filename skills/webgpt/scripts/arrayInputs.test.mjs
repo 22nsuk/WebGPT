@@ -2,7 +2,7 @@
 // HTTP and file observations use disposable loopback fixtures, not live workers.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
+import fs, { lstatSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { join } from 'node:path';
@@ -107,7 +107,11 @@ for (const view of ['text', 'hex']) for (const content of ['', 'abcdef']) {
     const observed = observeFileRead(t, source);
     try { buildArtifactInput({ source, label: 'fixture', view, ranges: Array(1) }); }
     catch (caught) { error = caught; }
-    finally { observed.restore(); stat.mock.restore(); }
+    finally {
+      // Restore the fs property before refreshing its named ESM exports.
+      stat.mock.restore(); observed.restore();
+    }
+    assert.equal(lstatSync, originalStat, 'restore the named native export as well as the fs property');
     assert.equal(error?.code, 'INVALID_ARGUMENT', 'never emit a null window or a late native TypeError');
     assert.equal(stats, 0);
     assert.equal(observed.evidence.opens, 0);
