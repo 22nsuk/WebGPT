@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync, rmdirSync, unlinkSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync, rmdirSync, unlinkSync, existsSync, renameSync, realpathSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -10,6 +10,7 @@ import { createHash } from 'node:crypto';
 import { start } from './worker.mjs';
 import { request, reconcileTasks, collectTask } from './client.mjs';
 import { processState } from './runtime.mjs';
+import { observeFileRead } from './test-fixtures/file-read.mjs';
 import { observeChild, spawnFixtureWorker, untilFixture, readyFixture } from './test-fixtures/worker-process.mjs';
 
 const hash = text => createHash('sha256').update(text).digest('hex');
@@ -109,27 +110,24 @@ for (const action of ['wait', 'tasks', 'status']) test(`${action} does not retur
   assert.equal((await reconcileTasks(f.config)).health.ok, false);
 }));
 
-test('an already parked wait verifies state again before sending its timeout response', () => fixture(async f => {
+test('an already parked wait verifies state again before sending its timeout response', t => fixture(async f => {
   await f.register();
-  const fs = (await import('node:fs')).default;
-  const { syncBuiltinESMExports } = await import('node:module');
-  const originalRead = fs.readFileSync, statePath = join(f.dir, 'state.json');
+  const statePath = realpathSync.native(join(f.dir, 'state.json')), original = statePath + '.observed', before = readFileSync(statePath);
   let checked = false;
-  // Inject the change just after the request's first successful state read.
-  // This avoids a timing assumption about when the long poll was accepted.
-  fs.readFileSync = (path, ...args) => {
-    const bytes = originalRead(path, ...args);
-    if (path === statePath && !checked) {
-      checked = true; writeFileSync(statePath, '{corrupt while waiting');
-    }
-    return bytes;
-  };
-  syncBuiltinESMExports();
+  // The first check finishes reading its already-validated descriptor. Replace
+  // only the named path so the parked wait must notice it on its fresh check.
+  // No sleep or readFileSync(path)-specific hook determines acceptance timing.
+  const trace = observeFileRead(t, statePath, { beforeRead() {
+    renameSync(statePath, original); writeFileSync(statePath, '{corrupt while waiting'); checked = true;
+  } });
   try {
     await assert.rejects(f.admin('wait', { ids: ['a'] }), { code: 'STATE_INVALID' });
-    assert.equal(checked, true);
-    assert.equal(originalRead(statePath, 'utf8'), '{corrupt while waiting');
-  } finally { fs.readFileSync = originalRead; syncBuiltinESMExports(); }
+  } finally { trace.restore(); }
+  assert.equal(checked, true);
+  assert.ok(trace.evidence.opens >= 2, 'the initial observation is followed by a fresh state check');
+  assert.equal(trace.evidence.opens, trace.evidence.closes);
+  assert.deepEqual(readFileSync(original), before);
+  assert.equal(readFileSync(statePath, 'utf8'), '{corrupt while waiting');
 }));
 
 async function ownedWorker(run) {

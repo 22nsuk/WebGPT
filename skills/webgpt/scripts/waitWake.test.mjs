@@ -10,6 +10,7 @@ import { syncBuiltinESMExports } from 'node:module';
 import { start } from './worker.mjs';
 import { request, collectTask } from './client.mjs';
 import { callTool } from './test-fixtures/worker-http.mjs';
+import { observeFileRead } from './test-fixtures/file-read.mjs';
 
 async function fixture(t) {
   const dir = fs.realpathSync.native(fs.mkdtempSync(join(tmpdir(), 'webgpt-wait-wake-')));
@@ -44,23 +45,24 @@ async function fixture(t) {
   const submit = token => callTool(worker, 'submit_result', { token, status: 'completed', summary: 'done', result: 'Result 한국어' });
   return { dir, worker, config, admin, register, park, submit, stateFile: join(dir, 'state.json') };
 }
-async function withFs(t, replacements, run) {
-  const mocks = Object.entries(replacements).map(([name, fn]) => t.mock.method(fs, name, fn));
-  syncBuiltinESMExports();
+// Observe each actual opened state descriptor, not readFileSync(path): state
+// materialization deliberately uses readFileSync(fd). Keep faults file-scoped.
+async function withStateReads(t, file, afterStat, run) {
+  const trace = observeFileRead(t, file, { afterStat });
   try { return await run(); }
-  finally { for (const mock of mocks) mock.mock.restore(); syncBuiltinESMExports(); }
+  finally {
+    trace.restore();
+    assert.equal(trace.evidence.opens, trace.evidence.closes, 'state descriptors close even on failed observations');
+  }
 }
 const ioError = () => Object.assign(Error('fixture state read failed'), { code: 'EIO' });
 
 for (const count of [1, 8, 32]) test(`persistent storage error visits each of ${count} parked waits only once`, async t => {
   const f = await fixture(t), task = await f.register('owned'), waits = [];
   for (let i = 0; i < count; i++) waits.push(await f.park(i % 2 ? undefined : ['owned']));
-  const before = fs.readFileSync(f.stateFile), read = fs.readFileSync;
+  const before = fs.readFileSync(f.stateFile);
   let reads = 0;
-  await withFs(t, { readFileSync: (file, ...args) => {
-    if (file === f.stateFile) { reads++; throw ioError(); }
-    return read(file, ...args);
-  } }, async () => {
+  await withStateReads(t, f.stateFile, () => { reads++; throw ioError(); }, async () => {
     await assert.rejects(f.admin('status'), { code: 'EIO', statusCode: 503 });
     assert.ok(waits.every(wait => wait.response.writableEnded), 'all responses end during notification, not at their timers');
     for (const { outcome } of waits) {
@@ -85,31 +87,31 @@ test('a nested storage notification also revisits an earlier unrelated waiter th
   const f = await fixture(t); await f.register('owned');
   const waits = [];
   for (let i = 0; i < 3; i++) waits.push(await f.park(['owned']));
-  const read = fs.readFileSync, rename = fs.renameSync;
+  const rename = fs.renameSync;
   let published = false, reads = 0;
-  await withFs(t, {
-    renameSync: (from, to) => {
-      const result = rename(from, to);
-      if (to === f.stateFile) published = true;
-      return result;
-    },
-    readFileSync: (file, ...args) => {
+  const publication = t.mock.method(fs, 'renameSync', (from, to) => {
+    const result = rename(from, to);
+    if (to === f.stateFile) published = true;
+    return result;
+  });
+  syncBuiltinESMExports();
+  try {
+    await withStateReads(t, f.stateFile, () => {
       // Begin after real registration publication, then fail only the second
       // waiter's fresh state check. The first has already re-parked quietly.
-      if (published && file === f.stateFile && ++reads === 2) throw ioError();
-      return read(file, ...args);
-    },
-  }, async () => {
-    await f.register('unrelated');
-    assert.ok(waits.every(wait => wait.response.writableEnded), 'nested notification must not be dropped');
-    const outcomes = await Promise.all(waits.map(wait => wait.outcome));
-    assert.equal(outcomes[1].error?.code, 'EIO');
-    for (const index of [0, 2]) {
-      assert.equal(outcomes[index].value?.interrupted, true);
-      assert.deepEqual(outcomes[index].value.events, []);
-    }
-    assert.equal(reads, 4, 'three initial observations, then the one re-parked waiter');
-  });
+      if (published && ++reads === 2) throw ioError();
+    }, async () => {
+      await f.register('unrelated');
+      assert.ok(waits.every(wait => wait.response.writableEnded), 'nested notification must not be dropped');
+      const outcomes = await Promise.all(waits.map(wait => wait.outcome));
+      assert.equal(outcomes[1].error?.code, 'EIO');
+      for (const index of [0, 2]) {
+        assert.equal(outcomes[index].value?.interrupted, true);
+        assert.deepEqual(outcomes[index].value.events, []);
+      }
+      assert.equal(reads, 4, 'three initial observations, then the one re-parked waiter');
+    });
+  } finally { publication.mock.restore(); syncBuiltinESMExports(); }
   const stored = JSON.parse(fs.readFileSync(f.stateFile));
   assert.deepEqual(stored.map(task => task.id), ['owned', 'unrelated']);
   assert.ok(stored.every(task => !task.collected && task.token && task.inputs.sample));
@@ -134,11 +136,8 @@ test('a disconnected wait is removed before a later storage notification', async
   const abort = new AbortController(), cancelled = await f.park(['owned'], abort.signal), remaining = await f.park(['owned']);
   const closed = once(cancelled.response, 'close'); abort.abort();
   assert.ok((await cancelled.outcome).error); await closed;
-  const read = fs.readFileSync; let reads = 0;
-  await withFs(t, { readFileSync: (file, ...args) => {
-    if (file === f.stateFile) { reads++; throw ioError(); }
-    return read(file, ...args);
-  } }, async () => {
+  let reads = 0;
+  await withStateReads(t, f.stateFile, () => { reads++; throw ioError(); }, async () => {
     await assert.rejects(f.admin('status'), { code: 'EIO' });
     assert.equal((await remaining.outcome).error?.code, 'EIO');
     assert.equal(reads, 2, 'no fresh observation for the disconnected waiter');
@@ -148,11 +147,8 @@ test('a disconnected wait is removed before a later storage notification', async
 test('shutdown drains failed waits without recursive reads and retains restartable task state', async t => {
   const f = await fixture(t), task = await f.register('owned'), waits = [];
   for (let i = 0; i < 8; i++) waits.push(await f.park(['owned']));
-  const before = fs.readFileSync(f.stateFile), read = fs.readFileSync; let reads = 0;
-  await withFs(t, { readFileSync: (file, ...args) => {
-    if (file === f.stateFile) { reads++; throw ioError(); }
-    return read(file, ...args);
-  } }, async () => {
+  const before = fs.readFileSync(f.stateFile); let reads = 0;
+  await withStateReads(t, f.stateFile, () => { reads++; throw ioError(); }, async () => {
     await f.worker.close();
     for (const wait of waits) assert.equal((await wait.outcome).error?.code, 'EIO');
     assert.equal(reads, waits.length);
