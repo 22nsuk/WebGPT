@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync, rmdirSync, unlinkSync, existsSync, renameSync, realpathSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync, rmdirSync, unlinkSync, existsSync, renameSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -92,7 +92,7 @@ for (const tamper of ['missing', 'changed']) test(`a duplicate terminal submissi
 
 for (const restart of [false, true]) test(`a missing committed journal blocks only its task${restart ? ' after restart' : ''}`, () => fixture(async f => {
   const { token } = await f.register();
-  const receipt = (await f.call('write_file', { token, path: 'evidence.txt', text: 'v1', expectedSha256: null })).structuredContent;
+  const receipt = (await f.call('write_file', { token, 'path': 'evidence.txt', text: 'v1', expectedSha256: null })).structuredContent;
   unlinkSync(join(f.dir, 'recovery', 'a', receipt.operation + '.json'));
   if (restart) await f.restart();
   await assert.rejects(f.admin('ready'), error => error.details.issues.includes('RECOVERY_REQUIRED'));
@@ -112,8 +112,10 @@ for (const action of ['wait', 'tasks', 'status']) test(`${action} does not retur
 
 test('an already parked wait verifies state again before sending its timeout response', t => fixture(async f => {
   await f.register();
-  const statePath = realpathSync.native(join(f.dir, 'state.json')), original = statePath + '.observed', before = readFileSync(statePath);
+  const statePath = join(f.dir, 'state.json'), original = statePath + '.observed', before = readFileSync(statePath);
   let checked = false;
+  // Match the worker's lexical path: realpath aliases (such as macOS /var)
+  // address the same file but would bypass this exact-path I/O observer.
   // The first check finishes reading its already-validated descriptor. Replace
   // only the named path so the parked wait must notice it on its fresh check.
   // No sleep or readFileSync(path)-specific hook determines acceptance timing.
