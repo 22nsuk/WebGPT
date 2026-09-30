@@ -7,7 +7,7 @@ test count. Keep the existing [dispatch](dispatch.md), [collection](usage.md) an
 
 ## Feature / evidence map
 
-All four exercises use the existing MCP callback. `text` means **no project grant**;
+These exercises use the existing MCP callback. `text` means **no project grant**;
 it is not the separate connector-free chat fallback. The fixtures are small, known
 transport/verification exercises, not hidden benchmarks of model intelligence.
 
@@ -16,6 +16,7 @@ transport/verification exercises, not hidden benchmarks of model intelligence.
 | `text` | `prepare text` → register → observed web dispatch → `read_input` / `submit_result` | Saved result hash and exact arithmetic JSON | Requested web mode, selected connector, actual new user message and useful answer |
 | `read` | `prepare read` → read-only project → `read_file` / `submit_result` | Matching recorded read grant, unchanged two-file fixture, no receipts, correct defect report | Actual file-read calls and intended registration; no substitution with pasted code |
 | `edit` | `prepare edit` → edit project → `write_file` / `submit_result` | Matching recorded edit grant, one expected receipt, backup/recovery checks, exact corrected bytes and behavior | Actual stale-SHA write rejection; the result's `staleWriteRejected` boolean is only a claim |
+| `connection` | `prepare connection` → isolated edit project → input/read/exact edit/pinned and stale read/stale write/create/read/delete/submit | Exact Unicode seed, only the seed remaining, three ordered revision receipts, both retained originals, matching grant and saved JSON | Actual pinned/stale read and stale write responses, temporary-file reads/absence, input calls and the selected live connector |
 | `resume` | `prepare resume` once → dispatch once → terminal output → fresh parent `check` / explicit `collect --resume` | Retained result, current collection state and unchanged fixture | Same task/chat/ledger; no replacement registration, new prompt or repeated acknowledgment |
 
 Implementation owners: [verification.mjs](../scripts/verification.mjs) prepares/checks;
@@ -38,11 +39,12 @@ connector being tested are the intended instance; `/health` is not readiness.
 ```text
 node <skill>/scripts/client.mjs dispatch preflight
 node <skill>/scripts/client.mjs ready
-node <skill>/scripts/verification.mjs prepare <text|read|edit|resume> <new-absolute-run-dir> <pro|xhigh>
+node <skill>/scripts/verification.mjs prepare <text|read|edit|resume|connection> <new-absolute-run-dir> <pro|xhigh>
 ```
 
 `prepare` creates `verification.json`, `request.json`, `measurements.json` and, for
-read/edit, `project/orders.json` plus `project/total.mjs`. It does not register a task,
+read/edit, `project/orders.json` plus `project/total.mjs`; connection creates only
+`project/seed.txt` and supplies `sample` as an input. It does not register a task,
 open a browser, start a worker, generate credentials or send a prompt. Existing run
 paths are refused, including partial preparations. Inspect any partial directory;
 never use a new one to bypass an already attempted send. The static manifest identifies
@@ -166,6 +168,63 @@ prepare a second resume run, re-register or redispatch. Record both observations
 the chat and evidence; close only verified owned terminal tabs. Failure is not deletion
 consent. Follow the normal recovery policy instead of removing candidates to make PASS.
 
+## Connection smoke after an installation change
+
+Choose `connection` when checking the installed file bridge's ordinary lifecycle. It
+replaces a hand-written seed/temp assignment; it is not a requirement to run the other
+four exercises as well, and is not a meaningful-work or performance benchmark. Existing
+`text`, `read`, `edit` and `resume` manifests/results keep their original contracts.
+
+```text
+node <skill>/scripts/verification.mjs prepare connection <new-absolute-run-dir> <pro|xhigh>
+```
+
+Use the registration, private dispatch and explicit collection steps above. The generated
+assignment requires `get_task` and `read_input(sample)`, an exact `oldText` edit of
+`status=before` to `status=after`, a successful current-SHA pinned read and one rejection
+each for an old-SHA read/write. It then creates `temp.txt`, reads it, deletes it using the
+observed revision, and checks its absence and the unchanged final seed. Stop on any
+unexpected outcome; preserve evidence and submit failed rather than retrying or repairing
+the probe to manufacture success. Only the deliberately created temp file is deleted.
+
+Local acceptance requires the exact UTF-8 seed (including Korean, emoji and line endings),
+no remaining temp/extra entry, and **three ordered receipts**: seed edit, temp create,
+temp delete. Both before/after hashes must match; a final directory that merely looks
+correct is insufficient. Existing reconciliation must still verify the seed original,
+the deleted temp original and their journals. The checker neither rewrites receipts nor
+cleans up partial work. `arithmetic` is `NOT_APPLICABLE`; no connection fixture code runs.
+
+The result has `sample`, `seedSha256`, `pinnedReadVerified`, `staleReadRejected`,
+`staleWriteRejected` and `temporaryLifecycleVerified`. Matching values are required, but
+all four booleans remain in `unverifiedClaims`. Local bytes/receipts cannot prove a read
+or rejected call actually occurred. Follow `parentMustVerify` to inspect the real tool
+calls and matching SHA responses before acceptance; quoted errors are not enough.
+`browserChecked:false` and `liveVerdict:NOT_EVALUATED` remain unchanged even on PASS.
+After explicitly collecting, check again and use the old token once to confirm access is
+rejected; do not re-register, resend or revive the task. Keep private evidence, not tokens
+or native paths in public reports. `check` never sends this token probe itself.
+
+### Windows startup is a separate acceptance boundary
+
+A successful file connection smoke does **not** test Task Scheduler/WinSW, logoff,
+Fast Startup/reboot, tunnel reconnection, visible console behavior, native ACLs under a
+different service account, or browser file upload. A clean local worker restart test is
+also not an OS reboot test. Validate those only during separately authorized maintenance
+using [operations-windows.md](operations-windows.md), the same private runtime, retained
+task/chat and source revision. Do not interrupt a healthy installation merely to run them.
+
+The [QriumJ Windows change at bffeee9](https://github.com/QriumJ/WebGPT/commit/bffeee9451389347e7f0839c3c763849e686084a)
+is a useful comparison, not a drop-in patch for this file-scoped fork. Our worker/service
+already use proven same-host dead-owner recovery with preserved stale archives;
+ownerless, unreadable, live or uncertain locks remain blocked. Do not adopt the other
+branch's age/boot-time lock retirement or evidence deletion as a shortcut to PASS.
+The current launcher already uses hidden processes and separate `Start-Process` stdout/
+stderr redirection, rather than invoking the native service through a PowerShell error
+pipeline. No `cmd.exe` wrapper, terminal permission, tunnel manager or automatic restart
+policy is introduced by this exercise. See [runtime.mjs](../scripts/runtime.mjs),
+[service.mjs](../scripts/service.mjs) and the
+[Task Scheduler launcher](../deploy/windows/run-worker-task.ps1).
+
 ## Comparable measurements, not inferred savings
 
 Fill only observed nonnegative integer fields in `measurements.json`; retain `taskId`.
@@ -192,7 +251,7 @@ them. Uncertain sends have no confirmed-send interval and must not be treated as
 Compare the same scenario, mode, script revision and environment before/after; keep failure,
 blocked and intervention cases in the denominator. Report useful accepted runs / attempted
 runs with the sample count, correction burden and metric availability. Do not pool different
-scenarios or replace missing cost with zero. Four smoke cases do not establish a reliable
+scenarios or replace missing cost with zero. Smoke cases do not establish a reliable
 success rate or quota saving. Measure the baseline before selecting a performance claim.
 
 ## Boundaries and follow-up
