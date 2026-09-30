@@ -41,13 +41,16 @@ function options({ source, label, view, ranges, expectedSha256 }) {
   if (expectedSha256 !== undefined && (typeof expectedSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(expectedSha256)))
     fail('INVALID_ARGUMENT', 'expectedSha256 must be a lowercase whole-source SHA-256.');
   let total = 0;
-  const selected = ranges.map(range => {
-    if (!range || !Number.isSafeInteger(range.offset) || range.offset < 0 ||
-        !Number.isSafeInteger(range.length) || range.length < 1 ||
-        !Number.isSafeInteger(range.offset + range.length))
+  // Visit every bounded index, including holes, and budget the same captured
+  // numeric values used by the reader rather than rereading caller accessors.
+  const selected = Array.from({ length: ranges.length }, (_, index) => {
+    const { offset, length } = ranges[index] ?? {};
+    if (!Number.isSafeInteger(offset) || offset < 0 ||
+        !Number.isSafeInteger(length) || length < 1 ||
+        !Number.isSafeInteger(offset + length))
       fail('INVALID_ARGUMENT', 'Ranges require safe nonnegative byte offsets and positive lengths.');
-    total += range.length;
-    return { offset: range.offset, length: range.length };
+    total += length;
+    return { offset, length };
   }).sort((a, b) => a.offset - b.offset);
   if (total > MAX_WINDOW_BYTES)
     fail('INVALID_ARGUMENT', 'Combined requested ranges exceed 8 KiB.');
