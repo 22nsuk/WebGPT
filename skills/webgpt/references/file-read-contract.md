@@ -87,6 +87,15 @@ There is no automatic state migration or change to valid receipt formats.
   Result retry flushing likewise keeps its existing caller-owned descriptor and
   1 MiB-plus-sentinel comparison. The file-opening helper does not own either
   publication operation, its permissions, cleanup or recovery evidence.
+  The state writer uses `BigIntStats` for the candidate's named/opened/final
+  observations: an existing candidate must still be the same device/inode at
+  open before retry bytes are read or flushed. After flush and descriptor close,
+  both new and retried candidates must still match that exact identity and size
+  before rename. A replacement is `STATE_STAGING_CONFLICT`; committed bytes and
+  remaining candidates are preserved. Equal large identities are valid, and no
+  BigInt is persisted or returned. These are observations, not an atomic path
+  binding: in-place changes and replacement after the final check remain outside
+  this guarantee. Result/audit writers and persisted workspace IDs are separate.
 - `readStateBytes` continues to read the variable-sized committed task inventory
   through the shared checked descriptor without a newly imposed fixed quota.
   A late different-file or hardlink replacement is `STATE_INVALID`; a late
@@ -119,6 +128,7 @@ Keep one owner per assertion family, not one copy per historical fix:
 | `fileReadContract.test.mjs` | Real adapter matrix: short reads, growth/oversize rejection, error classification and identity swaps; candidate-length state retries |
 | `runtimeMetadata.test.mjs` | Marker format/absence, metadata path types, uncapped committed state, late state replacements, descriptor-bound reads and error cleanup, and worker/service ownership lifecycle |
 | `boundedReads.test.mjs` | Descriptor primitive and mutation/recovery/real HTTP consequences, including the second-open result retry-flush race |
+| `stateStorage.test.mjs` | State publication: private exclusive creation, exact retry/open and pre-rename identities, byte comparison, mandatory flush, descriptor closure, preserved conflicting evidence and controller/retirement consequences |
 | `workspace.test.mjs` | Workspace CRUD, path encoding, read-only mutation refusal and preserved bytes/revisions, retained receipt paths and actual MCP consequences |
 
 Workspace MCP cases reuse `test-fixtures/worker-http.mjs` for transport, not for
