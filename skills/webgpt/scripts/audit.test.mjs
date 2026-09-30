@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { syncBuiltinESMExports } from 'node:module';
-import { execFile } from 'node:child_process';
+import { execFile, spawnSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { Server } from 'node:http';
@@ -16,6 +16,7 @@ import { start, tools } from './worker.mjs';
 import { request, collectTask } from './client.mjs';
 import { AUDIT_LIMIT, auditFromEnvironment, auditRecord, createAuditWriter, readDiagnosticBytes } from './audit.mjs';
 import { diagnoseTask } from './diagnose.mjs';
+import { readFixture } from './test-fixtures/file-read.mjs';
 
 const temporary = () => mkdtempSync(join(tmpdir(), 'webgpt-audit-'));
 const logName = 'mcp-audit.jsonl';
@@ -170,6 +171,65 @@ test('audit path failure does not fail startup, tools, completion or collection'
   }, { prepare: dir => mkdirSync(join(dir, logName)) });
 });
 
+// A blocked synchronous open never reaches audit's catch/disable path. Run each
+// native FIFO case in a disposable child; timeout or missing mkfifo is a failure.
+for (const kind of ['known', 'substituted', 'connected']) test(`audit disables ${kind} FIFO logging without blocking or writing`,
+  { skip: process.platform === 'win32' ? 'POSIX filesystem FIFO contract' : false }, t => {
+    const dir = readFixture(t), file = join(dir, logName), fifo = file + '.fifo', original = file + '.original';
+    const bytes = Buffer.from('preserved audit evidence\n');
+    writeFileSync(file, bytes, { mode: 0o600 });
+    const made = spawnSync('mkfifo', [fifo], { encoding: 'utf8', timeout: 10000, killSignal: 'SIGKILL' });
+    assert.ifError(made.error); assert.equal(made.status, 0, made.stderr);
+    assert.ok(fs.lstatSync(fifo).isFIFO());
+    const child = spawnSync(process.execPath, ['--input-type=module', '--eval', `
+      import test from 'node:test';
+      import assert from 'node:assert/strict';
+      import fs from 'node:fs';
+      import { syncBuiltinESMExports } from 'node:module';
+      import { createAuditWriter } from ${JSON.stringify(new URL('./audit.mjs', import.meta.url).href)};
+      import { observeFileRead } from ${JSON.stringify(new URL('./test-fixtures/file-read.mjs', import.meta.url).href)};
+      const dir = ${JSON.stringify(dir)}, file = ${JSON.stringify(file)}, fifo = ${JSON.stringify(fifo)}, original = ${JSON.stringify(original)};
+      const kind = ${JSON.stringify(kind)};
+      test('native audit FIFO refusal and fail-open diagnostics', t => {
+        // A real reader lets O_WRONLY succeed so opened-file validation and
+        // descriptor cleanup are exercised separately from the no-reader error.
+        const reader = kind === 'connected' ? fs.openSync(fifo, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK) : null;
+        let swaps = 0, writes = 0, warnings = 0;
+        const swap = () => {
+          fs.renameSync(file, original); fs.renameSync(fifo, file); swaps++;
+          process.stdout.write('FIFO_SWAPPED\\n');
+        };
+        if (kind === 'known') swap();
+        const trace = observeFileRead(t, file, { beforeOpen: kind === 'known' ? undefined : swap });
+        const nativeWrite = fs.writeFileSync;
+        const sink = t.mock.method(fs, 'writeFileSync', (...args) => { writes++; return nativeWrite(...args); });
+        syncBuiltinESMExports();
+        try {
+          const write = createAuditWriter(dir, true, { warn: () => { warnings++; throw Error('private warning sink'); } });
+          write({ phase: 'started' });
+          const first = { ...trace.evidence };
+          write({ phase: 'started' }); // Disabled capture must not reopen or warn again.
+          assert.deepEqual(trace.evidence, first);
+          assert.equal(warnings, 1); assert.equal(swaps, 1); assert.equal(writes, 0);
+          const opened = kind === 'connected' ? 1 : 0;
+          assert.deepEqual(first, { opens: opened, closes: opened, bytes: 0, reads: 0 });
+          if (reader !== null) assert.equal(fs.readSync(reader, Buffer.alloc(1), 0, 1, null), 0, 'no log bytes entered the FIFO');
+        } finally {
+          sink.mock.restore(); trace.restore();
+          if (reader !== null) fs.closeSync(reader);
+        }
+        assert.ok(fs.lstatSync(file).isFIFO());
+        process.stdout.write('AUDIT_CONTINUED\\n');
+      });
+    `], { encoding: 'utf8', timeout: 10000, killSignal: 'SIGKILL' });
+    assert.equal(child.error, undefined, `${child.error?.code}: ${child.stdout}\n${child.stderr}`);
+    assert.equal(child.signal, null, child.stderr);
+    assert.equal(child.status, 0, `${child.stdout}\n${child.stderr}`);
+    assert.match(child.stdout, /FIFO_SWAPPED/); assert.match(child.stdout, /AUDIT_CONTINUED/);
+    assert.ok(fs.lstatSync(file).isFIFO(), 'rejected replacement is preserved');
+    assert.deepEqual(readFileSync(original), bytes, 'original audit bytes are preserved');
+  });
+
 for (const kind of ['symlink', 'hardlink']) for (const suffix of ['', '.1']) {
   test(`audit preserves ${kind} at ${suffix || 'active log'} and its target`, t => {
     const dir = temporary(), source = join(dir, 'evidence'), file = join(dir, logName);
@@ -255,21 +315,6 @@ for (const name of ['state.json', logName]) for (const kind of ['symlink', 'hard
     assert.deepEqual(readFileSync(target), original);
   }));
 }
-
-test('bounded reads reject file growth as well as initially oversized files', t => {
-  const dir = temporary(), file = join(dir, 'data');
-  writeFileSync(file, '1234');
-  const read = fs.readSync; let changed = false;
-  const mock = t.mock.method(fs, 'readSync', (...args) => {
-    if (!changed) { changed = true; appendFileSync(file, '56789'); }
-    return read(...args);
-  });
-  syncBuiltinESMExports();
-  try {
-    assert.throws(() => readDiagnosticBytes(file, 5), /unavailable/);
-    assert.throws(() => readDiagnosticBytes(file, 5), /unavailable/);
-  } finally { mock.mock.restore(); syncBuiltinESMExports(); rmSync(dir, { recursive: true, force: true }); }
-});
 
 test('diagnosis reports pending state and rechecks retained result bytes without repair', () => fixture(async f => {
   const { token } = await f.register('owned');

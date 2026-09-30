@@ -84,8 +84,10 @@ export function createAuditWriter(dir, enabled = false, { warn = () => console.e
         renameSync(file, previous);
         info = null;
       }
+      // A checked log may become a FIFO before open. Never wait for a reader:
+      // audit failure must disable capture, not stall the worker before fstat.
       const fd = openSync(file, constants.O_WRONLY | constants.O_APPEND | constants.O_NOFOLLOW
-        | (info ? 0 : constants.O_CREAT | constants.O_EXCL), 0o600);
+        | (constants.O_NONBLOCK ?? 0) | (info ? 0 : constants.O_CREAT | constants.O_EXCL), 0o600);
       try {
         const opened = fstatSync(fd);
         regular(opened, AUDIT_LIMIT - line.length, true);

@@ -47,6 +47,9 @@ logs and the diagnostic report, not every existing CLI or browser-tool output. D
 publish the raw private runtime or assume unrelated logs are redacted.
 
 The writer rejects symlinks, hardlinks, invalid file types and oversized existing logs.
+On POSIX, nonblocking opens also prevent a late FIFO substitution from waiting for a
+reader; a connected FIFO is rejected before writing and its descriptor is closed. This
+does not impose a deadline on regular-file I/O or make the logger asynchronous.
 Existing group/other-readable POSIX logs are rejected rather than chmodded. Windows
 relies on the existing private runtime ACL. A write/rotation/validation failure emits one
 generic warning and disables capture for that run; it does not change a tool's outcome,
@@ -127,6 +130,10 @@ maintenance; never reset state or erase a journal to make a diagnostic warning d
 `node --test --test-reporter=tap scripts/audit.test.mjs` from the installed skill checks
 real loopback HTTP/MCP traffic, opt-in/disabled behavior, all seven tools, task scoping,
 redaction, rotation, read bounds, link rejection, shutdown ordering and failure isolation.
+Native POSIX FIFO cases cover preexisting and late-substituted logs, with and without a
+reader, in timeout-bounded child processes. Windows skips only these FIFO cases.
+`scripts/fileReadContract.test.mjs` owns diagnostic-reader short reads, initial oversize,
+growth bounds, native read errors and opened-file identity; do not duplicate that matrix.
 `scripts/diagnose.test.mjs` additionally checks degraded audit segments, bounded marker
 reads, uncommitted results, redaction and agreement with real controller warnings.
 Run the full repository suite and supported OS/Node matrix before deployment. Local
