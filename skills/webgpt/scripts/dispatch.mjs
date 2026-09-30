@@ -2,7 +2,7 @@
 // Extend the one private task ledger; completion remains authoritative in the controller.
 // Storage and evidence handling: ../references/dispatch-storage.md.
 import { createHash, randomUUID } from 'node:crypto';
-import { closeSync, constants, fsyncSync, lstatSync, openSync, writeFileSync, renameSync, unlinkSync, realpathSync } from 'node:fs';
+import { closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync, writeFileSync, renameSync, unlinkSync, realpathSync } from 'node:fs';
 import { dirname, basename, isAbsolute, join } from 'node:path';
 import { readBoundedFile } from './bounded-read.mjs';
 
@@ -170,13 +170,22 @@ function fileInfo(file) {
 function readBytes(file) {
   return readBoundedFile(file, MAX_BYTES, () => new DispatchError('LEDGER'))?.bytes ?? null;
 }
-function createPrivateFile(file, bytes) {
+function createPrivateFile(file, bytes, stage) {
   // On Windows, do not even attempt exclusive creation through a known dangling
   // link. O_EXCL still handles a cooperative creator arriving after this check.
   if (fileInfo(file)) throw Object.assign(Error('private dispatch file already exists'), { code: 'EEXIST' });
   const fd = openSync(file, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
-  try { writeFileSync(fd, bytes); fsyncSync(fd); }
-  finally { closeSync(fd); }
+  let opened;
+  try {
+    opened = fstatSync(fd, { bigint: true });
+    writeFileSync(fd, bytes); fsyncSync(fd);
+  } finally { closeSync(fd); }
+  // Bind success to the file actually flushed, not just its reusable pathname.
+  // Both lock acquisition and ledger replacement must stop on changed evidence.
+  const current = lstatSync(file, { bigint: true });
+  if (!current.isFile() || current.isSymbolicLink() || current.nlink !== 1n
+      || current.dev !== opened.dev || current.ino !== opened.ino
+      || current.size !== BigInt(Buffer.byteLength(bytes))) throw new DispatchError('CONFLICT', stage);
   // A failed create/write/flush is not permission to unlink this path. Preserve
   // unknown or partial evidence; only the caller's successful rename consumes it.
 }
@@ -209,7 +218,7 @@ async function withLedger(file, work) {
     lock = file + '.dispatch.lock';
     owner = JSON.stringify({ pid: process.pid, instanceId: randomUUID() });
     stage = 'lock_acquire';
-    try { createPrivateFile(lock, owner); acquired = true; }
+    try { createPrivateFile(lock, owner, stage); acquired = true; }
     catch (e) { if (e.code === 'EEXIST') fail('LOCKED'); throw e; }
     stage = 'ledger_read';
     let previous = readBytes(file);
@@ -225,7 +234,7 @@ async function withLedger(file, work) {
       if ((current === null) !== (previous === null) || (current && !current.equals(previous))) fail('CONFLICT');
       const temporary = file + '.tmp-' + randomUUID();
       stage = 'ledger_write';
-      createPrivateFile(temporary, bytes);
+      createPrivateFile(temporary, bytes, stage);
       stage = 'ledger_publish';
       renameSync(temporary, file);
       previous = bytes;

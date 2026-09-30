@@ -154,14 +154,14 @@ test('a known dangling lock is refused before any creation-capable write', async
 });
 
 for (const [phase, initial] of [['prepared', 'registered'], ['sending', 'registered'], ['sending', 'prepared'], ['submitted', 'registered']])
-for (const failure of ['write', 'flush', 'close', 'rename', 'published']) {
+for (const failure of ['write', 'flush', 'close', 'rename', 'published', 'swap']) {
   test(`dispatch ${phase} ${failure} failure from ${initial} preserves evidence and committed send barrier`, async t => {
     const f = await fixture(t);
     if (initial === 'prepared') await prepareDispatch(f.file, ready());
     const committed = fs.readFileSync(f.file);
     const original = { openSync: fs.openSync, writeFileSync: fs.writeFileSync, fsyncSync: fs.fsyncSync,
       closeSync: fs.closeSync, renameSync: fs.renameSync };
-    const descriptors = new Map(), phases = new Map();
+    const descriptors = new Map(), phases = new Map(), contents = new Map(), flushed = new Set();
     let failedStage, calls = 0;
     const fault = () => { throw Object.assign(Error('PRIVATE_FIXTURE_ONLY ' + f.dir), { code: 'EIO' }); };
     await patched(t, {
@@ -171,7 +171,7 @@ for (const failure of ['write', 'flush', 'close', 'rename', 'published']) {
       writeFileSync(path, bytes, ...args) {
         const name = typeof path === 'number' ? descriptors.get(path) : path;
         if (typeof name === 'string' && name.startsWith(f.file + '.tmp-')) {
-          const state = JSON.parse(bytes).dispatch.state; phases.set(name, state);
+          const state = JSON.parse(bytes).dispatch.state; phases.set(name, state); contents.set(name, Buffer.from(bytes));
           if (failure === 'write' && state === phase) {
             failedStage = name;
             original.writeFileSync(path, Buffer.from(bytes).subarray(0, 16), ...args);
@@ -182,12 +182,20 @@ for (const failure of ['write', 'flush', 'close', 'rename', 'published']) {
       },
       fsyncSync(fd) {
         if (failure === 'flush' && phases.get(descriptors.get(fd)) === phase) { failedStage = descriptors.get(fd); fault(); }
-        return original.fsyncSync(fd);
+        const result = original.fsyncSync(fd); flushed.add(descriptors.get(fd)); return result;
       },
       closeSync(fd) {
         const path = descriptors.get(fd), result = original.closeSync(fd);
         descriptors.delete(fd);
         if (failure === 'close' && phases.get(path) === phase) { failedStage = path; fault(); }
+        if (failure === 'swap' && phases.get(path) === phase && !failedStage) {
+          failedStage = path;
+          original.renameSync(path, path + '.held');
+          // Real same-size replacement after the native flush AND close. Its
+          // valid old state must never replace this attempt's send barrier.
+          original.writeFileSync(path, Buffer.concat([f.before,
+            Buffer.alloc(contents.get(path).length - f.before.length, 32)]), { flag: 'wx', mode: 0o600 });
+        }
         return result;
       },
       renameSync(from, to) {
@@ -201,15 +209,23 @@ for (const failure of ['write', 'flush', 'close', 'rename', 'published']) {
       fillAndSend: async () => { calls++; }, observeSent: async () => sent(),
     }), error => {
       redacted(error, f);
+      if (failure === 'swap') return error.code === 'DISPATCH_CONFLICT' && error.stage === 'ledger_write';
       return error.code === 'DISPATCH_STORAGE' && error.reason === 'io_failed'
         && error.stage === (['rename', 'published'].includes(failure) ? 'ledger_publish' : 'ledger_write');
     }));
     assert.ok(failedStage);
+    assert.equal(descriptors.size, 0, 'all native descriptors close even when publication fails');
     if (failure === 'published') assert.equal(fs.existsSync(failedStage), false, 'actual replacement consumed the stage');
     else {
       assert.ok(fs.existsSync(failedStage), 'preserve even partially written or unflushed evidence');
       assert.equal(fs.readFileSync(failedStage).length > 0, true);
-      if (failure !== 'write') assert.equal(JSON.parse(fs.readFileSync(failedStage)).dispatch.state, phase);
+      if (failure === 'swap') {
+        assert.equal(flushed.has(failedStage), true);
+        assert.deepEqual(fs.readFileSync(failedStage + '.held'), contents.get(failedStage));
+        const replacement = fs.readFileSync(failedStage);
+        assert.equal(replacement.length, contents.get(failedStage).length);
+        assert.equal(JSON.parse(replacement).dispatch.state, 'registered');
+      } else if (failure !== 'write') assert.equal(JSON.parse(fs.readFileSync(failedStage)).dispatch.state, phase);
     }
     const state = JSON.parse(fs.readFileSync(f.file)).dispatch.state;
     assert.equal(state, failure === 'published' ? phase : phase === 'submitted' ? 'sending' : initial);
@@ -451,3 +467,118 @@ for (const [reason, alter] of [
   assert.deepEqual(fs.readFileSync(f.file), committed);
   assert.equal(fs.existsSync(f.file + '.dispatch.lock'), false);
 });
+
+// The same exclusive creator publishes the parent lock and ledger candidates.
+// Native replacements exercise that ownership boundary, not the read adapter.
+for (const boundary of ['lock', 'stage'])
+for (const damage of boundary === 'lock' ? ['same-bytes', 'hardlink', 'size']
+  : ['same-bytes', 'hardlink', 'size', 'dev', 'ino', 'large-equal']) {
+  test(`dispatch ${boundary} publication validates ${damage} after flush and close`, async t => {
+    const f = await fixture(t), file = boundary === 'lock' ? f.file + '.dispatch.lock' : f.stage;
+    const native = { open: fs.openSync, write: fs.writeFileSync, flush: fs.fsyncSync,
+      close: fs.closeSync, stat: fs.fstatSync, named: fs.lstatSync };
+    const large = 2n ** 60n, wide = ['dev', 'ino', 'large-equal'].includes(damage);
+    let fd, bytes, closed = false, flushed = false, finalSeen = false, reached = false;
+    await patched(t, {
+      openSync(path, flags, ...args) {
+        const result = native.open(path, flags, ...args);
+        if (path === file && (flags & fs.constants.O_EXCL)) fd = result;
+        return result;
+      },
+      fstatSync(descriptor, ...args) {
+        const info = native.stat(descriptor, ...args);
+        if (descriptor === fd && !closed && wide) { info.dev = large; info.ino = large; }
+        return info;
+      },
+      writeFileSync(descriptor, value, ...args) {
+        if (descriptor === fd && !closed) bytes = Buffer.from(value);
+        return native.write(descriptor, value, ...args);
+      },
+      fsyncSync(descriptor) {
+        const result = native.flush(descriptor);
+        if (descriptor === fd && !closed) flushed = true;
+        return result;
+      },
+      closeSync(descriptor) {
+        const result = native.close(descriptor);
+        if (descriptor === fd && !closed) {
+          closed = true; reached = true;
+          if (damage === 'hardlink') fs.linkSync(file, file + '.held');
+          else if (damage !== 'large-equal') {
+            if (damage !== 'size') fs.renameSync(file, file + '.held');
+            // Bypass the observer for fixture writes; only publication owns fd.
+            const replacement = native.open(file, damage === 'size' ? 'a' : 'wx', 0o600);
+            try { native.write(replacement, damage === 'size' ? ' ' : bytes); }
+            finally { native.close(replacement); }
+          }
+        }
+        return result;
+      },
+      lstatSync(path, ...args) {
+        const info = native.named(path, ...args);
+        if (path === file && closed && !finalSeen) {
+          finalSeen = true;
+          if (wide) { info.dev = large; info.ino = large; if (damage !== 'large-equal') info[damage]++; }
+        }
+        return info;
+      },
+    }, async () => {
+      const attempt = beginDispatch(f.file, { prompt, observation: ready() });
+      if (damage === 'large-equal') assert.equal((await attempt).state, 'sending');
+      else await assert.rejects(attempt, error => {
+        redacted(error, f);
+        return error.code === 'DISPATCH_CONFLICT' && error.stage === (boundary === 'lock' ? 'lock_acquire' : 'ledger_write');
+      });
+    }, true);
+    assert.equal(reached && closed && flushed && finalSeen, true, 'reach the real flush/close and final observation');
+    if (damage === 'large-equal') {
+      assert.deepEqual(fs.readFileSync(f.file), bytes); assert.equal(fs.existsSync(file), false);
+      await assert.rejects(beginDispatch(f.file, { prompt, observation: ready() }), { code: 'DISPATCH_BLOCKED' });
+    } else {
+      assert.deepEqual(fs.readFileSync(f.file), f.before);
+      assert.deepEqual(fs.readFileSync(file), damage === 'size' ? Buffer.concat([bytes, Buffer.from(' ')]) : bytes);
+      if (damage !== 'size') assert.deepEqual(fs.readFileSync(file + '.held'), bytes);
+      if (boundary === 'lock') await assert.rejects(inspectDispatch(f.file), { code: 'DISPATCH_LOCKED' });
+    }
+    assert.equal(fs.existsSync(f.file + '.dispatch.lock'), boundary === 'lock');
+  });
+}
+
+for (const boundary of ['lock', 'stage']) for (const point of ['opened', 'final']) {
+  test(`dispatch ${boundary} ${point} metadata failure preserves files and closes the writer`, async t => {
+    const f = await fixture(t), file = boundary === 'lock' ? f.file + '.dispatch.lock' : f.stage;
+    const native = { open: fs.openSync, stat: fs.fstatSync, named: fs.lstatSync, close: fs.closeSync };
+    let fd, closed = false, reached = false;
+    const fault = () => { reached = true; throw Object.assign(Error(f.dir), { code: 'EIO' }); };
+    await patched(t, {
+      openSync(path, flags, ...args) {
+        const result = native.open(path, flags, ...args);
+        if (path === file && (flags & fs.constants.O_EXCL)) fd = result;
+        return result;
+      },
+      fstatSync(descriptor, ...args) {
+        if (point === 'opened' && descriptor === fd && !closed) fault();
+        return native.stat(descriptor, ...args);
+      },
+      lstatSync(path, ...args) {
+        if (point === 'final' && path === file && closed) fault();
+        return native.named(path, ...args);
+      },
+      closeSync(descriptor) {
+        const result = native.close(descriptor); if (descriptor === fd) closed = true; return result;
+      },
+    }, () => assert.rejects(beginDispatch(f.file, { prompt, observation: ready() }), error => {
+      redacted(error, f);
+      return error.code === 'DISPATCH_STORAGE' && error.reason === 'io_failed'
+        && error.stage === (boundary === 'lock' ? 'lock_acquire' : 'ledger_write');
+    }), true);
+    assert.equal(reached && closed, true);
+    assert.deepEqual(fs.readFileSync(f.file), f.before);
+    const bytes = fs.readFileSync(file);
+    if (point === 'opened') assert.equal(bytes.length, 0);
+    else assert.ok(bytes.length > 0);
+    if (boundary === 'lock') await assert.rejects(inspectDispatch(f.file), { code: 'DISPATCH_LOCKED' });
+    assert.equal(fs.existsSync(f.file + '.dispatch.lock'), boundary === 'lock');
+    assert.deepEqual(fs.readFileSync(file), bytes);
+  });
+}
