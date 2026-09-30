@@ -79,6 +79,24 @@ not an accepted receipt. Preserve the journal and original backup for the existi
 manual recovery review; do not rewrite its path, replay a mutation or discard it.
 There is no automatic state migration or change to valid receipt formats.
 
+## Recovery inspection traversal
+
+`inspectRecovery` keeps the shared-parent and task-directory checks, then lets
+`snapshot` own each journal/backup file's named and opened metadata validation.
+It does not perform another, weaker `lstat` before that same read. Every accepted
+receipt still requires valid JSON, operation/filename binding, path/action/hash
+fields and the actual original backup bytes. Missing, invalid or unreadable
+files still produce the journal's unresolved diagnostic, not a partial receipt.
+
+An inspection-local insertion-ordered Set handles unresolved-path membership.
+A failed final journal suppresses its corresponding staged diagnostic; a valid
+final journal does not hide a remaining stage, and an orphan stage stays visible.
+The public result remains ordered arrays. Stages are not read, promoted, replayed
+or deleted. This removes accumulated array scans, not directory sorting or full
+file reads/hashing; it is neither an integrity cache nor a total latency bound.
+Worker receipt matching and independent startup/readiness/collection decisions
+remain separate and continue to revalidate their own observations.
+
 ## Deliberately different paths
 
 - A state publication retry already owns a read/write descriptor. It keeps that
@@ -139,6 +157,7 @@ Keep one owner per assertion family, not one copy per historical fix:
 | --- | --- |
 | `boundedFile.test.mjs` | Shared file-opening mechanism: opaque bytes, absence/empty input, full-width identity, metadata, FIFO substitution without a writer for bounded and committed-state reads, native failures and descriptor closure; the I/O observer's hook timing, accounting and scoped restoration |
 | `fileReadContract.test.mjs` | Real adapter matrix: short reads, growth/oversize rejection, error classification and identity swaps; candidate-length state retries |
+| `recoveryInspection.test.mjs` | Recovery traversal work budgets, complete receipt sets, ordered/suppressed staged diagnostics, fresh backup checks and per-record failure isolation with preserved sibling receipts/evidence |
 | `runtimeMetadata.test.mjs` | Marker format/absence, metadata path types, uncapped committed state, late state replacements, descriptor-bound reads and error cleanup, and worker/service ownership lifecycle |
 | `boundedReads.test.mjs` | Descriptor primitive and mutation/recovery/real HTTP consequences, including the second-open result retry-flush race |
 | `resultPublication.test.mjs` | Result publication: exact retry/open and pre-publication identities, flush/close ordering, preserved candidates, and real MCP refusal without completion or token retirement |

@@ -148,13 +148,13 @@ export function listWorkspace(grant,path,{cursor,limit=500}={}) {
 // Read recovery records without replaying mutations. Malformed records belong to
 // the affected task, not a reason to disable unrelated tasks in the shared worker.
 export function inspectRecovery(dir, taskId) {
-  const recoveryRoot=resolve(dir,'recovery'), recovery=resolve(recoveryRoot,taskId), receipts=[], unresolved=[];
+  const recoveryRoot=resolve(dir,'recovery'), recovery=resolve(recoveryRoot,taskId), receipts=[], unresolved=new Set();
   let entries;
   try {
     // Check the shared parent as well: a plain task directory can sit behind a junction/symlink.
     for(const directory of [recoveryRoot,recovery]) {
       const stat=metadata(directory);
-      if(!stat)return {receipts,unresolved};
+      if(!stat)return {receipts,unresolved:[]};
       if(!stat.isDirectory()||stat.isSymbolicLink())throw Error('invalid recovery directory');
     }
     entries=readdirSync(recovery).filter(name=>name.endsWith('.json')||name.endsWith('.json.tmp')).sort();
@@ -166,12 +166,12 @@ export function inspectRecovery(dir, taskId) {
       // A staged applied record is evidence, never authority to replay or
       // promote a mutation. A prepared/invalid final journal already diagnoses
       // this operation; otherwise expose even an orphaned or conflicting stage.
-      if(!unresolved.includes(journal.slice(0,-4)))unresolved.push(journal);
+      if(!unresolved.has(journal.slice(0,-4)))unresolved.add(journal);
       continue;
     }
     try {
-      const stat=metadata(journal);
-      if(!stat?.isFile()||stat.isSymbolicLink()||stat.nlink!==1||stat.size>MAX_BYTES)throw Error('invalid journal file');
+      // snapshot owns named/opened type, link, size and identity checks.
+      // Do not repeat a weaker metadata pass before the same bounded read.
       const entry=JSON.parse(snapshot(journal).text);
       if(!entry||typeof entry!=='object'||Array.isArray(entry)||entry.state!=='applied'
           ||typeof entry.operation!=='string'||!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(entry.operation)
@@ -183,15 +183,11 @@ export function inspectRecovery(dir, taskId) {
           ||(action==='delete'?afterSha256!==null:!digest(afterSha256)))throw Error('invalid receipt');
       // The path recorded in a receipt is not proof that its original bytes
       // still exist. Reject link-backed originals and verify the actual bytes.
-      if(backup!==null) {
-        const original=metadata(backup);
-        if(!original?.isFile()||original.isSymbolicLink()||original.nlink!==1
-            ||snapshot(backup).sha256!==beforeSha256)throw Error('missing or invalid original backup');
-      }
+      if(backup!==null && snapshot(backup).sha256!==beforeSha256)throw Error('missing or invalid original backup');
       receipts.push({operation,path,action,beforeSha256,afterSha256,backup});
-    } catch {unresolved.push(journal);}
+    } catch {unresolved.add(journal);}
   }
-  return {receipts,unresolved};
+  return {receipts,unresolved:[...unresolved]};
 }
 
 export function changeWorkspace(grant,dir,taskId,{path,text,expectedSha256,oldText},deleting=false) {
