@@ -49,9 +49,13 @@ export function configuration(env = process.env, { requireExplicitDataDir = fals
 
 // Task IDs select work on the authenticated controller; they do not grant MCP access.
 function taskIds(ids) {
-  if (!Array.isArray(ids) || !ids.length || ids.some(id => typeof id !== 'string' || !/^[a-zA-Z0-9_-]{1,80}$/.test(id)))
+  if (!Array.isArray(ids) || !ids.length) throw Error('nonempty task IDs required');
+  // Validate the snapshot used on the wire, not a separate traversal that skips
+  // holes or rereads caller accessors before Set consumes different values.
+  const selected = [...new Set(ids)];
+  if (!selected.length || selected.some(id => typeof id !== 'string' || !/^[a-zA-Z0-9_-]{1,80}$/.test(id)))
     throw Error('nonempty task IDs required');
-  return [...new Set(ids)];
+  return selected;
 }
 
 export async function request(action, payload, config = configuration(), { signal, timeoutMs = action === 'wait' ? 60000 : 5000 } = {}) {
