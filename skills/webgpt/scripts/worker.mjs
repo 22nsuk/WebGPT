@@ -148,8 +148,8 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
   };
   const revoke=t=>{delete t.token;t.inputs={};t.instructions='';};
   const recoveryFor=task=>{
-    const recovery=inspectRecovery(dir,task.id);
-    const directory=resolve(dir,'recovery',task.id), unresolved=new Set(recovery.unresolved);
+    const id=task.id,recovery=inspectRecovery(dir,id);
+    const directory=resolve(dir,'recovery',id), unresolved=new Set(recovery.unresolved);
     // inspectRecovery binds each validated operation to its unique journal name.
     // Index candidates for this inspection only; an ID match is not receipt equality.
     const byOperation=new Map(recovery.receipts.map(receipt=>[receipt.operation,receipt]));
@@ -165,7 +165,8 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
           ?resolve(directory,operation+'.json'):directory);
       }
     }
-    return {...recovery,unresolved:[...unresolved],unrecorded};
+    return {...recovery,unresolved:[...unresolved],
+      unrecorded:Array.from(unrecorded,receipt=>resolve(directory,receipt.operation+'.json'))};
   };
   // Recover recorded mutations; never guess whether an interrupted mutation was applied.
   for(const t of tasks){
@@ -202,19 +203,28 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
   };
   const flagUnrecordedChanges=task=>{
     const {unrecorded,unresolved}=recoveryFor(task);
-    const pending=new Set([...(task.recoveryRequired??[]),...unresolved]);
-    for(const receipt of unrecorded)
-      pending.add(resolve(dir,'recovery',task.id,receipt.operation+'.json'));
+    const pending=new Set([...(task.recoveryRequired??[]),...unresolved,...unrecorded]);
     // This safety block intentionally stays live even if state storage is unavailable.
     if(pending.size){task.recoveryRequired=[...pending];wake();}
     return unresolved;
   };
-  const reconciliationTask=(t,journalIssues=recoveryFor(t).unresolved)=>({
-    id:t.id,status:t.status,collected:t.collected,discarded:t.discarded??false,nextCheck:t.nextCheck,
-    artifact:t.artifact??null,sha256:t.sha256??null,changes:t.changes??[],
-    workspace:t.workspace?{root:t.workspace.root,mode:t.workspace.mode,device:t.workspace.device,inode:t.workspace.inode}:null,
-    recoveryRequired:t.recoveryRequired??[],journalIssues,pendingResults:inspectPendingResults(t,dir)
-  });
+  const reconciliationTask=(t,journalIssues)=>{
+    if(journalIssues===undefined){
+      // Terminal tasks skip the running-task quarantine and startup adoption.
+      // A valid journal absent from state is still unresolved for review and
+      // collection. Report both directions without mutating the retained task.
+      const {unresolved,unrecorded}=recoveryFor(t);
+      // Keep an existing directory-wide diagnostic instead of child noise.
+      journalIssues=unresolved.includes(resolve(dir,'recovery',t.id))
+        ?unresolved:[...new Set([...unresolved,...unrecorded])];
+    }
+    return {
+      id:t.id,status:t.status,collected:t.collected,discarded:t.discarded??false,nextCheck:t.nextCheck,
+      artifact:t.artifact??null,sha256:t.sha256??null,changes:t.changes??[],
+      workspace:t.workspace?{root:t.workspace.root,mode:t.workspace.mode,device:t.workspace.device,inode:t.workspace.inode}:null,
+      recoveryRequired:t.recoveryRequired??[],journalIssues,pendingResults:inspectPendingResults(t,dir)
+    };
+  };
   // The controller owns both the decision and the state transition. No await or
   // event-loop yield may split these checks from persist. This serializes worker
   // requests, not arbitrary external filesystem writers or power-loss recovery.
