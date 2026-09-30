@@ -7,7 +7,7 @@ import { readBoundedFile, readBytesUpTo, readUnboundedFile } from './bounded-rea
 
 export const fault = (code, message) => Object.assign(Error(message), { code, retryable: false });
 const record = value => value !== null && typeof value === 'object' && !Array.isArray(value);
-const stat = path => { try { return lstatSync(path); } catch (e) { if (e.code === 'ENOENT') return null; throw e; } };
+const stat = (path, options) => { try { return lstatSync(path, options); } catch (e) { if (e.code === 'ENOENT') return null; throw e; } };
 
 function readOwner(lock) {
   // Preserve native owner-lookup I/O errors before the legacy unreadable-owner
@@ -118,14 +118,14 @@ export function assertNoStateStage(path) {
 // reuse a regular private single-link file, with a new flush before publication.
 export function writeStateBytes(path, bytes) {
   if (!Buffer.isBuffer(bytes)) throw TypeError('state bytes must be a Buffer');
-  const temporary = path + '.tmp';
+  const temporary = path + '.tmp', size = BigInt(bytes.length);
   let fd, created = false;
   // Check before opening: on Windows, exclusive creation through a dangling
   // symlink can create its target even though the open ultimately fails.
-  const info = stat(temporary);
+  const info = stat(temporary, { bigint: true });
   if (info) {
-    if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || info.size !== bytes.length
-        || (process.platform !== 'win32' && (info.mode & 0o077))) throw stateStageConflict();
+    if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1n || info.size !== size
+        || (process.platform !== 'win32' && (info.mode & 0o077n))) throw stateStageConflict();
     fd = openSync(temporary, constants.O_RDWR | constants.O_NOFOLLOW);
   } else {
     try {
@@ -138,16 +138,19 @@ export function writeStateBytes(path, bytes) {
   }
   let staged;
   try {
-    staged = fstatSync(fd);
-    if (!staged.isFile() || staged.nlink !== 1
-        || (process.platform !== 'win32' && (staged.mode & 0o077))) throw stateStageConflict();
+    staged = fstatSync(fd, { bigint: true });
+    if (!staged.isFile() || staged.nlink !== 1n
+        || (process.platform !== 'win32' && (staged.mode & 0o077n))) throw stateStageConflict();
+    // Bind a retry to the named candidate before reading or flushing it. Keep
+    // full-width identities through the final publication check, not Numbers.
+    if (info && (staged.dev !== info.dev || staged.ino !== info.ino)) throw stateStageConflict();
     if (created) writeFileSync(fd, bytes);
-    else if (staged.size !== bytes.length || !readBytesUpTo(fd, bytes.length + 1).equals(bytes)) throw stateStageConflict();
+    else if (staged.size !== size || !readBytesUpTo(fd, bytes.length + 1).equals(bytes)) throw stateStageConflict();
     fsyncSync(fd); // Required on retries too: a previous flush may have failed.
   } finally { closeSync(fd); }
-  const current = stat(temporary);
-  if (!current?.isFile() || current.isSymbolicLink() || current.nlink !== 1
-      || current.dev !== staged.dev || current.ino !== staged.ino || current.size !== bytes.length)
+  const current = stat(temporary, { bigint: true });
+  if (!current?.isFile() || current.isSymbolicLink() || current.nlink !== 1n
+      || current.dev !== staged.dev || current.ino !== staged.ino || current.size !== size)
     throw stateStageConflict();
   renameSync(temporary, path);
   // On write/flush/rename failure keep the candidate; do not publish caller state

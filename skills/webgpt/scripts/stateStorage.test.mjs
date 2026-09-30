@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { syncBuiltinESMExports } from 'node:module';
 import { assertNoStateStage, writeStateBytes, startupExitCode } from './runtime.mjs';
+import { observeFileRead } from './test-fixtures/file-read.mjs';
 
 const prior = Buffer.from('["committed"]');
 const next = Buffer.from('["next 한국어 🧪"]');
@@ -180,6 +181,81 @@ test('state stage conflicts have a non-restartable storage exit and contain no f
     return true;
   });
 });
+
+// State publication owns a read/write descriptor, not the shared read-only opener.
+// Keep native I/O and byte comparisons real; only full-width identities are injected.
+test('state writer rejects a same-byte stage replaced before retry open', t => {
+  const f = files(t), held = f.stage + '.held', replacement = f.stage + '.replacement';
+  fs.writeFileSync(f.stage, next, { mode: 0o600 });
+  fs.writeFileSync(replacement, next, { mode: 0o600 });
+  let swaps = 0, flushes = 0;
+  const trace = observeFileRead(t, f.stage, { beforeOpen() {
+    fs.renameSync(f.stage, held); fs.renameSync(replacement, f.stage); swaps++;
+  } });
+  const flush = fs.fsyncSync;
+  const mock = t.mock.method(fs, 'fsyncSync', fd => { flushes++; return flush(fd); });
+  syncBuiltinESMExports();
+  try { assert.throws(() => writeStateBytes(f.path, next), { code: 'STATE_STAGING_CONFLICT', retryable: false }); }
+  finally { t.mock.reset(); mock.mock.restore(); trace.restore(); }
+  assert.equal(swaps, 1); assert.equal(flushes, 0);
+  assert.deepEqual(trace.evidence, { opens: 1, closes: 1, bytes: 0, reads: 0 });
+  assert.deepEqual(fs.readFileSync(f.path), prior);
+  assert.deepEqual(fs.readFileSync(f.stage), next); assert.deepEqual(fs.readFileSync(held), next);
+});
+
+for (const boundary of ['retry-open', 'retry-publish', 'new-publish']) for (const property of ['dev', 'ino']) {
+  test(`state writer compares full-width ${property} at ${boundary}`, t => {
+    const first = 2n ** 60n, second = first + 1n;
+    assert.notEqual(first, second); assert.equal(Number(first), Number(second));
+    for (const changed of [false, true]) {
+      const f = files(t), held = f.stage + '.held', replacement = f.stage + '.replacement';
+      const early = boundary === 'retry-open', fresh = boundary === 'new-publish';
+      const replacedBytes = early ? next : Buffer.alloc(next.length, 120);
+      if (!fresh) fs.writeFileSync(f.stage, next, { mode: 0o600 });
+      fs.writeFileSync(replacement, replacedBytes, { mode: 0o600 });
+      let swapped = false, descriptor, flushes = 0;
+      const swap = () => { fs.renameSync(f.stage, held); fs.renameSync(replacement, f.stage); swapped = true; };
+      const trace = observeFileRead(t, f.stage, { beforeOpen: changed && early ? swap : undefined });
+      const native = { named: fs.lstatSync, opened: fs.fstatSync, close: fs.closeSync, flush: fs.fsyncSync };
+      const otherIdentity = property === 'dev' ? 'ino' : 'dev';
+      const named = t.mock.method(fs, 'lstatSync', (path, options) => {
+        const info = native.named(path, options), value = swapped ? second : first;
+        if (path === f.stage) {
+          info[property] = options?.bigint ? value : Number(value);
+          info[otherIdentity] = options?.bigint ? 1n : 1; // Isolate the identity field under test.
+        }
+        return info;
+      });
+      const opened = t.mock.method(fs, 'fstatSync', (fd, options) => {
+        const info = native.opened(fd, options), value = swapped ? second : first;
+        descriptor = fd; info[property] = options?.bigint ? value : Number(value);
+        info[otherIdentity] = options?.bigint ? 1n : 1;
+        return info;
+      });
+      const flush = t.mock.method(fs, 'fsyncSync', fd => { if (fd === descriptor) flushes++; return native.flush(fd); });
+      const close = t.mock.method(fs, 'closeSync', fd => {
+        const result = native.close(fd);
+        if (fd === descriptor && changed && !early) swap();
+        return result;
+      });
+      syncBuiltinESMExports();
+      try {
+        if (changed) assert.throws(() => writeStateBytes(f.path, next), { code: 'STATE_STAGING_CONFLICT', retryable: false });
+        else writeStateBytes(f.path, next); // Large, equal identities remain valid.
+      } finally {
+        t.mock.reset(); close.mock.restore(); flush.mock.restore(); opened.mock.restore(); named.mock.restore(); trace.restore();
+      }
+      assert.equal(swapped, changed); assert.equal(trace.evidence.opens, 1); assert.equal(trace.evidence.closes, 1);
+      assert.equal(flushes, changed && early ? 0 : 1);
+      assert.equal(trace.evidence.bytes, fresh || (changed && early) ? 0 : next.length);
+      assert.deepEqual(fs.readFileSync(f.path), changed ? prior : next);
+      if (changed) {
+        assert.deepEqual(fs.readFileSync(f.stage), replacedBytes); assert.deepEqual(fs.readFileSync(held), next);
+      } else assert.equal(fs.existsSync(f.stage), false);
+      assert.equal(fs.readFileSync(f.other, 'utf8'), 'unrelated private evidence');
+    }
+  });
+}
 
 // Exercise the real controller/MCP paths, not a second implementation of persist().
 async function workerFixture(t) {
