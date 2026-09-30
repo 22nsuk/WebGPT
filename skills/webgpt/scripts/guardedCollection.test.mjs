@@ -7,7 +7,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { syncBuiltinESMExports } from 'node:module';
 import { start } from './worker.mjs';
-import { request, collectTask } from './client.mjs';
+import { request, collectTask, reviewTask, reconcileTasks } from './client.mjs';
+import { changeWorkspace, grantWorkspace, inspectRecovery } from './workspace.mjs';
 import { callTool, controllerProxy, replyJson as json } from './test-fixtures/worker-http.mjs';
 
 const text = 'Guarded result 한국어 🧪\r\nPRIVATE_GUARD_FIXTURE';
@@ -51,6 +52,12 @@ function inject(f, kind) {
   else if (kind === 'journal') {
     const path = join(f.dir, 'recovery', 'owned'); fs.mkdirSync(path, { recursive: true });
     fs.writeFileSync(join(path, 'unresolved.json'), '{}');
+  } else if (kind === 'unrecorded-applied') {
+    // A direct fixture-owned mutation models late/restored valid evidence, not
+    // MCP authority to edit a terminal task. The real writer creates its backup.
+    fs.writeFileSync(join(f.root, 'late.txt'), text);
+    return changeWorkspace(grantWorkspace({ root: f.root, mode: 'edit' }), f.dir, 'owned',
+      { path: 'late.txt', expectedSha256: hash }, true);
   } else fs.writeFileSync(f.artifact + '.tmp', text);
 }
 async function patched(t, name, replacement, run) {
@@ -59,7 +66,7 @@ async function patched(t, name, replacement, run) {
 }
 const isCommit = req => ['/ack', '/collect'].includes(req.url);
 
-for (const kind of ['pending-result', 'journal', 'result-changed', 'result-missing']) for (const resume of [false, true]) {
+for (const kind of ['pending-result', 'journal', 'unrecorded-applied', 'result-changed', 'result-missing']) for (const resume of [false, true]) {
   test(`${resume ? 'resumed' : 'ordinary'} collection rejects ${kind} arriving after the client observation, before retirement`, async t => {
     const f = await fixture(t, { intercept: async f => {
       if (f.phase === 'before' && isCommit(f.req)) inject(f, kind);
@@ -73,6 +80,14 @@ for (const kind of ['pending-result', 'journal', 'result-changed', 'result-missi
     assert.equal(f.state().token, f.task.token); assert.equal(f.state().inputs.sample, text);
     assert.deepEqual(f.actions, [resume ? '/reconcile?id=owned' : '/wait?id=owned', '/collect']);
     assert.equal((await f.call('get_task', { token: f.task.token })).isError, false);
+    if (kind === 'unrecorded-applied') {
+      const recovery = inspectRecovery(f.dir, 'owned');
+      assert.equal(recovery.receipts.length, 1); assert.deepEqual(recovery.unresolved, []);
+      assert.deepEqual(f.state().changes, []);
+      assert.equal(fs.readFileSync(recovery.receipts[0].backup, 'utf8'), text);
+      assert.equal(fs.existsSync(join(f.root, 'late.txt')), false);
+      assert.equal(fs.readFileSync(f.artifact, 'utf8'), text);
+    }
   });
 }
 
@@ -172,18 +187,20 @@ test('legacy low-level ack is still a deliberate administrative override, not th
   assert.equal(f.state().collected, true); assert.ok(fs.existsSync(f.artifact + '.tmp'));
 });
 
-test('external evidence introduced inside filesystem publication is outside the controller serialization guarantee', async t => {
+for (const kind of ['pending-result', 'unrecorded-applied']) test(`external ${kind} inside publication remains outside serialization but is detected afterward`, async t => {
   const f = await fixture(t), rename = fs.renameSync;
   // Deterministic stand-in for an external writer between guard and rename. It
   // demonstrates the limit; normal worker requests cannot run in this stack.
   await patched(t, 'renameSync', (from, to) => {
-    if (to === f.stateFile) inject(f, 'pending-result');
+    if (to === f.stateFile) inject(f, kind);
     return rename(from, to);
   }, () => assert.rejects(collectTask('owned', f.config), { code: 'COLLECTION_UNCONFIRMED' }));
   assert.equal(f.state().collected, true); assert.equal(f.state().token, undefined);
-  assert.equal(fs.readFileSync(f.artifact + '.tmp', 'utf8'), text);
+  if (kind === 'pending-result') assert.equal(fs.readFileSync(f.artifact + '.tmp', 'utf8'), text);
+  else assert.equal(fs.readFileSync(inspectRecovery(f.dir, 'owned').receipts[0].backup, 'utf8'), text);
   assert.deepEqual(f.actions, ['/wait?id=owned', '/collect', '/reconcile?id=owned']);
-  assert.equal((await collectTask('owned', f.direct, { resume: true })).attention, 'inspect_uncommitted_result');
+  assert.equal((await collectTask('owned', f.direct, { resume: true })).attention,
+    kind === 'pending-result' ? 'inspect_uncommitted_result' : 'inspect_recovery');
 });
 
 test('the guard does not yield to an event-loop continuation before committed retirement', async t => {
@@ -222,4 +239,140 @@ test('a command whose body arrives after cancellation rechecks the latest task, 
     assert.equal(reply.status, 409); assert.equal(reply.data.code, 'COLLECTION_DISCARDED');
     assert.deepEqual(fs.readFileSync(f.stateFile), cancelled);
   } finally { upload.destroy(); await response.catch(() => {}); }
+});
+
+// Terminal tasks do not enter readiness's running-task quarantine or startup
+// receipt adoption. Their fresh read-only detail must still check both directions.
+for (const status of ['completed', 'failed', 'cancelled']) for (const phase of ['live', 'restart']) {
+  test(`unrecorded applied journal blocks ${status} review and collection at ${phase} without changing evidence`, async t => {
+    const f = await fixture(t, { status: 'running' });
+    const other = await f.admin('register', { id: 'other', instructions: '', inputs: {} });
+    const written = await f.call('write_file', { token: f.task.token, path: 'recorded.txt', text, expectedSha256: null });
+    assert.equal(written.isError, false);
+    const recorded = written.structuredContent;
+    assert.equal((await f.call('submit_result', { token: f.task.token, status, summary: 'done', result: text })).isError, false);
+    assert.equal((await reviewTask('owned', f.config)).review.content, text, 'matching receipts remain reviewable');
+    const receipt = inject(f, 'unrecorded-applied');
+    const journal = join(f.dir, 'recovery', 'owned', receipt.operation + '.json');
+    const journalBytes = fs.readFileSync(journal), terminal = f.state();
+    if (phase === 'restart') await f.restart();
+    assert.deepEqual(f.state(), terminal, 'terminal startup must not adopt the extra receipt');
+    const before = fs.readFileSync(f.stateFile); // Unrelated running tasks may gain startup diagnostics.
+    assert.equal((await f.admin('ready')).ok, true, 'terminal attention is not global active-task quarantine');
+    const inspected = await reconcileTasks(f.config, { ids: ['owned'] });
+    assert.deepEqual(inspected.tasks[0].journalIssues, [journal]);
+    assert.deepEqual(inspected.tasks[0].recoveryRequired, [], 'read-only detail does not mutate quarantine');
+    assert.equal(inspected.tasks[0].attention, 'inspect_recovery');
+    const review = await reviewTask('owned', f.config);
+    assert.equal(review.review, null); assert.equal(review.attention, 'inspect_recovery');
+    assert.equal(review.browserChecked, false);
+    const reply = await f.post({ ...f.payload, expectedStatus: status });
+    assert.equal(reply.status, 409); assert.equal(reply.data.code, 'COLLECTION_RECOVERY_REQUIRED');
+    assert.deepEqual(reply.data.reconciliation.journalIssues, [journal]);
+    for (const resume of [false, true])
+      await assert.rejects(collectTask('owned', f.config, { resume }), { code: 'COLLECTION_RECOVERY_REQUIRED' });
+    assert.deepEqual(fs.readFileSync(f.stateFile), before);
+    assert.deepEqual(f.state().changes, [recorded]); assert.equal(f.state().token, f.task.token);
+    assert.equal((await f.call('read_input', { token: f.task.token, name: 'sample' })).structuredContent.text, text);
+    assert.deepEqual(fs.readFileSync(journal), journalBytes);
+    assert.equal(fs.readFileSync(receipt.backup, 'utf8'), text);
+    assert.equal(fs.readFileSync(f.artifact, 'utf8'), text);
+    assert.equal(fs.readFileSync(join(f.root, 'recorded.txt'), 'utf8'), text);
+    assert.equal(fs.existsSync(join(f.root, 'late.txt')), false, 'no replay of the fixture deletion');
+    const owned = f.state();
+    assert.equal((await f.call('submit_result', { token: other.token, status: 'completed', summary: 'other', result: 'other result' })).isError, false);
+    assert.equal((await collectTask('other', f.config)).collected, true);
+    assert.deepEqual(f.state(), owned, 'unrelated collection must not alter this task');
+  });
+}
+
+test('running-task startup still adopts valid unrecorded receipts before normal completion and collection', async t => {
+  const f = await fixture(t, { status: 'running' }), receipt = inject(f, 'unrecorded-applied');
+  await assert.rejects(f.admin('ready'), error => error.details.issues.includes('RECOVERY_REQUIRED'));
+  await f.restart();
+  assert.deepEqual(f.state().changes, [receipt]); assert.deepEqual(f.state().recoveryRequired, []);
+  assert.equal((await f.admin('ready')).ok, true);
+  assert.equal((await f.call('submit_result', { token: f.task.token, status: 'completed', summary: 'done', result: text })).isError, false);
+  assert.equal((await collectTask('owned', f.config)).collected, true);
+  assert.equal(fs.readFileSync(receipt.backup, 'utf8'), text);
+});
+
+for (const disposition of ['collected', 'discarded', 'cancelled-without-result']) {
+  test(`unrecorded journal attention survives ${disposition} without reviving retired authority`, async t => {
+    const f = await fixture(t, { status: disposition === 'cancelled-without-result' ? 'running' : 'completed' });
+    if (disposition === 'collected') await collectTask('owned', f.config);
+    else await f.admin('cancel', { id: 'owned' });
+    const receipt = inject(f, 'unrecorded-applied');
+    const journal = join(f.dir, 'recovery', 'owned', receipt.operation + '.json');
+    const before = fs.readFileSync(f.stateFile);
+    const resumed = await collectTask('owned', f.config, { resume: true });
+    assert.equal(resumed.attention, 'inspect_recovery');
+    assert.deepEqual(resumed.journalIssues, [journal]); assert.equal(resumed.collected, true);
+    assert.equal(resumed.disposition, disposition === 'collected' ? 'already_collected'
+      : disposition === 'discarded' ? 'discarded' : 'cancelled_without_result');
+    assert.equal((await f.call('get_task', { token: f.task.token })).isError, true);
+    assert.deepEqual(fs.readFileSync(f.stateFile), before);
+    assert.equal(f.state().token, undefined); assert.deepEqual(f.state().inputs, {});
+    assert.equal(fs.readFileSync(receipt.backup, 'utf8'), text);
+  });
+}
+
+// A lost reply is not permission to repeat a committed retirement. The fresh
+// post-commit read must surface late valid evidence even without HTTP success.
+test('unrecorded journal after a lost collection reply stays uncertain without another write', async t => {
+  let receipt, injected = 0;
+  const f = await fixture(t, { intercept: async f => {
+    if (f.phase === 'after' && f.req.url === '/collect') {
+      assert.equal(f.data.collected, true);
+      receipt = inject(f, 'unrecorded-applied'); injected++;
+      f.res.destroy(); return true;
+    }
+  } });
+  await assert.rejects(collectTask('owned', f.config), error => {
+    assert.equal(error.code, 'COLLECTION_UNCONFIRMED');
+    assert.equal(error.acknowledgment, 'unknown'); return true;
+  });
+  assert.equal(injected, 1);
+  assert.deepEqual(f.actions, ['/wait?id=owned', '/collect', '/reconcile?id=owned']);
+  const committed = fs.readFileSync(f.stateFile);
+  assert.equal(f.state().collected, true); assert.equal(f.state().token, undefined);
+  assert.deepEqual(f.state().inputs, {}); assert.deepEqual(f.state().changes, []);
+  const resumed = await collectTask('owned', f.config, { resume: true });
+  assert.equal(resumed.disposition, 'already_collected'); assert.equal(resumed.attention, 'inspect_recovery');
+  assert.deepEqual(resumed.journalIssues, [join(f.dir, 'recovery', 'owned', receipt.operation + '.json')]);
+  assert.deepEqual(f.actions, ['/wait?id=owned', '/collect', '/reconcile?id=owned', '/reconcile?id=owned']);
+  assert.deepEqual(fs.readFileSync(f.stateFile), committed);
+  assert.equal(fs.readFileSync(receipt.backup, 'utf8'), text);
+  assert.equal(fs.readFileSync(f.artifact, 'utf8'), text);
+  assert.equal((await f.call('get_task', { token: f.task.token })).isError, true);
+});
+
+test('full and scoped terminal inspection deduplicate conflicts with one fresh read per recovery file', async t => {
+  const f = await fixture(t, { status: 'running' });
+  const written = await f.call('write_file', { token: f.task.token, path: 'recorded.txt', text, expectedSha256: null });
+  assert.equal(written.isError, false);
+  const recorded = written.structuredContent;
+  assert.equal((await f.call('submit_result', { token: f.task.token, status: 'completed', summary: 'done', result: text })).isError, false);
+  const late = inject(f, 'unrecorded-applied');
+  const journal = receipt => join(f.dir, 'recovery', 'owned', receipt.operation + '.json');
+  // This valid journal mismatches the same-ID state receipt: it is both a
+  // forward conflict and an unmatched journal, but should be reported once.
+  fs.writeFileSync(journal(recorded), JSON.stringify({ ...recorded, afterSha256: '0'.repeat(64), state: 'applied' }));
+  const evidence = new Map([journal(recorded), journal(late), late.backup].map(file => [file, fs.readFileSync(file)]));
+  const state = fs.readFileSync(f.stateFile), nativeOpen = fs.openSync;
+  for (const scope of [undefined, { ids: ['owned'] }]) {
+    const opens = new Map();
+    const result = await patched(t, 'openSync', (file, ...args) => {
+      if (evidence.has(file)) opens.set(file, (opens.get(file) ?? 0) + 1);
+      return nativeOpen(file, ...args);
+    }, () => f.admin('reconcile', scope));
+    assert.deepEqual(result.tasks[0].journalIssues, [journal(recorded), journal(late)]);
+    assert.deepEqual(result.tasks[0].recoveryRequired, []);
+    assert.deepEqual(result.tasks[0].changes, [recorded]);
+    assert.equal(result.health.ok, true);
+    assert.deepEqual([...opens.keys()].sort(), [...evidence.keys()].sort());
+    for (const count of opens.values()) assert.equal(count, 1);
+    for (const [file, bytes] of evidence) assert.deepEqual(fs.readFileSync(file), bytes);
+    assert.deepEqual(fs.readFileSync(f.stateFile), state);
+  }
 });
