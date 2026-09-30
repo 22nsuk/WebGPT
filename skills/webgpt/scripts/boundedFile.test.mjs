@@ -214,7 +214,7 @@ for (const property of ['dev', 'ino']) test(`bounded file compares full-width ${
 
 // A synchronous FIFO open can stall the test process before fstat rejects it.
 // Use a disposable child with a hard stop; timeout is a failure, never a pass.
-test('bounded file rejects a known or substituted FIFO without waiting for a writer',
+for (const reader of ['bounded', 'state']) test(`${reader} file rejects a known or substituted FIFO without waiting for a writer`,
   { skip: process.platform === 'win32' ? 'POSIX filesystem FIFO contract' : false }, t => {
     const { file, bytes } = fixture(t), fifo = file + '.fifo', original = file + '.original';
     const made = spawnSync('mkfifo', [fifo], { encoding: 'utf8', timeout: 10000, killSignal: 'SIGKILL' });
@@ -226,12 +226,16 @@ test('bounded file rejects a known or substituted FIFO without waiting for a wri
       import assert from 'node:assert/strict';
       import fs from 'node:fs';
       import { readBoundedFile } from ${JSON.stringify(new URL('./bounded-read.mjs', import.meta.url).href)};
+      import { readStateBytes } from ${JSON.stringify(new URL('./runtime.mjs', import.meta.url).href)};
       import { observeFileRead } from ${JSON.stringify(new URL('./test-fixtures/file-read.mjs', import.meta.url).href)};
       const file = ${JSON.stringify(file)}, fifo = ${JSON.stringify(fifo)}, original = ${JSON.stringify(original)};
       const invalid = reason => Object.assign(Error('FIFO rejected'), { code: 'FIXTURE_INVALID', reason });
+      const read = ${JSON.stringify(reader)} === 'state' ? readStateBytes : path => readBoundedFile(path, 4096, invalid);
+      const rejected = ${JSON.stringify(reader)} === 'state'
+        ? { code: 'STATE_INVALID', retryable: false } : { code: 'FIXTURE_INVALID', reason: 'metadata' };
       test('native FIFO refusal and descriptor cleanup', t => {
         const known = observeFileRead(t, fifo);
-        try { assert.throws(() => readBoundedFile(fifo, 4096, invalid), { code: 'FIXTURE_INVALID', reason: 'metadata' }); }
+        try { assert.throws(() => read(fifo), rejected); }
         finally { known.restore(); }
         assert.deepEqual(known.evidence, { opens: 0, closes: 0, bytes: 0, reads: 0 });
         let swaps = 0;
@@ -241,7 +245,7 @@ test('bounded file rejects a known or substituted FIFO without waiting for a wri
           swaps++;
           process.stdout.write('FIFO_SWAPPED\\n');
         } });
-        try { assert.throws(() => readBoundedFile(file, 4096, invalid), { code: 'FIXTURE_INVALID', reason: 'metadata' }); }
+        try { assert.throws(() => read(file), rejected); }
         finally { trace.restore(); }
         assert.equal(swaps, 1);
         assert.deepEqual(trace.evidence, { opens: 1, closes: 1, bytes: 0, reads: 0 });

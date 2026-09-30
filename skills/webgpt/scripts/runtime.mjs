@@ -2,8 +2,8 @@
 import { randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
 import { isAbsolute, resolve } from 'node:path';
-import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs';
-import { readBoundedFile, readBytesUpTo } from './bounded-read.mjs';
+import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, renameSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs';
+import { readBoundedFile, readBytesUpTo, readUnboundedFile } from './bounded-read.mjs';
 
 export const fault = (code, message) => Object.assign(Error(message), { code, retryable: false });
 const record = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -97,11 +97,11 @@ export function acquireRuntimeLock(dir, { host = hostname(), probe = processStat
 }
 
 export function readStateBytes(path) {
-  const info = stat(path);
-  if (!info) return null;
-  if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1)
-    throw fault('STATE_INVALID', 'state.json must be a regular single-link file; preserve evidence');
-  return readFileSync(path);
+  const saved = readUnboundedFile(path,
+    reason => fault('STATE_INVALID', reason === 'identity'
+      ? 'state.json identity changed while opening; preserve evidence'
+      : 'state.json must be a regular single-link file; preserve evidence'));
+  return saved?.bytes ?? null;
 }
 
 // An interrupted state stage is evidence, not authority to replay a transition.

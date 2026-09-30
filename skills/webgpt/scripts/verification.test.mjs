@@ -11,6 +11,7 @@ import { syncBuiltinESMExports } from 'node:module';
 import { start } from './worker.mjs';
 import { request, collectTask } from './client.mjs';
 import { callTool, controllerProxy, replyJson } from './test-fixtures/worker-http.mjs';
+import { observeFileRead } from './test-fixtures/file-read.mjs';
 import { prepareVerification, checkVerification, verificationScenarios } from './verification.mjs';
 import { registerDispatch, beginDispatch, confirmDispatch, textDigest, inspectDispatchEvidence } from './dispatch.mjs';
 
@@ -307,16 +308,17 @@ test('write readiness failure is independent, but unavailable current state bloc
     assert.equal(report.localVerdict, 'PASS');
   } finally { mock.mock.restore(); syncBuiltinESMExports(); }
   assert.equal((await cliCheck(f)).code, 0, 'sticky write failure is still separate from freshly verified state');
-  const read = fs.readFileSync, stateFile = join(f.dir, 'state.json');
-  const unreadable = t.mock.method(fs, 'readFileSync', (file, ...args) => {
-    if (file === stateFile) throw Object.assign(Error('fixture unreadable state'), { code: 'EIO' });
-    return read(file, ...args);
-  });
-  syncBuiltinESMExports();
+  const stateFile = join(f.dir, 'state.json');
+  const unreadable = observeFileRead(t, stateFile, { afterStat() {
+    throw Object.assign(Error('fixture unreadable state'), { code: 'EIO' });
+  } });
   try {
     const report = await f.check();
     assert.equal(report.checks.controllerState, 'UNAVAILABLE'); assert.equal(report.localVerdict, 'BLOCKED');
-  } finally { unreadable.mock.restore(); syncBuiltinESMExports(); }
+  } finally { unreadable.restore(); }
+  assert.ok(unreadable.evidence.opens > 0, 'the real current-state read reached the injected failure');
+  assert.equal(unreadable.evidence.opens, unreadable.evidence.closes);
+  assert.equal(unreadable.evidence.bytes, 0);
   // A subsequent check verifies the bytes again; a prior PASS is not cached.
   assert.equal((await cliCheck(f)).code, 0);
   fs.writeFileSync(stateFile, 'invalid current state');
