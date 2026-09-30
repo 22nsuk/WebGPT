@@ -95,7 +95,20 @@ There is no automatic state migration or change to valid receipt formats.
   remaining candidates are preserved. Equal large identities are valid, and no
   BigInt is persisted or returned. These are observations, not an atomic path
   binding: in-place changes and replacement after the final check remain outside
-  this guarantee. Result/audit writers and persisted workspace IDs are separate.
+  this guarantee. Audit writers and persisted workspace IDs are separate.
+- Result publication owns one read/write descriptor for new candidates and
+  explicit retries. It retains the shared reader's opening `BigIntStats` for a
+  retry, compares exact device/inode before reading or flushing, and checks the
+  current path's regular-file type, single link, full-width identity and expected
+  size after flush and close. Only then may a temporary candidate be renamed or
+  an existing final candidate yield a receipt. Identity/content changes use
+  `RESULT_CONFLICT`; invalid metadata remains `RESULT_INVALID`, and native I/O
+  failures propagate. Candidates are preserved, not deleted or automatically
+  replayed. Metadata stays internal; result receipts and pending-result reports
+  keep their existing shapes. This is not an atomic filesystem transaction:
+  same-inode in-place changes, replacement after the final observation, and
+  external destination races remain outside the cooperative runtime-lock model.
+  Later result verification and guarded collection are still required.
 - `readStateBytes` continues to read the variable-sized committed task inventory
   through the shared checked descriptor without a newly imposed fixed quota.
   A late different-file or hardlink replacement is `STATE_INVALID`; a late
@@ -128,6 +141,7 @@ Keep one owner per assertion family, not one copy per historical fix:
 | `fileReadContract.test.mjs` | Real adapter matrix: short reads, growth/oversize rejection, error classification and identity swaps; candidate-length state retries |
 | `runtimeMetadata.test.mjs` | Marker format/absence, metadata path types, uncapped committed state, late state replacements, descriptor-bound reads and error cleanup, and worker/service ownership lifecycle |
 | `boundedReads.test.mjs` | Descriptor primitive and mutation/recovery/real HTTP consequences, including the second-open result retry-flush race |
+| `resultPublication.test.mjs` | Result publication: exact retry/open and pre-publication identities, flush/close ordering, preserved candidates, and real MCP refusal without completion or token retirement |
 | `stateStorage.test.mjs` | State publication: private exclusive creation, exact retry/open and pre-rename identities, byte comparison, mandatory flush, descriptor closure, preserved conflicting evidence and controller/retirement consequences |
 | `workspace.test.mjs` | Workspace CRUD, path encoding, read-only mutation refusal and preserved bytes/revisions, retained receipt paths and actual MCP consequences |
 

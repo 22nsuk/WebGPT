@@ -15,13 +15,13 @@ function paths(dir, id) {
   return [artifact, artifact + '.tmp'];
 }
 function regular(info) {
-  if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || info.size > MAX_BYTES)
+  if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1n || info.size > MAX_BYTES)
     throw fault('RESULT_INVALID', 'saved result must be a regular single-link file <=1 MiB');
 }
 function readCandidate(file) {
   const saved = readBoundedFile(file, MAX_BYTES, reason => fault('RESULT_INVALID',
     reason === 'overflow' ? 'saved result exceeds 1 MiB' : 'saved result must be a regular single-link file <=1 MiB'));
-  return saved ? { bytes: saved.bytes, sha256: digest(saved.bytes) } : null;
+  return saved ? { bytes: saved.bytes, stat: saved.stat, sha256: digest(saved.bytes) } : null;
 }
 
 function verifiedResultBytes(event, dir) {
@@ -47,15 +47,28 @@ export function readVerifiedResult(event, dir) {
   catch { throw fault('RESULT_INVALID', 'saved result is not valid UTF-8'); }
 }
 
-function flushCandidate(file, bytes) {
-  // A previous attempt might have written every byte but failed during flush.
-  // Reusing those bytes must still satisfy the same flush-before-state ordering.
-  const fd = openSync(file, constants.O_RDWR | constants.O_NOFOLLOW);
+function prepareCandidate(file, bytes, candidate) {
+  // Own the descriptor for both new bytes and explicit retries. A retry must
+  // still be the initially read file before any further reads or flushes.
+  const fd = openSync(file, constants.O_RDWR | constants.O_NOFOLLOW | (constants.O_NONBLOCK ?? 0)
+    | (candidate ? 0 : constants.O_CREAT | constants.O_EXCL), 0o600);
+  const conflict = () => fault('RESULT_CONFLICT', 'result changed before publication; preserve evidence');
+  let opened;
   try {
-    regular(fstatSync(fd));
-    if (!readBytesUpTo(fd, MAX_BYTES + 1).equals(bytes)) throw fault('RESULT_CONFLICT', 'result changed before publication; preserve evidence');
-    fsyncSync(fd);
+    opened = fstatSync(fd, { bigint: true });
+    regular(opened);
+    if (candidate) {
+      if (opened.dev !== candidate.stat.dev || opened.ino !== candidate.stat.ino) throw conflict();
+      if (!readBytesUpTo(fd, MAX_BYTES + 1).equals(bytes)) throw conflict();
+    } else writeFileSync(fd, bytes);
+    fsyncSync(fd); // Required even when a previous attempt wrote all bytes.
   } finally { closeSync(fd); }
+  // A path can now name a different file, including after successful flush.
+  // Do not rename it or return a receipt for bytes that belong to the old file.
+  const current = lstatSync(file, { bigint: true });
+  regular(current);
+  if (current.dev !== opened.dev || current.ino !== opened.ino || current.size !== BigInt(bytes.length)) throw conflict();
+  // This remains an observation, not isolation from external filesystem writers.
 }
 
 export function storeResult(dir, id, text) {
@@ -69,11 +82,8 @@ export function storeResult(dir, id, text) {
     if (candidate && !candidate.bytes.equals(bytes))
       throw fault('RESULT_CONFLICT', 'uncommitted result differs; preserve evidence and inspect before resubmitting');
   }
-  if (saved || staged) flushCandidate(saved ? artifact : temporary, bytes);
-  if (!saved) {
-    if (!staged) writeFileSync(temporary, bytes, { flag: 'wx', mode: 0o600, flush: true });
-    renameSync(temporary, artifact);
-  }
+  prepareCandidate(saved ? artifact : temporary, bytes, saved ?? staged);
+  if (!saved) renameSync(temporary, artifact);
   return { artifact, sha256: digest(bytes) };
 }
 
