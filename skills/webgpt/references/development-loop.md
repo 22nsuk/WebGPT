@@ -85,6 +85,17 @@ events may describe the same cause; `observedFailures` is **not a test count**.
 The test name/file/line identify its declaration; the stack may identify the actual
 assertion. TODO/skip failures are excluded, not relabeled passing checks.
 
+Failure entries are written as they arrive, inside one bounded JSON document,
+not buffered until the last test finishes. Normal stream exhaustion still produces
+one version-1 JSONL record with the same fields and final counters; consumers must
+parse the complete document rather than depend on object-key or chunk order.
+If the stream throws, stalls or its process is killed, an already emitted prefix
+may survive but lacks final counters and closing syntax. Treat it as incomplete
+failure evidence, not a JSON report; do not append guessed totals or closing braces.
+The reporter cannot expose events Node has not delivered, force pipe/file flushing,
+or guarantee crash durability. Actual exit status, teardown and full logs remain
+separate evidence. Interrupted output may still contain private assertion text.
+
 An empty/missing report is **not PASS**: startup crashes, interruption or other
 process failures may emit no test events. `processExitCode` and `revision` are
 intentionally null; attach the parent's real process and tested-revision evidence.
