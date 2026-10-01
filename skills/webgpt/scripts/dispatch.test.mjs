@@ -502,7 +502,7 @@ test('an injected sending-publication failure prevents any browser side effect',
     import { syncBuiltinESMExports } from 'node:module';
     import { dispatchPrompt } from ${JSON.stringify(moduleUrl)};
     const original = fs.renameSync;
-    const ledger = fs.realpathSync(process.argv[1]);
+    const ledger = fs.realpathSync.native(process.argv[1]);
     fs.renameSync = (from, to) => {
       // Target the send barrier itself, independent of earlier checkpoints.
       if (to === ledger && JSON.parse(fs.readFileSync(from, 'utf8')).dispatch.state === 'sending') {
