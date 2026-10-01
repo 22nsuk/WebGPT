@@ -159,11 +159,27 @@ function run(argv) {
   });
   const text = serializeArtifactInput(buildArtifactInput({ source: values.source, label: values.label,
     view: values.view, ranges, expectedSha256: values['expected-sha256'] }));
-  // Validate all evidence before exclusive creation. A failed write is preserved, never retried or removed.
-  const fd = fs.openSync(values.out, 'wx', 0o600);
-  try { fs.writeFileSync(fd, text, 'utf8'); fs.fsyncSync(fd); }
-  finally { fs.closeSync(fd); }
-  process.stdout.write(JSON.stringify({ ok: true, inputBytes: Buffer.byteLength(text), sha256: hash(text) }) + '\n');
+  // Refuse every existing leaf, including a dangling link, before native create.
+  // Keep exclusive creation too: the absence observation is not a reservation.
+  if (fs.lstatSync(values.out, { throwIfNoEntry: false }))
+    fail('EEXIST', 'Output already exists; preserve it and choose a new output path.');
+  const outputChanged = () => fail('OUTPUT_CHANGED', 'Output changed while writing; preserve evidence and inspect.');
+  const inputBytes = Buffer.byteLength(text), fd = fs.openSync(values.out, 'wx', 0o600);
+  let written;
+  try {
+    const opened = fs.fstatSync(fd, { bigint: true });
+    if (!opened.isFile() || opened.nlink !== 1n || opened.size !== 0n) outputChanged();
+    fs.writeFileSync(fd, text, 'utf8'); fs.fsyncSync(fd);
+    written = fs.fstatSync(fd, { bigint: true });
+    if (!written.isFile() || written.nlink !== 1n || written.dev !== opened.dev || written.ino !== opened.ino
+        || written.size !== BigInt(inputBytes)) outputChanged();
+  } finally { fs.closeSync(fd); }
+  // An open descriptor can outlive its named output. Bind the receipt to that
+  // path after close without reopening bytes or repairing another writer's file.
+  const current = fs.lstatSync(values.out, { bigint: true, throwIfNoEntry: false });
+  // Write timestamps may settle only on close, especially on Windows.
+  if (!current?.isFile() || ['dev', 'ino', 'mode', 'nlink', 'size'].some(key => current[key] !== written[key])) outputChanged();
+  process.stdout.write(JSON.stringify({ ok: true, inputBytes, sha256: hash(text) }) + '\n');
 }
 
 function isCliEntry() {

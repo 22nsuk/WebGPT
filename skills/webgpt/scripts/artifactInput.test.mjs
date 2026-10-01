@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { buildArtifactInput, serializeArtifactInput, MAX_SOURCE_BYTES, MAX_WINDOW_BYTES, MAX_INPUT_BYTES } from './artifact-input.mjs';
@@ -335,3 +335,144 @@ test('CLI runs through a leaf symlink without confusing it with an imported modu
 });
 
 // Generic script/eval/stdin/renamed-importer checks live in cliImports.test.mjs.
+
+
+// Run the actual child CLI. Only native output I/O boundaries are instrumented;
+// mutations affect disposable files, never the source or production functions.
+function outputCli(f, hook = '') {
+  const out = join(f.dir, 'output.json'), observation = join(f.dir, 'output-observation.json');
+  const preload = join(f.dir, 'output-preload.mjs');
+  fs.writeFileSync(preload, `import fs from 'node:fs';
+    const out = ${JSON.stringify(out)};
+    const saved = { open: fs.openSync, write: fs.writeFileSync, sync: fs.fsyncSync, close: fs.closeSync, stat: fs.lstatSync };
+    const counts = { opens: 0, writes: 0, flushes: 0, closes: 0 }; let outputFd;
+    fs.openSync = (file, ...args) => {
+      if (file === out) counts.opens++;
+      const fd = saved.open(file, ...args); if (file === out) outputFd = fd; return fd;
+    };
+    fs.writeFileSync = (file, ...args) => { if (file === outputFd) counts.writes++; return saved.write(file, ...args); };
+    fs.fsyncSync = fd => { if (fd === outputFd) counts.flushes++; return saved.sync(fd); };
+    fs.closeSync = fd => { if (fd === outputFd) counts.closes++; return saved.close(fd); };
+    ${hook}
+    process.once('exit', () => saved.write(${JSON.stringify(observation)}, JSON.stringify(counts)));
+  `);
+  const result = spawnSync(process.execPath, ['--import', pathToFileURL(preload).href, script,
+    '--source', f.source, '--label', f.label, '--out', out], { encoding: 'utf8', timeout: 10000 });
+  assert.equal(result.error, undefined); assert.equal(result.signal, null);
+  return { ...result, out, counts: JSON.parse(fs.readFileSync(observation, 'utf8')) };
+}
+function outputFailure(f, result, expected) {
+  assert.equal(result.status, 1, result.stderr || result.stdout); assert.equal(result.stdout, '');
+  assert.equal(JSON.parse(result.stderr).code, expected);
+  assert.equal(result.stderr.includes(f.dir), false);
+  assert.equal(fs.readFileSync(f.source, 'utf8'), 'hello\n');
+}
+
+test('output validation retains one exclusive create/write/flush/close and a matching receipt', t => {
+  const f = fixture(t), result = outputCli(f);
+  assert.equal(result.status, 0, result.stderr); assert.equal(result.stderr, '');
+  assert.deepEqual(result.counts, { opens: 1, writes: 1, flushes: 1, closes: 1 });
+  const bytes = fs.readFileSync(result.out);
+  assert.deepEqual(JSON.parse(result.stdout), { ok: true, inputBytes: bytes.length, sha256: hash(bytes) });
+});
+
+for (const kind of ['file', 'directory', 'dangling-link']) test(`existing output ${kind} is rejected before opening`, t => {
+  const f = fixture(t), out = join(f.dir, 'output.json'), target = join(f.dir, 'must-not-create');
+  if (kind === 'file') fs.writeFileSync(out, 'preserve');
+  else if (kind === 'directory') fs.mkdirSync(out);
+  else {
+    try { fs.symlinkSync(target, out, 'file'); }
+    catch (error) { if (process.platform === 'win32' && error.code === 'EPERM') { t.skip('symlink creation not permitted'); return; } throw error; }
+  }
+  const result = outputCli(f);
+  outputFailure(f, result, 'EEXIST');
+  assert.deepEqual(result.counts, { opens: 0, writes: 0, flushes: 0, closes: 0 });
+  if (kind === 'file') assert.equal(fs.readFileSync(out, 'utf8'), 'preserve');
+  else if (kind === 'directory') assert.deepEqual(fs.readdirSync(out), []);
+  else { assert.equal(fs.lstatSync(out).isSymbolicLink(), true); assert.equal(fs.existsSync(target), false); }
+});
+
+for (const error of ['EACCES', 'EIO']) test(`output ${error} metadata failure is not absence`, t => {
+  const f = fixture(t), result = outputCli(f, `fs.lstatSync = (file, ...args) => {
+    if (file === out) throw Object.assign(Error(out), { code: ${JSON.stringify(error)} });
+    return saved.stat(file, ...args);
+  };`);
+  outputFailure(f, result, error);
+  assert.deepEqual(result.counts, { opens: 0, writes: 0, flushes: 0, closes: 0 });
+  assert.equal(fs.existsSync(result.out), false);
+});
+
+for (const mutation of ['missing', 'replacement', 'hardlink', 'truncated']) test(`output ${mutation} after flush cannot receive a success receipt`, t => {
+  const f = fixture(t), result = outputCli(f, `const flush = fs.fsyncSync;
+    fs.fsyncSync = fd => { const value = flush(fd); if (fd === outputFd) {
+      const retained = out + '.retained';
+      ${mutation === 'truncated' ? "fs.ftruncateSync(fd, 0);" : mutation === 'hardlink' ? "fs.linkSync(out, retained);" :
+        "fs.renameSync(out, retained);" + (mutation === 'replacement' ? "const replacement = saved.open(out, 'wx', 0o600); try { saved.write(replacement, 'x'.repeat(saved.stat(retained).size)); } finally { saved.close(replacement); }" : '')}
+    } return value; };
+  `);
+  outputFailure(f, result, 'OUTPUT_CHANGED');
+  assert.deepEqual(result.counts, { opens: 1, writes: 1, flushes: 1, closes: 1 });
+  if (mutation === 'truncated') assert.equal(fs.statSync(result.out).size, 0, 'do not repair partial output');
+  else {
+    const bytes = fs.readFileSync(result.out + '.retained');
+    assert.equal(JSON.parse(bytes).source.sha256, hash('hello\n'), 'retain the actual generated evidence');
+    if (mutation === 'missing') assert.equal(fs.existsSync(result.out), false);
+    if (mutation === 'replacement') assert.equal(fs.readFileSync(result.out, 'utf8'), 'x'.repeat(bytes.length));
+    if (mutation === 'hardlink') assert.equal(fs.statSync(result.out).nlink, 2, 'do not remove another writer\'s link');
+  }
+});
+
+test('a competing file after the absence check still fails exclusive creation', t => {
+  const f = fixture(t), result = outputCli(f, `fs.lstatSync = (file, ...args) => {
+    const info = saved.stat(file, ...args);
+    if (file === out && !info) {
+      const fd = saved.open(out, 'wx', 0o600);
+      try { saved.write(fd, 'preserve competitor'); } finally { saved.close(fd); }
+    }
+    return info;
+  };`);
+  outputFailure(f, result, 'EEXIST');
+  assert.deepEqual(result.counts, { opens: 1, writes: 0, flushes: 0, closes: 0 });
+  assert.equal(fs.readFileSync(result.out, 'utf8'), 'preserve competitor');
+});
+
+for (const failure of ['write', 'flush']) test(`output ${failure} failure closes the descriptor and retains evidence without retry`, t => {
+  const f = fixture(t), result = outputCli(f, failure === 'write'
+    ? `fs.writeFileSync = (file, ...args) => {
+      if (file !== outputFd) return saved.write(file, ...args);
+      counts.writes++; fs.writeSync(file, 'partial'); throw Object.assign(Error(out), { code: 'ENOSPC' });
+    };`
+    : `fs.fsyncSync = fd => { counts.flushes++; throw Object.assign(Error(out), { code: 'EIO' }); };`);
+  outputFailure(f, result, failure === 'write' ? 'ENOSPC' : 'EIO');
+  assert.deepEqual(result.counts, { opens: 1, writes: 1, flushes: failure === 'write' ? 0 : 1, closes: 1 });
+  const bytes = fs.readFileSync(result.out);
+  if (failure === 'write') assert.equal(bytes.toString(), 'partial');
+  else assert.equal(JSON.parse(bytes).source.sha256, hash('hello\n'));
+  const retry = cli(['--source', f.source, '--label', f.label, '--out', result.out]);
+  outputFailure(f, retry, 'EEXIST'); assert.deepEqual(fs.readFileSync(result.out), bytes);
+});
+
+
+test('output timestamp updates on close do not invalidate unchanged bytes and identity', t => {
+  const f = fixture(t), result = outputCli(f, `const close = fs.closeSync;
+    fs.closeSync = fd => { const value = close(fd);
+      if (fd === outputFd) fs.utimesSync(out, new Date(0), new Date(0));
+      return value;
+    };`);
+  assert.equal(result.status, 0, result.stderr); assert.equal(result.stderr, '');
+  const bytes = fs.readFileSync(result.out);
+  assert.deepEqual(JSON.parse(result.stdout), { ok: true, inputBytes: bytes.length, sha256: hash(bytes) });
+  assert.deepEqual(result.counts, { opens: 1, writes: 1, flushes: 1, closes: 1 });
+});
+
+for (const mutation of ['hardlink', 'nonempty']) test(`new output ${mutation} is rejected before writing evidence`, t => {
+  const f = fixture(t), result = outputCli(f, `const open = fs.openSync;
+    fs.openSync = (file, ...args) => { const fd = open(file, ...args);
+      if (file === out) { ${mutation === 'hardlink' ? "fs.linkSync(out, out + '.retained');" : "saved.write(fd, 'preserve competitor');"} }
+      return fd;
+    };`);
+  outputFailure(f, result, 'OUTPUT_CHANGED');
+  assert.deepEqual(result.counts, { opens: 1, writes: 0, flushes: 0, closes: 1 });
+  assert.equal(fs.readFileSync(result.out, 'utf8'), mutation === 'nonempty' ? 'preserve competitor' : '');
+  if (mutation === 'hardlink') assert.equal(fs.statSync(result.out).nlink, 2);
+});

@@ -68,6 +68,19 @@ register it as success or automatically retry/remove it. On success stdout conta
 `ok`, the output byte count and SHA-256 of the **evidence file**, not its contents.
 Do not pipe that receipt into registration as though it were the evidence.
 
+Before opening the output, the CLI rejects any existing leaf (including a dangling
+symlink) and treats metadata lookup failures as errors, not absence. Exclusive
+creation remains mandatory because this check cannot reserve the path. The newly
+opened descriptor must be an empty regular single-link file. After writing,
+flushing and closing it, the CLI checks that the output path still names that file,
+with its expected byte count and unchanged mode/link count, before emitting a receipt.
+A missing, replaced, newly hard-linked or truncated output yields `OUTPUT_CHANGED`
+with no success receipt; partial output and other writers' files remain untouched.
+Write timestamps are not compared across close because Windows may finalize them
+only then. These are identity/size observations, not atomic publication or protection
+against every same-inode content race. Use an owned stable output directory and
+recheck the saved bytes against the receipt before later sharing or registration.
+
 The CLI can run from a symlinked installation, including with Node
 [`--preserve-symlinks-main`](https://nodejs.org/api/cli.html#--preserve-symlinks-main)
 (with or without `--preserve-symlinks`). It remains built-in-only so a preserved
