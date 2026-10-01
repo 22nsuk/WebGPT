@@ -306,10 +306,12 @@ async function acknowledgeCollection(id, before, config, { signal }) {
       error.attention = error.details?.attention;
       error.reconciliation = error.details?.reconciliation;
     }
-    // A lost transport response may follow a committed acknowledgment. Observe
-    // once; never retry the write here. Explicit HTTP rejections, including the
-    // wait-retryable SHUTTING_DOWN response, are not ambiguous transport failures.
-    if (error.statusCode !== undefined || !retryableControllerError(error) || signal?.aborted) throw error;
+    // Lost transport or malformed success JSON may follow a committed collection.
+    // request preserves non-success HTTP statuses even when their JSON is invalid.
+    // Observe once, never retry the write or widen the wait retry policy. Explicit
+    // rejection and caller cancellation still take precedence over parse failures.
+    if (error.statusCode !== undefined || signal?.aborted
+        || !(retryableControllerError(error) || error instanceof SyntaxError)) throw error;
     ackError = error;
   }
   let after;
