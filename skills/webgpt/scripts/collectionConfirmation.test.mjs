@@ -91,13 +91,81 @@ for (const committed of [false, true]) test(`lost ${committed ? 'committed' : 'u
   assert.equal(readFileSync(f.artifact, 'utf8'), resultText);
 });
 
-for (const change of ['missing', 'corrupt']) test(`result bytes ${change} after ack prevent a verified collection report`, async t => {
-  const f = await fixture(t, async ({ req, phase, artifact }) => {
+
+// A normally ended HTTP body can still be invalid JSON. Unlike a rejected
+// status, a parsing failure after success headers says nothing about commit.
+for (const resume of [false, true]) for (const committed of [false, true])
+  test(`${resume ? 'resumed' : 'ordinary'} collection observes a malformed ${committed ? 'committed' : 'uncommitted'} ack once`, async t => {
+    let observedState;
+    const f = await fixture(t, ({ req, res, phase, stateFile }) => {
+      if (req.url !== '/collect' || phase !== (committed ? 'after' : 'before')) return;
+      observedState = readFileSync(stateFile);
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(committed ? '{' : ''); return true;
+    });
+    if (committed) {
+      const result = await collectTask('owned', f.config, { resume });
+      assert.equal(result.collected, true); assert.equal(result.integrity, 'verified');
+      assert.equal(result.sha256, f.state().sha256);
+      if (resume) assert.equal(result.disposition, 'collected');
+    } else await assert.rejects(collectTask('owned', f.config, { resume }), error => {
+      unconfirmed(error); assert.equal(error.acknowledgment, 'unknown'); return true;
+    });
+    assert.deepEqual(f.actions, [...collectionStart(resume), '/collect', '/reconcile?id=owned']);
+    assert.deepEqual(readFileSync(f.stateFile), observedState, 'observation must not repeat or undo collection');
+    assert.equal(f.state().collected, committed);
+    assert.equal(f.state().token, committed ? undefined : f.task.token);
+    assert.equal(readFileSync(f.artifact, 'utf8'), resultText);
+  });
+
+for (const status of [401, 503]) test(`malformed HTTP ${status} collection rejection is not an ambiguous successful response`, async t => {
+  const f = await fixture(t, ({ req, res, phase }) => {
+    if (req.url !== '/collect' || phase !== 'before') return;
+    res.writeHead(status); res.end('{'); return true;
+  });
+  const before = readFileSync(f.stateFile);
+  await assert.rejects(collectTask('owned', f.config), { statusCode: status, retryable: false });
+  assert.deepEqual(f.actions, ['/wait?id=owned', '/collect']);
+  assert.deepEqual(readFileSync(f.stateFile), before); assert.equal(f.state().token, f.task.token);
+});
+
+test('malformed successful wait JSON is still not a transport retry', async t => {
+  const f = await fixture(t, ({ req, res, phase }) => {
+    if (req.url !== '/wait?id=owned' || phase !== 'before') return;
+    res.writeHead(200); res.end('{'); return true;
+  });
+  const before = readFileSync(f.stateFile);
+  await assert.rejects(waitForTasks(['owned'], f.config, { retryDelays: [0, 0, 0] }), error => {
+    assert.ok(error instanceof SyntaxError); assert.equal(retryableControllerError(error), false); return true;
+  });
+  assert.deepEqual(f.actions, ['/wait?id=owned']); assert.deepEqual(readFileSync(f.stateFile), before);
+});
+
+test('an explicit SyntaxError abort after commit is not treated as a malformed ack', async t => {
+  const controller = new AbortController(), reason = new SyntaxError('parent cancelled observation');
+  let committed;
+  const f = await fixture(t, ({ req, res, phase, stateFile }) => {
+    if (req.url !== '/collect' || phase !== 'after') return;
+    committed = readFileSync(stateFile); controller.abort(reason);
+    res.writeHead(200); res.end('{'); return true;
+  });
+  await assert.rejects(collectTask('owned', f.config, { signal: controller.signal }), error => error === reason);
+  assert.deepEqual(f.actions, ['/wait?id=owned', '/collect']);
+  assert.deepEqual(readFileSync(f.stateFile), committed); assert.equal(f.state().collected, true);
+  assert.equal(readFileSync(f.artifact, 'utf8'), resultText);
+});
+
+for (const malformed of [false, true]) for (const change of ['missing', 'corrupt'])
+  test(`result bytes ${change} after ${malformed ? 'malformed' : 'valid'} ack prevent a verified collection report`, async t => {
+  const f = await fixture(t, async ({ req, res, phase, artifact }) => {
     if (phase === 'after' && req.url === '/collect') {
       if (change === 'missing') unlinkSync(artifact); else writeFileSync(artifact, 'different fixture bytes');
+      if (malformed) { res.writeHead(200); res.end('{'); return true; }
     }
   });
-  await assert.rejects(collectTask('owned', f.config), unconfirmed);
+  await assert.rejects(collectTask('owned', f.config), error => {
+    unconfirmed(error); assert.equal(error.acknowledgment, malformed ? 'unknown' : 'accepted'); return true;
+  });
   assert.deepEqual(f.actions, expectedCalls);
   assert.equal(f.state().collected, true); // Observation does not roll back the real ack.
 });
@@ -252,10 +320,11 @@ test('ordinary collection remains strict on already retired results while explic
   assert.deepEqual(readFileSync(f.stateFile), before);
 });
 
-for (const scenario of ['discarded', 'unconfirmed']) test(`ordinary collection CLI reports ${scenario} without false success or private output`, async t => {
+for (const scenario of ['discarded', 'unconfirmed', 'malformed']) test(`ordinary collection CLI reports ${scenario} without false success or private output`, async t => {
   const f = await fixture(t, async ({ req, res, phase, admin }) => {
     if (phase !== 'before' || req.url !== '/collect') return;
     if (scenario === 'discarded') await admin('cancel', { id: 'owned' });
+    else if (scenario === 'malformed') { res.writeHead(200); res.end('PRIVATE_INVALID_RESPONSE'); return true; }
     else { reply(res, {}); return true; }
   });
   const file = join(f.dir, 'config.json'); writeFileSync(file, JSON.stringify(f.config));
@@ -265,7 +334,7 @@ for (const scenario of ['discarded', 'unconfirmed']) test(`ordinary collection C
     assert.equal(error.code, 1); assert.equal(error.stdout, '');
     const diagnostic = JSON.parse(error.stderr.trim().replace(/^WebGPT: /, ''));
     assert.equal(diagnostic.code, scenario === 'discarded' ? 'COLLECTION_DISCARDED' : 'COLLECTION_UNCONFIRMED');
-    for (const secret of [f.dir, f.task.token, 'PRIVATE_COLLECTION_FIXTURE']) assert.ok(!error.stderr.includes(secret));
+    for (const secret of [f.dir, f.task.token, 'PRIVATE_COLLECTION_FIXTURE', 'PRIVATE_INVALID_RESPONSE']) assert.ok(!error.stderr.includes(secret));
     return true;
   });
   assert.deepEqual(f.actions, scenario === 'discarded' ? expectedCalls.slice(0, -1) : expectedCalls);
@@ -320,15 +389,19 @@ for (const filename of ['state.json', 'state.initialized']) {
   });
 }
 
-for (const resume of [false, true]) test(`${resume ? 'resumed' : 'ordinary'} collection cannot confirm an ack while its state is unreadable`, async t => {
+for (const malformed of [false, true]) for (const resume of [false, true])
+  test(`${resume ? 'resumed' : 'ordinary'} collection cannot confirm a ${malformed ? 'malformed' : 'valid'} ack while its state is unreadable`, async t => {
   let committed, armed = false;
-  const f = await fixture(t, ({ phase, req, stateFile }) => {
-    if (phase === 'after' && req.url === '/collect') { committed = readFileSync(stateFile); armed = true; }
+  const f = await fixture(t, ({ phase, req, res, stateFile }) => {
+    if (phase === 'after' && req.url === '/collect') {
+      committed = readFileSync(stateFile); armed = true;
+      if (malformed) { res.writeHead(200); res.end('{'); return true; }
+    }
   });
   const restore = failStateRead(t, f.stateFile, () => armed);
   try {
     await assert.rejects(collectTask('owned', f.config, { resume }), error => {
-      unconfirmed(error); assert.equal(error.acknowledgment, 'accepted'); return true;
+      unconfirmed(error); assert.equal(error.acknowledgment, malformed ? 'unknown' : 'accepted'); return true;
     });
     assert.deepEqual(f.actions, [...collectionStart(resume), '/collect', '/reconcile?id=owned']);
   } finally { restore(); }
