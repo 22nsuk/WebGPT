@@ -12,15 +12,20 @@ async function report(events) {
   for await (const chunk of reporter(events)) output += chunk;
   return output;
 }
-const failure = (name = 'owned failure') => ({ type: 'test:fail', data: {
+const failure = (name = 'owned failure') => ({ type: 'test:complete', data: {
   name, file: '/fixture/a.test.mjs', line: 7, column: 3,
-  details: { error: { failureType: 'testCodeFailure', cause: {
+  details: { passed: false, error: { failureType: 'testCodeFailure', cause: {
     code: 'ERR_ASSERTION', message: 'expected 1, got 2', stack: 'at assertion:8:4',
   } } },
 } });
 
 test('feedback keeps actual assertion and location without inventing exit/revision evidence', async () => {
-  const output = await report([failure()]), value = JSON.parse(output);
+  const event = failure();
+  // Node also reports the same outcome later in declaration order. Do not
+  // double count it, and do not deduplicate distinct completions by test name.
+  const mirror = { ...event, type: 'test:fail' };
+  const output = await report([event, mirror]), value = JSON.parse(output);
+  assert.equal(JSON.parse(await report([event, mirror, event, mirror])).observedFailures, 2);
   assert.equal(output.split('\n').length, 2, 'normal exhaustion retains one JSONL record');
   assert.equal(value.version, 1);
   assert.deepEqual(Object.keys(value).sort(), ['version', 'evidence', 'node', 'platform', 'arch',
@@ -38,7 +43,10 @@ test('passing, TODO and skipped events are silent; unrelated output is not copie
   for (const field of ['todo', 'skip']) for (const value of [true, '', 'reason']) {
     const event = failure(); event.data[field] = value; marked.push(event);
   }
-  assert.equal(await report([{ type: 'test:pass', data: {} }, ...marked,
+  const notFailures = [true, undefined, null, 0, 'false'].map(passed => ({
+    type: 'test:complete', data: { ...failure().data, details: { ...failure().data.details, passed } },
+  }));
+  assert.equal(await report([{ type: 'test:pass', data: {} }, ...notFailures, ...marked,
     { type: 'test:stdout', data: { message: 'private output'.repeat(100000) } }]), '');
   const ordinary = failure('unmarked failure');
   Object.assign(ordinary.data, { todo: false, skip: false });
@@ -66,7 +74,7 @@ test('feedback bounds entries and bytes with explicit omission/truncation, inclu
 
 test('wrapper-only and missing error metadata stay explicit', async () => {
   const event = failure(); event.data.details.error = { failureType: 'testTimeoutFailure', message: 'timed out' };
-  const missing = failure(); delete missing.data.details;
+  const missing = failure(); delete missing.data.details.error;
   const value = JSON.parse(await report([event, missing]));
   assert.equal(value.failures[0].message, 'timed out');
   assert.equal(value.failures[0].failureType, 'testTimeoutFailure');
@@ -132,7 +140,11 @@ test('real Node reporters preserve failing exit status, normal output and compac
     assert.equal(error.code, 1);
     assert.match(error.stdout, /not ok .*real assertion/);
     const value = JSON.parse(error.stderr);
-    assert.equal(value.observedFailures, 1); assert.equal(value.failures.length, 1);
+    assert.equal(value.observedFailures, 2); assert.equal(value.failures.length, 2);
+    // Completion events include the file's failed-child summary as well as
+    // the assertion. Neither is a second declaration-order test:fail event.
+    assert.equal(value.failures[1].failureType, 'subtestsFailed');
+    assert.equal(realpathSync(value.failures[1].file), realpathSync(file));
     assert.equal(value.failures[0].name, 'real assertion');
     // Node reports the resolved source path (e.g. macOS /var -> /private/var).
     assert.equal(value.failures[0].file, realpathSync(file));
@@ -145,4 +157,40 @@ test('real Node reporters preserve failing exit status, normal output and compac
   assert.equal(result.stderr, ''); assert.match(result.stdout, /ok 1 - pass/);
   assert.match(result.stdout, /# fail 0\r?\n/);
   assert.match(result.stdout, /# skipped 2\r?\n/); assert.match(result.stdout, /# todo 2\r?\n/);
+});
+
+
+test('completion feedback retains hook, cancelled-child, timeout and file-level failures', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'webgpt-completion-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const file = join(dir, 'fixture.mjs');
+  const env = { ...process.env }; delete env.NODE_TEST_CONTEXT;
+  const args = ['--test', '--test-reporter=tap', `--test-reporter=${new URL('./test-feedback.mjs', import.meta.url).href}`,
+    '--test-reporter-destination=stdout', '--test-reporter-destination=stderr', file];
+  const cases = [
+    ["import {describe,it,before,after} from 'node:test';\n"
+      + "describe('before suite',()=>{before(()=>{throw Error('before boundary');});it('not run',()=>{});});\n"
+      + "describe('after suite',()=>{after(()=>{throw Error('after boundary');});it('passed child',()=>{});});\n",
+      ['hookFailed'], ['before boundary', 'after boundary']],
+    ["import test from 'node:test'; test('parent',t=>{t.test('cancelled child',()=>new Promise(()=>{}));});\n",
+      ['cancelledByParent', 'subtestsFailed'], []],
+    ["import test from 'node:test'; import {setTimeout} from 'node:timers/promises';\n"
+      + "test('deadline',{timeout:20},()=>setTimeout(100));\n", ['testTimeoutFailure'], []],
+    ["throw Error('file startup boundary');\n", ['testCodeFailure'], []],
+    ["process.exit(2);\n", ['testCodeFailure'], []],
+  ];
+  for (const [source, types, messages] of cases) {
+    writeFileSync(file, source);
+    await assert.rejects(promisify(execFile)(process.execPath, args, { timeout: 15000, env }), error => {
+      assert.equal(error.code, 1);
+      const value = JSON.parse(error.stderr);
+      assert.ok(value.failures.length > 0, source);
+      assert.equal(value.observedFailures, value.failures.length, 'no duplicate declaration-order events');
+      for (const type of types) assert.ok(value.failures.some(item => item.failureType === type), JSON.stringify(value));
+      for (const message of messages) assert.ok(value.failures.some(item => item.message.includes(message)), JSON.stringify(value));
+      assert.equal(value.processExitCode, null); assert.equal(value.revision, null);
+      assert.ok(Buffer.byteLength(error.stderr) <= 32 * 1024);
+      return true;
+    });
+  }
 });

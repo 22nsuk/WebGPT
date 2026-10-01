@@ -209,10 +209,20 @@ await test('later noise', () => new Promise(resolve => process.stdout.write('z'.
   const stderr = detail.split('\nstderr tail:\n')[1];
   assert.ok(stderr.includes('node-test-failure-events'), 'missing bounded installed failure evidence');
   const feedback = JSON.parse(stderr);
-  assert.equal(feedback.observedFailures, 20);
+  assert.equal(feedback.observedFailures, 21); // 20 assertions and one file-completion summary
   assert.ok(feedback.failures.length > 0 && feedback.failures.length <= 12);
-  assert.equal(feedback.omittedFailures, 20 - feedback.failures.length);
-  assert.ok(feedback.failures.every(item => item.truncated));
+  assert.equal(feedback.omittedFailures, 21 - feedback.failures.length);
+  const assertions = feedback.failures.filter(item => item.failureType === 'testCodeFailure');
+  const summaries = feedback.failures.filter(item => item.failureType === 'subtestsFailed');
+  assert.ok(assertions.length > 0 && assertions.every(item => item.truncated));
+  // The short final file summary may fit after the byte budget omitted long
+  // assertions. Keep that legitimate event without pretending it was clipped.
+  assert.ok(summaries.length <= 1);
+  for (const item of summaries) {
+    assert.equal(await fs.realpath(item.file), await fs.realpath(join(f.root, 'many.test.mjs')));
+    assert.equal(item.truncated, false);
+  }
+  assert.equal(assertions.length + summaries.length, feedback.failures.length);
   assert.ok(feedback.failures.every(item => !item.message.includes('\ufffd')));
   assert.ok(Buffer.byteLength(stderr) <= 32 * 1024);
   assert.ok(messages.every(line => line.length < 140000));
