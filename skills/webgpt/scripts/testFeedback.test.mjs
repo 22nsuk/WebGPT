@@ -182,7 +182,8 @@ test('completion feedback retains hook, cancelled-child, timeout and file-level 
   for (const [source, types, messages] of cases) {
     writeFileSync(file, source);
     await assert.rejects(promisify(execFile)(process.execPath, args, { timeout: 15000, env }), error => {
-      assert.equal(error.code, 1);
+      assert.equal(error.code, 1, JSON.stringify({ source, signal: error.signal, killed: error.killed,
+        stdout: error.stdout?.slice(-8192), stderr: error.stderr?.slice(-8192) }));
       const value = JSON.parse(error.stderr);
       assert.ok(value.failures.length > 0, source);
       assert.equal(value.observedFailures, value.failures.length, 'no duplicate declaration-order events');
