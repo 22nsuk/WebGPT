@@ -302,72 +302,99 @@ URL 연결과 **OAuth 인증 없음**을 선택합니다. OAuth가 없다고 무
 
 ## 7. 일회용 작업 하나를 종단 간 검증하기
 
-런타임·설치 스킬 **바깥에** 새 소유 임시 프로젝트를 만들고 작은 일반 UTF-8
-테스트 파일을 준비합니다. 고유 ID와 프로젝트 절대 경로를 바꿔 아래 내용을
-`$HOME/.local/share/webgpt/setup-task.json`에 비공개로 저장하세요.
-Windows JSON 경로는 `C:/Users/you/...`처럼 사용할 수 있습니다.
-기존 설정 작업 파일·기록을 덮어쓰지 말고 보존하세요. 이 파일은 비공개 컨트롤러
-입력이며 통째로 게시하거나 업로드할 파일이 아닙니다.
+설치된 파일 연결에는 기존 `connection` 검증을 사용하세요. 같은 목적의 과제를 따로
+작성하거나 모든 검증 시나리오를 실행할 필요는 없습니다. 설치 확인용이며 정상 작업마다
+반복할 선행 조건이나 유용한 위임 성과의 벤치마크가 아닙니다. 시험 파일·결과 형식·검수
+기준은 [검증 절차](verification.md)를 따릅니다.
 
-<!-- recipe:probe-json -->
-```json
-{
-  "id": "setup-check-REPLACE-UNIQUE",
-  "instructions": "Verify this owned disposable project: create, read, edit and delete a text file; prove a stale-revision write is rejected without changing current bytes. Save the results, receipts and limitations. Do not access unrelated projects.",
-  "inputs": {},
-  "workspace": {
-    "root": "/REPLACE/WITH/ABSOLUTE/TEMP/PROJECT",
-    "mode": "edit"
-  }
-}
+런타임·설정·설치 스킬 바깥의 **기존 비공개 상위 폴더 아래에 새 절대 실행 경로**를
+정하세요. 아래 따옴표 안의 자리표시자를 바꿉니다. `<skill>`은 실제 설치 스킬 경로이고,
+`<absolute-run-dir>`은 `prepare`가 만든 동일한 폴더입니다. Windows·POSIX에서 공백이
+있는 경로도 처리하도록 따옴표를 유지하세요. Pro를 요청했다면 `xhigh` 대신 `pro`를
+사용하고 실제 채팅에서도 같은 모드를 선택합니다.
+
+<!-- recipe:probe-prepare -->
+```text
+node "<skill>/scripts/verification.mjs" prepare connection "<new-absolute-run-dir>" xhigh
 ```
 
-동일한 Node 호스트에서 등록합니다.
+`prepare`는 고유 작업 ID와 `verification.json`, `request.json`, `measurements.json`,
+`project/seed.txt`를 만듭니다. 등록·브라우저 열기·메시지 전송은 하지 않습니다.
+생성된 요청에서 일회용 `project/`에만 편집 권한이 있는지 확인하고 요청과 배정 명세는
+변경하지 마세요. 일부만 준비된 경우를 포함해 기존 실행 경로는 거부합니다. 불확실한
+시도를 다시 시작하려고 덮어쓰거나 증거를 삭제하지 말고 보존해 확인하세요. Windows에서는
+비공개 상위 폴더의 ACL도 확인합니다. POSIX 생성 권한만으로 비공개성이 입증되지는 않습니다.
+
+동일한 Node 호스트와 유효 설정에서 생성된 요청을 한 번 등록합니다. 이후 모든
+`<task-id>`에는 생성된 `taskId`와 같은 값인 `request.json`의 `id`를 사용하세요.
 
 <!-- recipe:probe-register -->
-```sh
-node "$HOME/.agents/skills/webgpt/scripts/client.mjs" register "$HOME/.local/share/webgpt/setup-task.json"
+```text
+node "<skill>/scripts/client.mjs" register "<absolute-run-dir>/request.json"
 ```
 
-응답에는 비공개 작업 토큰이 포함됩니다. 소유 ChatGPT 대화에는 선택한 커넥터와
-한정된 검증 요청, **해당 작업 토큰만** 전달하세요. 컨트롤러 키나 전체 연결 URL은
-전달하지 않습니다. 워커가 7개 도구로 검증을 수행하고 `submit_result`로 제출하게
-합니다. 모델의 요약뿐 아니라 실제 관련 도구 호출에서 증거를 확인하세요.
+등록 응답에는 작업 토큰이 있으므로 비공개로 보관합니다. 소유 ChatGPT 대화에는 선택한
+커넥터·한정된 검증 요청과 **해당 작업 토큰만** 전달하고, 컨트롤러 키나 전체 연결 URL은
+전달하지 마세요. 생성된 요청은 컨트롤러 입력이지 통째로 업로드할 파일이 아닙니다.
+`<absolute-run-dir>/dispatch.json`을 비공개 기록으로 삼아 [전송 절차](dispatch.md)에 따라
+전송 의도를 저장하고 실제 새 사용자 메시지가 하나인지 확인하세요. 등록만으로 재전송이
+허용되는 것은 아닙니다.
+
+워커가 `get_task`의 배정에 따라 seed의 정확한 구간 수정, 현재·오래된 SHA 읽기,
+오래된 SHA 쓰기 거부, 임시 파일 생성·읽기·삭제와 `submit_result`를 수행하게 합니다.
+동일 작업을 관측하며 백업 확인 시점·중단·복구 알림을 완료 결과로 간주하지 마세요.
+
+<!-- recipe:probe-check -->
+```text
+node "<skill>/scripts/client.mjs" wait "<task-id>"
+node "<skill>/scripts/verification.mjs" check "<absolute-run-dir>"
+```
+
+각 보고서를 비공개로 보존합니다. `check`는 최종 한글·이모지 바이트, 배정 권한,
+순서가 정해진 세 변경 영수증, 원본 백업·복구와 저장 결과 JSON을 검증하며 수집하지
+않습니다. **로컬 `PASS`·종료 0은 실제 연결 수용이나 수집 승인이 아닙니다.**
+성공 여부 불리언 네 개는 `unverifiedClaims`에 남습니다. `parentMustVerify`와 실제 도구
+호출·응답을 확인하고 인용된 오류나 모델 요약으로 대신하지 마세요. `PENDING`·`FAIL`·
+`BLOCKED`이면 새 등록·자동 재시도·정리 대신 기존 증거를 확인합니다.
 
 | 확인 단계 | 필요한 증거 |
 | --- | --- |
 | 브라우저·전송 | 실제 선택 모드·커넥터, 소유 채팅·탭, 확인된 단일 사용자 메시지 |
-| 허용된 파일 작업 | 실제 생성·읽기·수정·삭제 호출과 디스크의 최종 바이트 |
-| 충돌 방지 | 실제 오래된 SHA 수정 거부와 현재 바이트 유지 |
-| 저장 결과 | 완료 영수증, 전체 저장 산출물, 검증한 SHA-256 |
-| 복구 | 변경·삭제한 테스트 파일의 원본 바이트와 영수증 |
+| 입력·읽기 | 실제 `get_task`·`read_input`, 현재 SHA 고정 읽기, 오래된 SHA 읽기 거부 |
+| 파일 작업·충돌 | seed 구간 수정, 추가 변경 없는 오래된 SHA 쓰기 거부, 임시 파일 생성·읽기·삭제·부재 |
+| 저장 결과·복구 | 로컬 검수 보고서, 전체 저장 결과·SHA, 순서가 정해진 세 영수증과 원본 백업 |
 | 수집·권한 종료 | 무결성 확인 수집, 미처리 소유 작업 없음, 종료된 토큰의 거부 |
 | 채팅 정리 | 보존한 채팅 URL, 최종 답변 완료, 소유 탭만 닫힘 |
 
-증거 확인 후 원래 ID와 실제 설치 경로를 사용합니다.
+**로컬 검사와 실제 도구·브라우저 증거를 수용한 뒤에만** 동일 작업을 수집하고 수집 후
+보고서도 보존합니다.
 
 <!-- recipe:probe-collect -->
 ```text
-node <skill>/scripts/client.mjs reconcile <task-id>
-node <skill>/scripts/client.mjs collect --resume <task-id>
-node <skill>/scripts/client.mjs tasks
+node "<skill>/scripts/client.mjs" collect --resume "<task-id>"
+node "<skill>/scripts/verification.mjs" check "<absolute-run-dir>"
+node "<skill>/scripts/client.mjs" tasks
 ```
 
-`collect --resume`는 바이트를 검증하고 수집 가능한 미수집 결과를 승인할 수 있습니다.
-테스트 재실행이나 작업 재전송은 하지 않습니다. `tasks`만으로 토큰 거부를 입증할 수는
-없으므로 원래 작업 토큰으로 별도 확인하세요. 결과 콜백과 별도로 최종 채팅 답변이
-끝날 때까지 확인합니다. 채팅은 기본 보존하며 소유 탭 닫기는 채팅 삭제가 아닙니다.
+`collect --resume`는 바이트를 검증하고 수집 가능한 미수집 결과를 승인할 수 있으므로
+항상 읽기 전용은 아닙니다. 테스트 재실행이나 작업 재전송은 하지 않습니다. `tasks`와
+검수기는 종료된 토큰을 직접 호출하지 않으므로, 원래 토큰으로 거부 여부를 별도로 한 번
+확인하세요. 결과 콜백과 별개로 최종 채팅 답변이 끝날 때까지 확인합니다. 채팅은 기본
+보존하며 소유 탭 닫기는 채팅 삭제가 아닙니다.
 
 리비전·경로, 워커·터널 소유권, 시작·종료 방법, 연결 이름, 단계별 결과와 비공개 증거
-참조를 하나의 비공개 설치 기록에 유지하세요. 각 항목은 `PASS`, `FAIL`, `NOT_RUN`으로
-구분하고 키는 기록에 넣지 않습니다. 중단 시 작업을 보존하고 `ready`, `reconcile`,
-원래 채팅으로 **동일 작업**을 재개하세요. 불확실한 전달은 재전송 승인이 아닙니다.
-포기한 등록은 증거를 보존한 뒤에만 명시적으로 취소합니다. 검증 후 소유 임시 프로젝트
-파일만 정리하며, 별도 삭제 요청이 없는 복구 기록과 채팅은 보존합니다.
+참조를 하나의 비공개 설치 기록에 유지하세요. `PASS`·`FAIL`·`NOT_RUN`으로 구분하고
+공유 보고서에 자격 증명을 넣지 않습니다. 중단된 실행을 보존하고 `ready`, 작업별
+`reconcile`, 원래 채팅·기록으로 **동일 작업**을 재개하세요. 불확실한 전달은 재전송
+승인이 아닙니다. 포기한 등록은 증거를 보존한 뒤에만 명시적으로 취소합니다. 실행 폴더·
+복구 기록·채팅은 보존하며, 이들의 삭제는 검증 성공과 별개의 작업입니다.
 
-이후 기능 검증에는 [검증 절차](verification.md)와 [부모 수용 안내](parent-acceptance.md)를
-사용할 수 있습니다. 로컬 `PASS`를 실제 `PASS`로 바꾸어 보고하지 마세요.
-사람이 직접 커넥터를 사용했어도 브라우저 제어가 없다면 에이전트 위임 경로는 미완료입니다.
+파일 연결 검증은 OS 재부팅·로그오프, 터널 복구, 서비스 계정 ACL이나 브라우저 파일
+업로드를 시험하지 않습니다. 별도 승인된 유지보수는 [Windows 운영](operations-windows.md)을
+따르세요. 다른 [검증 시나리오](verification.md)는 해당 확인 목적이 있을 때만 사용하고,
+유용한 실제 작업의 평가는 [부모 수용 안내](parent-acceptance.md)를 따릅니다.
+로컬 `PASS`를 실제 `PASS`로 바꾸어 보고하지 마세요. 사람이 직접 커넥터를 사용했어도
+브라우저 제어가 없다면 에이전트 위임 경로까지 입증된 것은 아닙니다.
 
 ## 8. 증거를 보존하며 운영·업데이트·제거하기
 

@@ -308,77 +308,101 @@ be reported, not bypassed or replaced silently with an API model.
 
 ## 7. Verify one disposable task end to end
 
-Use a new owned temporary project **outside** the runtime and installed skill.
-Create a small ordinary UTF-8 fixture there. Write the following payload privately
-to `$HOME/.local/share/webgpt/setup-task.json`, replacing the unique ID and absolute
-project root. On Windows, use a path such as `C:/Users/you/...` in JSON. Preserve an
-existing setup payload/record instead of overwriting it. This file is a private
-controller input; it is not a file to publish or upload wholesale.
+Use the existing `connection` exercise for the installed file bridge; do not write a
+second smoke-test assignment or run every verification scenario. This is an installation
+check, not a prerequisite for each healthy task or a benchmark of useful delegation.
+The [verification workflow](verification.md) owns its fixture, result format and checks.
 
-<!-- recipe:probe-json -->
-```json
-{
-  "id": "setup-check-REPLACE-UNIQUE",
-  "instructions": "Verify this owned disposable project: create, read, edit and delete a text file; prove a stale-revision write is rejected without changing current bytes. Save the results, receipts and limitations. Do not access unrelated projects.",
-  "inputs": {},
-  "workspace": {
-    "root": "/REPLACE/WITH/ABSOLUTE/TEMP/PROJECT",
-    "mode": "edit"
-  }
-}
+Choose a **new absolute run directory under an existing private parent**, outside the
+runtime, configuration and installed skill. Replace the quoted placeholders below:
+`<skill>` is the actual installed skill path; `<absolute-run-dir>` is the same directory
+created by `prepare`. Keep the quotes for paths with spaces on Windows or POSIX hosts.
+Use `pro` instead of `xhigh` when Pro is requested and select that mode in the chat too.
+
+<!-- recipe:probe-prepare -->
+```text
+node "<skill>/scripts/verification.mjs" prepare connection "<new-absolute-run-dir>" xhigh
 ```
 
-Register from the same Node host:
+`prepare` creates a unique task ID, `verification.json`, `request.json`,
+`measurements.json` and `project/seed.txt`. It does not register, open a browser or send
+anything. Inspect the generated request: only its disposable `project/` has an edit
+grant. Keep the request and manifest unchanged. Existing run paths, including partial
+preparations, are refused; preserve and inspect them rather than overwriting or deleting
+evidence to restart an uncertain attempt. On Windows, verify the private parent's ACLs;
+POSIX creation modes alone do not establish privacy.
+
+Register the generated request once from the same Node host and effective configuration.
+Use the generated `taskId` (also `request.json`'s `id`) for every `<task-id>` below:
 
 <!-- recipe:probe-register -->
-```sh
-node "$HOME/.agents/skills/webgpt/scripts/client.mjs" register "$HOME/.local/share/webgpt/setup-task.json"
+```text
+node "<skill>/scripts/client.mjs" register "<absolute-run-dir>/request.json"
 ```
 
-The response contains a private task token. Give **only that token**, the selected
-connector and the bounded verification request to the owned ChatGPT conversation.
-Do not send the controller key or full connection URL. Let the worker use its
-seven tools to complete the exercise and `submit_result`. Verify evidence in the
-actual relevant tool calls, not just in the model's summary.
+Capture the registration response privately; it contains the task token. Give the owned
+ChatGPT conversation the selected connector, bounded verification request and **only that
+task token**, never the controller key or full connection URL. The generated request is
+controller input, not a file to upload wholesale. Follow [dispatch.md](dispatch.md) with
+`<absolute-run-dir>/dispatch.json` as the private ledger: record send intent and confirm
+the actual single new user message. Registration alone is not permission to send again.
+
+Let the worker follow `get_task` through the exact seed edit, pinned/stale reads, stale
+write rejection and temporary-file create/read/delete, then `submit_result`. Observe the
+same task; a backup-due, interruption or recovery notice is not a completed result.
+
+<!-- recipe:probe-check -->
+```text
+node "<skill>/scripts/client.mjs" wait "<task-id>"
+node "<skill>/scripts/verification.mjs" check "<absolute-run-dir>"
+```
+
+Save each report privately. `check` verifies the final Unicode bytes, matching grant,
+three ordered change receipts, original backups/recovery and saved result JSON. It does
+not collect. **Local `PASS` / exit 0 is not live acceptance or collection permission.**
+The four success booleans remain `unverifiedClaims`; inspect `parentMustVerify` and the
+real tool calls/responses, not quoted errors or the model's summary. `PENDING`, `FAIL`
+or `BLOCKED` requires inspection, not another registration, automatic retry or cleanup.
 
 | Checkpoint | Required evidence |
 | --- | --- |
 | Browser and dispatch | Actual selected mode/connector, owned chat/tab, one confirmed user message |
-| Granted file operations | Actual create/read/edit/delete calls and resulting on-disk bytes |
-| Conflict protection | A real stale-SHA write rejection and unchanged current bytes |
-| Saved result | Completion receipt, full saved artifact and verified SHA-256 |
-| Recovery | Original bytes/receipts for changed or deleted fixture files |
+| Input and reads | Actual `get_task`, `read_input`, current-SHA pinned read and stale-read rejection |
+| File lifecycle and conflicts | Exact seed edit; stale-write rejection without another change; temp create/read/delete and absence |
+| Saved result and recovery | Local checker report, full saved result/SHA, three ordered receipts and original backups |
 | Collection and retirement | Successful verified collection, no outstanding owned task, rejected retired token |
 | Chat cleanup | Retained chat URL, completed final answer, only owned tabs closed |
 
-After inspecting the evidence, use the original ID and installed path:
+**Only after the local checks and actual tool/browser evidence are accepted**, collect
+that same task and retain a post-collection report:
 
 <!-- recipe:probe-collect -->
 ```text
-node <skill>/scripts/client.mjs reconcile <task-id>
-node <skill>/scripts/client.mjs collect --resume <task-id>
-node <skill>/scripts/client.mjs tasks
+node "<skill>/scripts/client.mjs" collect --resume "<task-id>"
+node "<skill>/scripts/verification.mjs" check "<absolute-run-dir>"
+node "<skill>/scripts/client.mjs" tasks
 ```
 
-`collect --resume` verifies bytes and can acknowledge an eligible uncollected
-result. It neither reruns tests nor resends work. `tasks` alone does not prove
-retired-token rejection: verify that separately with the original task token.
-Wait for the final chat answer to finish independently of the result callback.
+`collect --resume` verifies bytes and can acknowledge an eligible uncollected result;
+it is not always read-only. It neither reruns tests nor resends work. `tasks` and the
+checker do not invoke the retired token: verify rejection separately once with the
+original token. Wait for the final chat answer independently of the result callback.
 Retain the chat by default; closing its owned tab is not deleting the chat.
 
 Keep one private setup record with revision/paths, worker and tunnel ownership,
-start/stop method, connection name, checkpoint results and private evidence
-references. Record each as `PASS`, `FAIL` or `NOT_RUN`; do not store keys in the
-record. Preserve interrupted work and resume the **same** task with `ready`,
-`reconcile` and the original chat; uncertain delivery never authorizes a resend.
-Explicitly cancel an abandoned registration only after preserving its evidence.
-Clean up only owned temporary project files after verification; retain recovery
-records and chats unless their deletion is separately requested.
+start/stop method, connection name, checkpoint results and private evidence references.
+Record `PASS`, `FAIL` or `NOT_RUN`; keep credentials out of shared reports. Preserve an
+interrupted run and resume the **same** task with `ready`, scoped `reconcile` and its
+original chat/ledger. Uncertain delivery never authorizes a resend. Explicitly cancel
+an abandoned registration only after preserving its evidence. Retain the run, recovery
+records and chat; their deletion is separate from successful verification.
 
-The richer [verification workflow](verification.md) and [parent acceptance guide](parent-acceptance.md)
-are available for later feature checks. Local `PASS` never becomes live `PASS`.
-No browser control means the agent-controlled path remains incomplete even if a
-human successfully used the connector manually.
+A file-connection smoke does not test OS reboot/logoff, tunnel recovery, service-account
+ACLs or browser file upload. Follow [Windows operations](operations-windows.md) for
+separately authorized maintenance. Use the other [verification exercises](verification.md)
+only for their specific question, or [parent acceptance](parent-acceptance.md) for a useful
+work trial. Local `PASS` never becomes live `PASS`. A successful manual connector trial
+does not prove the agent-controlled path when browser control is unavailable.
 
 ## 8. Operate, update or uninstall without losing evidence
 

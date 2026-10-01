@@ -193,6 +193,8 @@ real artifact/attachment or app reference, not a sandbox path alone. `submit_res
 not binary attachments; distinguish creation, validation and delivery to the requested destination.
 Report what WebGPT actually contributed, what the parent verified/integrated, disposition and remaining
 blockers. Do not present parent-only work, fixture/CI PASS or a connection probe as productive delegation.
-Use [parent-acceptance.md](references/parent-acceptance.md) for a requested usage review; the four small
-[verification.md](references/verification.md) exercises are optional operational checks, not every task's
-prerequisite or a substitute for a useful result. Do not claim unmeasured token, cost or quality gains.
+Use [parent-acceptance.md](references/parent-acceptance.md) for a requested usage review. For an
+installation file-bridge check, use the existing `connection` exercise in
+[verification.md](references/verification.md), not another hand-written smoke assignment. These
+exercises are optional operational checks, not every task's prerequisite or a substitute for a
+useful result. Do not claim unmeasured token, cost or quality gains.
