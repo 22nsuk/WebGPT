@@ -20,7 +20,11 @@ const failure = (name = 'owned failure') => ({ type: 'test:fail', data: {
 } });
 
 test('feedback keeps actual assertion and location without inventing exit/revision evidence', async () => {
-  const value = JSON.parse(await report([failure()]));
+  const output = await report([failure()]), value = JSON.parse(output);
+  assert.equal(output.split('\n').length, 2, 'normal exhaustion retains one JSONL record');
+  assert.equal(value.version, 1);
+  assert.deepEqual(Object.keys(value).sort(), ['version', 'evidence', 'node', 'platform', 'arch',
+    'observedFailures', 'omittedFailures', 'failures', 'processExitCode', 'revision'].sort());
   assert.equal(value.observedFailures, 1);
   assert.equal(value.omittedFailures, 0);
   assert.equal(value.processExitCode, null); assert.equal(value.revision, null);
@@ -61,9 +65,43 @@ test('wrapper-only and missing error metadata stay explicit', async () => {
   assert.equal(value.failures[1].message, null);
 });
 
-test('event-stream failure remains a failure rather than a complete report', async () => {
-  async function* broken() { yield failure(); throw Error('stream stopped'); }
-  await assert.rejects(report(broken()), /stream stopped/);
+test('feedback emits the first failure before requesting another source event', async () => {
+  const advanced = Promise.withResolvers(), release = Promise.withResolvers();
+  async function* waiting() {
+    yield failure();
+    advanced.resolve();
+    await release.promise;
+  }
+  const output = reporter(waiting()), first = output.next();
+  try {
+    // Compare generator progress, not elapsed wall time or scheduler speed.
+    const observed = await Promise.race([
+      first.then(chunk => ({ chunk })), advanced.promise.then(() => ({ advanced: true })),
+    ]);
+    assert.equal(observed.advanced, undefined, 'failure evidence must not wait for a later test');
+    assert.match(observed.chunk.value, /expected 1, got 2/);
+    assert.throws(() => JSON.parse(observed.chunk.value), SyntaxError, 'an unfinished stream is not a complete report');
+    release.resolve();
+    let complete = observed.chunk.value;
+    for await (const chunk of output) complete += chunk;
+    const value = JSON.parse(complete);
+    assert.equal(value.observedFailures, 1); assert.equal(value.failures.length, 1);
+    assert.equal(value.processExitCode, null);
+  } finally {
+    release.resolve(); await first; await output.return();
+  }
+});
+
+test('event-stream failure preserves early evidence without completing the report', async () => {
+  const stopped = Error('stream stopped');
+  async function* broken() { yield failure(); throw stopped; }
+  let partial = '';
+  await assert.rejects(async () => {
+    for await (const chunk of reporter(broken())) partial += chunk;
+  }, error => error === stopped);
+  assert.match(partial, /expected 1, got 2/);
+  assert.throws(() => JSON.parse(partial), SyntaxError);
+  assert.doesNotMatch(partial, /observedFailures|processExitCode/);
 });
 
 test('real Node reporters preserve failing exit status, normal output and compact feedback', async t => {

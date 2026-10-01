@@ -5,9 +5,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as runner from './helpers/installed-suite.mjs';
 
-async function fixture(t, text) {
+async function fixture(t, text, cleanup = { safe: true }) {
   const root = await fs.mkdtemp(join(tmpdir(), 'webgpt-output-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
+  t.after(async () => {
+    if (!cleanup.safe) throw Error('retained fixture with unconfirmed child teardown: ' + root);
+    await fs.rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  });
   await fs.mkdir(join(root, 'scripts'));
   await fs.copyFile(new URL('../skills/webgpt/scripts/test-feedback.mjs', import.meta.url), join(root, 'scripts/test-feedback.mjs'));
   await fs.writeFile(join(root, 'output.test.mjs'), text);
@@ -78,6 +81,32 @@ await test('large Unicode output', t => t.diagnostic(${JSON.stringify(symbol)}.r
     assert.equal(JSON.parse(stderr).failures[0].message, 'early error must survive');
   });
 }
+
+test('installed timeout keeps early failure evidence even after the TAP tail rolls over', async t => {
+  const cleanup = { safe: false };
+  const root = await fixture(t, `import test from 'node:test';
+await test('early failure', () => { throw Error('early error must survive timeout'); });
+await test('large later output', t => t.diagnostic('한'.repeat(100000)));
+await test('never settles', () => new Promise(() => { setInterval(() => {}, 1000); }));
+`, cleanup);
+  const messages = [];
+  await assert.rejects(runner.runInstalledSuite(root, { timeoutMs: 8000, progress: line => messages.push(line) }), error => {
+    cleanup.safe = error.cleanupSafe === true;
+    assert.equal(error.cause.code, 'TEST_FILE_TIMEOUT');
+    assert.equal(error.cleanupSafe, true, 'observe owned tree teardown before fixture cleanup');
+    return true;
+  });
+  assert.equal(messages.some(line => line.startsWith('DONE ')), false);
+  const detail = messages.find(line => line.includes('\nstdout tail:\n'));
+  const [stdout, stderr] = detail.split('\nstdout tail:\n')[1].split('\nstderr tail:\n');
+  assert.ok(stdout.includes('한'.repeat(100)), 'the noisy test ran before the timeout');
+  assert.doesNotMatch(stdout, /early error must survive timeout/);
+  assert.match(stderr, /early error must survive timeout/);
+  assert.ok(Buffer.byteLength(stderr) <= 32 * 1024);
+  assert.ok(stderr.isWellFormed());
+  assert.throws(() => JSON.parse(stderr), SyntaxError, 'never repair an interrupted report into completion evidence');
+  assert.doesNotMatch(stderr, /observedFailures|processExitCode/);
+});
 
 const summary = ({ tests = 3, suites = 1, pass = 1, fail = 0, cancelled = 0, skipped = 1, todo = 1 } = {}) =>
   `1..1\n# tests ${tests}\n# suites ${suites}\n# pass ${pass}\n# fail ${fail}\n# cancelled ${cancelled}\n# skipped ${skipped}\n# todo ${todo}\n`;
