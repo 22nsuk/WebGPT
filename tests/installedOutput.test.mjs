@@ -24,7 +24,7 @@ for (const text of ['tests 900\npass 900', 'fail 1\ncancelled 1',
 test('one actual test', () => console.log(${JSON.stringify(text)}));\n`);
     const messages = [];
     const counts = await runner.runInstalledSuite(root, { progress: line => messages.push(line) });
-    assert.deepEqual(counts, { tests: 1, pass: 1, fail: 0, cancelled: 0, skipped: 0 });
+    assert.deepEqual(counts, { tests: 1, pass: 1, fail: 0, cancelled: 0, skipped: 0, todo: 0 });
     assert.equal(messages.length, 2, 'do not add normal-path diagnostic chatter');
     assert.match(messages[1], /^DONE /);
   });
@@ -37,8 +37,15 @@ describe('suite', () => {
   it.skip('skipped', () => {});
   it.todo('expected failure', () => { throw Error('not a passing test'); });
 });\n`);
+  // Cover aggregation and skip precedence without a second copy of this fixture.
+  await fs.writeFile(join(root, 'second.test.mjs'), `import test from 'node:test';
+test('todo that passes', { todo: '' }, () => {});
+test('todo that throws', { todo: '' }, () => { throw Error('expected failure'); });
+test('skip takes precedence', { skip: true, todo: true }, () => { throw Error('not run'); });
+`);
   const counts = await runner.runInstalledSuite(root, { progress: () => {} });
-  assert.deepEqual(counts, { tests: 3, pass: 1, fail: 0, cancelled: 0, skipped: 1 });
+  assert.deepEqual(counts, { tests: 6, pass: 1, fail: 0, cancelled: 0, skipped: 2, todo: 3 });
+  assert.equal(counts.tests, counts.pass + counts.fail + counts.cancelled + counts.skipped + counts.todo);
 });
 
 test('a fake passing summary cannot hide a real failing process or its early failure evidence', async t => {
@@ -115,7 +122,7 @@ test('TAP counts select one complete final block and tolerate CRLF and coverage 
   const earlier = summary({ tests: 900, pass: 898 });
   for (const ending of ['\n', '\r\n']) {
     const output = (earlier + '\n# test output\n' + summary() + '# duration_ms 1.5\n# coverage output\n').replaceAll('\n', ending);
-    assert.deepEqual(runner.readTapCounts(output), { tests: 3, pass: 1, fail: 0, cancelled: 0, skipped: 1 });
+    assert.deepEqual(runner.readTapCounts(output), { tests: 3, pass: 1, fail: 0, cancelled: 0, skipped: 1, todo: 1 });
   }
 });
 

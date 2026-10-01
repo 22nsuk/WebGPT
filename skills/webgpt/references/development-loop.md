@@ -83,7 +83,10 @@ It does not parse unstable TAP presentation, buffer passing-test output, capture
 stdout/stderr/environment variables, or run anything. Nested suite/file failure
 events may describe the same cause; `observedFailures` is **not a test count**.
 The test name/file/line identify its declaration; the stack may identify the actual
-assertion. TODO/skip failures are excluded, not relabeled passing checks.
+assertion. TODO/skip failures are excluded, not relabeled passing checks. Empty
+string reasons still mark those outcomes; explicit false does not. The repository's
+installed-suite summary retains TODO counts separately alongside passed, failed,
+cancelled and skipped counts, so a successful process does not hide pending tests.
 
 Failure entries are written as they arrive, inside one bounded JSON document,
 not buffered until the last test finishes. Normal stream exhaustion still produces

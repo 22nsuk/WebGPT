@@ -31,7 +31,7 @@ export function readTapCounts(output) {
   if (values.some(value => !Number.isSafeInteger(value))) return null;
   const [tests, , pass, fail, cancelled, skipped, todo] = values;
   if (tests !== pass + fail + cancelled + skipped + todo) return null;
-  return { tests, pass, fail, cancelled, skipped };
+  return { tests, pass, fail, cancelled, skipped, todo };
 }
 async function within(promise, ms) {
   let timer;
