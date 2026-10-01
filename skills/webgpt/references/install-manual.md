@@ -407,7 +407,7 @@ does not prove the agent-controlled path when browser control is unavailable.
 ## 8. Operate, update or uninstall without losing evidence
 
 Use `read` grants for ordinary review and `edit` only for authorized changes.
-File tools handle UTF-8 text up to 1 MiB per file, not arbitrary binaries or shell
+File tools handle UTF-8 text up to 10 MiB per file, not arbitrary binaries or shell
 commands. [Workspace](workspace.md) documents pagination, whole-file hashes and
 protected paths. The boundary does not filter every project secret or isolate a
 hostile local process. Remote PR work uses [separate GitHub tools](github-workflow.md).

@@ -8,22 +8,24 @@ that the worker can already read. The [development loop](development-loop.md),
 
 ## Decision and tradeoffs
 
-Reviewed fork main `48b8447baf925ebe8fe621bcaa11f0f7f017a8a5` and upstream
-`Nhahan/WebGPT` main `1d35588e79de288bd8a6d2992fc76e571f7bb75e` on 2026-09-28.
+The original artifact-route review used fork main `48b8447baf925ebe8fe621bcaa11f0f7f017a8a5`
+and upstream `Nhahan/WebGPT` main `1d35588e79de288bd8a6d2992fc76e571f7bb75e` on 2026-09-28.
 Upstream's `skills/webgpt/scripts/terminal.mjs` explicitly treats cwd as a convenience,
 passes the worker environment to a shell, and has no command timeout/output truncation.
 That provides real native-tool autonomy, but not the fork's project-file boundary.
+The current choices below also reflect the subsequent expansion to 10 MiB workspace text files.
 
 | Approach | Benefit | Cost / decision |
 | --- | --- | --- |
-| Raise the worker's 1 MiB limit | Larger direct text edits | Increases whole-file reads, hashing, backup and recovery costs; does not solve binary semantics or native execution. Not selected. |
+| Raise the workspace text limit from 1 MiB to 10 MiB | Larger direct text edits with the existing SHA and backup checks | Selected for workspace text and original backups. Increases whole-file I/O, response and memory costs; journals/results stay at 1 MiB. Adds no binary semantics or native execution. |
 | Add binary/chunk upload and mutation APIs | Transport arbitrary bytes | Requires new authorization, assembly, conflict, cancellation and recovery contracts; base64 is not semantic inspection. Not selected. |
 | Add a shell or command-name allowlist | Run native tools in one worker session | A permitted interpreter, test, build hook or converter can execute project code with host privileges. Neither cwd nor an allowlist is isolation. Not selected. |
 | Parent prepares bounded, fingerprinted evidence | Analyze large/binary inputs and CLI output using existing named inputs | Parent retains execution/conversion and mutation. Selected: useful read-only capability without a new remote endpoint, queue or state machine. |
 
 The two routes are complementary: the worker owns useful analysis and supported
-source changes; the parent owns native execution and large/binary mutation. This
-reduces manual excerpt assembly and repeated scans for several selected windows.
+source changes; the parent owns host-only native execution and mutations outside
+the workspace text boundary. This reduces manual excerpt assembly and repeated scans
+for several selected windows.
 It does **not** make the worker equivalent to an autonomous terminal agent or establish
 measured latency/token/quality gains. Direct execution would need a separately
 reviewed OS-isolated mode, not reinterpretation of existing `read`/`edit` grants.
@@ -175,7 +177,8 @@ file, and matching local hashes do not prove remote attachment bytes/parsing.
 Required visual/attachment evidence cannot be silently substituted with a header
 or text summary. Browser readiness and same-message attachment confirmation remain.
 
-Large/binary writes, conversion, builds and tests stay parent/native operations.
+Writes of text over 10 MiB, binary mutation, conversion, builds and tests stay
+parent/native operations for this host-only route.
 There is no request broker, poller, automatic command execution, command allowlist,
 retry-until-green or terminal/PTY dependency. Keep source/output roots and pre-existing
 changes safe, inspect the proposed operation and retain ordinary backups; artifact
@@ -198,7 +201,7 @@ ACL). No lock, runtime configuration, worker state or recovery record is changed
 
 Install the matching skill files through the existing idle/stopped-worker update
 procedure; do not overwrite an active installation. No new dependency, connector
-schema refresh or stored-task migration is required **for this helper**. Existing
-MCP UTF-8/1 MiB limits, path/Git protections, SHA conflict checks, backup/journals,
-result review before collection and chat retention remain unchanged. Unit and CI
-coverage are not proof of a live Windows/WSL/browser/connector deployment.
+schema refresh or stored-task migration is required **for this helper**. It does not
+change the 10 MiB UTF-8 workspace limit, 1 MiB saved-result limit, path/Git protections,
+SHA conflict checks, backup/journals, result review before collection or chat retention.
+Unit and CI coverage are not proof of a live Windows/WSL/browser/connector deployment.

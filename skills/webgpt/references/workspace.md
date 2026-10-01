@@ -146,8 +146,10 @@ This is the protocol available to the worker, not a sequence to copy into ordina
   `sha256` always covers the **entire original file**, not the excerpt. Optional `expectedSha256`
   pins a read to that digest and rejects a changed/deleted file; by itself it keeps the full response.
   Compare hashes between windows and restart reading after a revision change. Read the whole file
-  before full-file replacement so an excerpt is never mistaken for the full body. The 1 MiB/UTF-8/
+  before full-file replacement so an excerpt is never mistaken for the full body. The 10 MiB/UTF-8/
   link/path checks still apply to the whole file, including bytes outside the returned window.
+  For a local change in a large file, read the needed windows with a whole-file SHA pin and
+  use a small, unambiguous `oldText` span rather than transferring the full body for that change.
 - For requested edits, `write_file(token,path,text,expectedSha256,oldText?)` creates (`null` revision)
   or replaces a file using its read revision. Optional `oldText` instead selects exactly one literal
   span in an existing file: `text` becomes its replacement. Read relevant context and retain the
@@ -155,13 +157,16 @@ This is the protocol available to the worker, not a sequence to copy into ordina
   `oldText` on an older worker**, which would overwrite the file with only the replacement span.
   See [development-loop.md](development-loop.md) for exact-edit constraints and pinned reads.
   `delete_file(token,path,expectedSha256)` removes a read file. These directly change local files; Codex does not apply a returned patch. No recursive
-  deletion. Content is UTF-8, at most 1 MiB/file. MCP project-relative paths always use `/`,
+  deletion. Content is UTF-8, at most 10 MiB/file. The UTF-8 byte lengths of `text`, `oldText`
+  when supplied, and the resulting whole file must each fit 10 MiB. MCP project-relative
+  paths always use `/`,
   including on Windows. Drive-relative paths, NTFS stream syntax (`:`), and path components
   consisting only of dots/spaces are rejected before filesystem access on every platform.
 - `submit_result(token,status,summary,result)` ends the task with status `completed`, `failed` or
   `cancelled`. Include the deliverable, any changed paths/receipts, checks and limitations;
-  unexecuted checks are NOT_RUN. Submission saves the result, closes file access and removes backup
-  checks. After submission the worker makes no further project/tool changes and finishes its
+  unexecuted checks are NOT_RUN. The saved result remains limited to 1 MiB of UTF-8 text.
+  Submission saves the result, closes file access and removes backup checks. After submission
+  the worker makes no further project/tool changes and finishes its
   user-facing final chat answer. The parent collects the result promptly and observes final-answer
   completion separately before closing the owned tab; see [chat-lifecycle.md](chat-lifecycle.md).
 
@@ -197,12 +202,13 @@ This is for cooperative developer workspaces, not isolation from hostile local f
 Read-only blocks changes, not disclosure: project text files can contain secrets. Use a sanitized
 project snapshot or explicitly supplied inputs when unrelated credentials must remain inaccessible.
 
-File, original-backup and mutation-journal reads enforce the 1 MiB limit with actual
-bounded reads, not only an earlier file-size check. They read at most 1 MiB plus one
-sentinel byte per snapshot and reject overflow; no prefix is returned as a complete file.
-Optional line windows still validate and hash the whole bounded snapshot before selecting
-lines. Empty files, UTF-8, CRLF and whole-file revision semantics are unchanged. A read
-error does not authorize truncation, retrying a write or skipping recovery inspection.
+Project files and original backups have a 10 MiB limit; mutation journals retain their
+1 MiB limit. Actual bounded reads enforce the respective limit plus one sentinel byte
+per snapshot, not only an earlier file-size check. They reject overflow; no prefix is
+returned as a complete file. Optional line windows still validate and hash the whole
+bounded snapshot before selecting lines. Empty files, UTF-8, CRLF and whole-file revision
+semantics are unchanged. A read error does not authorize truncation, retrying a write or
+skipping recovery inspection.
 This byte cap is not a read deadline or an atomic snapshot against concurrent writers.
 
 ### MCP request contract
@@ -220,10 +226,23 @@ returns an empty result without changing task state. Protocol notifications rece
 responses; a transport cancellation notification does not revoke a logical task or undo an already
 synchronous file operation. Use the controller's explicit task cancellation for that purpose.
 
-Files/results remain limited to 1 MiB of decoded UTF-8. JSON escaping may use up to six wire bytes
-per text byte, so MCP bodies are capped at 8 MiB including the envelope. Controller bodies remain
-capped at 2 MiB. Invalid wire UTF-8 and tool strings containing unpaired UTF-16 surrogates fail
-rather than being silently replaced. This is bounded request parsing, not a denial-of-service sandbox.
+MCP request bodies are capped at 128 MiB including the envelope. JSON escaping can expand
+each byte of supported text to six wire bytes: a 10 MiB `text` and 10 MiB `oldText` can
+therefore require 120 MiB before the envelope. This transport allowance does not increase
+the 10 MiB decoded UTF-8 limits for workspace files and `write_file`'s `text`/`oldText`,
+or the 1 MiB saved-result limit. Controller bodies, including task registration and its
+named `inputs`, remain capped at 2 MiB. A declared `Content-Length` above the route's
+limit is rejected before buffering; actual received-byte limits remain enforced for all
+requests, including chunked bodies and those without that header. Invalid wire UTF-8 and
+tool strings containing unpaired UTF-16 surrogates fail rather than being silently replaced.
+
+Calls without read-window options still return the whole file. MCP responses include the
+same tool data in both text `content` and `structuredContent`; full reads of large files
+can therefore produce much larger serialized responses. Use bounded windows for selective
+reading, but each call still reads, validates and hashes the entire file. Edits and recovery
+inspection also retain full original backups and their I/O costs. The request cap is not a
+response-size, total-memory, latency or denial-of-service guarantee. Use the normal stopped-worker
+update procedure before relying on the larger file allowance; older workers keep their old limits.
 
 ### Builds, tests and Git
 

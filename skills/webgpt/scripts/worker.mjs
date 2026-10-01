@@ -18,8 +18,8 @@ const schema = properties => ({type:'object',properties,required:Object.keys(pro
 const str = {type:'string'};
 export const tools = [
   {name:'list_files',description:'List a local project directory, up to 500 entries per page. Use path . for the root. Pass nextCursor as cursor for the next page; restart without a cursor if the directory changes.',inputSchema:{...schema({token:str,path:str}),properties:{token:str,path:str,cursor:str,limit:{type:'integer',minimum:1,maximum:500}}},annotations:{readOnlyHint:true,openWorldHint:false}},
-  {name:'read_file',description:'Read a project text file and its whole-file SHA256 revision. Optional offset (1-based), limit (lines) or maxChars returns a bounded window; expectedSha256 pins it to a whole-file revision. Missing unpinned file returns exists:false. Read the whole file before full replacement; exact oldText edits need relevant context.',inputSchema:{...schema({token:str,path:str}),properties:{token:str,path:str,...windowProperties,expectedSha256:str}},annotations:{readOnlyHint:true,openWorldHint:false}},
-  {name:'write_file',description:'Create or replace a project text file after reading. Optional oldText replaces exactly one literal span with text in an existing file; no fuzzy matching. expectedSha256 must match the whole-file revision (null only for create without oldText). Original is backed up. No Git or shell.',inputSchema:{...schema({token:str,path:str,text:str,expectedSha256:{type:['string','null']}}),properties:{token:str,path:str,text:str,expectedSha256:{type:['string','null']},oldText:str}},annotations:{readOnlyHint:false,destructiveHint:true,openWorldHint:false}},
+  {name:'read_file',description:'Read a project text file up to 10 MiB of UTF-8 and its whole-file SHA256 revision. Optional offset (1-based), limit (lines) or maxChars returns a bounded window; expectedSha256 pins it to a whole-file revision. Prefer windows for large files. Missing unpinned file returns exists:false. Read the whole file before full replacement; exact oldText edits need relevant context.',inputSchema:{...schema({token:str,path:str}),properties:{token:str,path:str,...windowProperties,expectedSha256:str}},annotations:{readOnlyHint:true,openWorldHint:false}},
+  {name:'write_file',description:'Create or replace a project text file after reading; resulting UTF-8 file must fit 10 MiB. Optional oldText replaces exactly one literal span with text in an existing file; no fuzzy matching. Prefer small exact edits for large files. expectedSha256 must match the whole-file revision (null only for create without oldText). Original is backed up. No Git or shell.',inputSchema:{...schema({token:str,path:str,text:str,expectedSha256:{type:['string','null']}}),properties:{token:str,path:str,text:str,expectedSha256:{type:['string','null']},oldText:str}},annotations:{readOnlyHint:false,destructiveHint:true,openWorldHint:false}},
   {name:'delete_file',description:'Directly delete an existing local project file after reading it. Requires matching expectedSha256; original and path are saved for recovery. No directory or recursive deletion.',inputSchema:schema({token:str,path:str,expectedSha256:str}),annotations:{readOnlyHint:false,destructiveHint:true,openWorldHint:false}},
   {name:'get_task',description:'Read the assigned task and input names using its private task token. No repository or Git setup needed.',inputSchema:schema({token:str}),annotations:{readOnlyHint:true,openWorldHint:false}},
   {name:'read_input',description:'Read one explicitly supplied input by name; no filesystem access. Optional offset (1-based), limit (lines) or maxChars returns complete lines with partial/range/nextOffset and the whole-input SHA256. Without options returns the original full text. Follow nextOffset for required context; an excerpt is not the full input.',inputSchema:{...schema({token:str,name:str}),properties:{token:str,name:str,...windowProperties}},annotations:{readOnlyHint:true,openWorldHint:false}},
@@ -284,6 +284,9 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
   };
   const json=(res,status,value)=>{if(res.destroyed||res.writableEnded)return;res.writeHead(status,{'content-type':'application/json','cache-control':'no-store'});res.end(JSON.stringify(value));};
   const body=async(req,limit=2*1024*1024)=>{
+    // Refuse a declared overflow before buffering it. Chunked/undeclared bodies
+    // still need the actual byte counter; the header is not a validation shortcut.
+    if(Number(req.headers['content-length'])>limit)throw Object.assign(Error('request too large'),{statusCode:413});
     const chunks=[];let bytes=0;
     for await(const c of req){bytes+=c.length;if(bytes>limit)throw Object.assign(Error('request too large'),{statusCode:413});chunks.push(c);}
     // Reject invalid wire bytes rather than silently substituting replacement characters.
@@ -384,9 +387,10 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
     const error=(status,id,code,message)=>json(res,status,{jsonrpc:'2.0',id,error:{code,message}});
     const version=req.headers['mcp-protocol-version'];
     if(version!==undefined&&!protocolVersions.includes(version))return error(400,null,-32600,'unsupported MCP protocol header');
-    // JSON escaping can expand a valid 1 MiB text payload to 6 MiB plus its envelope.
-    // The decoded per-file/result limits remain 1 MiB; controller bodies remain 2 MiB.
-    let m;try{m=await body(req,8*1024*1024);}catch(e){
+    // A valid exact edit can carry 10 MiB each of oldText and text. JSON escaping
+    // can expand those to 120 MiB plus the envelope. Results retain their decoded
+    // 1 MiB limit, and controller bodies retain their separate 2 MiB allowance.
+    let m;try{m=await body(req,128*1024*1024);}catch(e){
       return error(e.statusCode??400,null,e.statusCode===413?-32600:-32700,e.statusCode===413?'request too large':'invalid JSON or UTF-8');
     }
     if(stopping)return json(res,503,{error:'worker is stopping',code:'SHUTTING_DOWN'});

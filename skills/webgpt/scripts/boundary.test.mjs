@@ -7,11 +7,27 @@ import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
+import { request as httpRequest } from 'node:http';
 import { grantWorkspace } from './workspace.mjs';
 import { start, tools } from './worker.mjs';
 import { request, collectTask } from './client.mjs';
 
 const MiB = 1024 * 1024;
+// Leave the body open when only headers are supplied: a declared overflow must
+// be rejected before the sender transmits or finishes a potentially huge body.
+function rawPost(port, path, headers, body) {
+  return new Promise((resolve, reject) => {
+    const req = httpRequest({ hostname: '127.0.0.1', port, path, method: 'POST', headers }, res => {
+      let text = ''; res.setEncoding('utf8');
+      res.on('data', chunk => { text += chunk; });
+      res.on('error', reject);
+      res.on('end', () => { resolve({ status: res.statusCode, text }); req.destroy(); });
+    });
+    req.on('error', reject);
+    req.setTimeout(5000, () => req.destroy(Error('request did not reject its oversized body')));
+    if (body === undefined) req.flushHeaders(); else req.end(body);
+  });
+}
 async function fixture(run) {
   const base = mkdtempSync(join(tmpdir(), 'webgpt-boundary-'));
   const dir = join(base, 'runtime'), root = join(base, 'project'); mkdirSync(root);
@@ -137,16 +153,39 @@ test('invalid wire UTF-8 is rejected rather than silently replacing bytes in a f
   assert.equal(existsSync(join(f.root, 'broken.txt')), false);
 }));
 
-test('a fully escaped 1 MiB text file fits the transport and round trips with its SHA', () => fixture(async f => {
+test('fully escaped 10 MiB files support creation, exact replacement and recovery over MCP', () => fixture(async f => {
   const { token } = await f.register();
-  const text = '\u0001'.repeat(MiB);
+  const text = '\u0001'.repeat(10 * MiB);
   const response = await f.post({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: {
     name: 'write_file', arguments: { token, path: 'escaped.txt', text, expectedSha256: null },
   } });
   assert.equal(response.status, 200);
   assert.equal(response.message.result.isError, false);
   assert.equal(readFileSync(join(f.root, 'escaped.txt'), 'utf8'), text);
-  assert.equal(response.message.result.structuredContent.afterSha256, createHash('sha256').update(text).digest('hex'));
+  const beforeSha256 = createHash('sha256').update(text).digest('hex');
+  assert.equal(response.message.result.structuredContent.afterSha256, beforeSha256);
+
+  // Both strings can independently require six wire bytes per UTF-8 byte.
+  // A 64 MiB request allowance would accept creation but reject this valid edit.
+  const replacement = '\u0002'.repeat(10 * MiB);
+  const edited = await f.call('write_file', { token, path: 'escaped.txt', oldText: text,
+    text: replacement, expectedSha256: beforeSha256 });
+  assert.equal(edited.isError, false, JSON.stringify(edited));
+  const receipt = edited.structuredContent;
+  assert.equal(receipt.beforeSha256, beforeSha256);
+  assert.equal(receipt.afterSha256, createHash('sha256').update(replacement).digest('hex'));
+  assert.equal(readFileSync(join(f.root, 'escaped.txt'), 'utf8'), replacement);
+  assert.equal(readFileSync(receipt.backup, 'utf8'), text);
+
+  // Large originals must remain verifiable at restart and terminal collection,
+  // not merely writable before the first recovery inspection.
+  await f.restart();
+  const task = (await f.call('get_task', { token })).structuredContent;
+  assert.deepEqual(task.recoveryRequired, []);
+  assert.deepEqual(task.changes.at(-1), receipt);
+  assert.equal((await f.call('submit_result', { token, status: 'completed', summary: 'large edit', result: 'done' })).isError, false);
+  const collected = await collectTask('editor', f.config);
+  assert.equal(readFileSync(collected.artifact, 'utf8'), 'done');
 }));
 
 test('escaped 1 MiB results can be submitted and collected without loosening decoded limits', () => fixture(async f => {
@@ -158,13 +197,16 @@ test('escaped 1 MiB results can be submitted and collected without loosening dec
   assert.equal(readFileSync(collected.artifact, 'utf8'), text);
 }));
 
-test('decoded file/result limits still reject payloads above 1 MiB', () => fixture(async f => {
+test('decoded files above 10 MiB and results above 1 MiB fail before side effects', () => fixture(async f => {
   const { token } = await f.register();
-  const text = '\u0001'.repeat(MiB + 1);
-  assert.equal((await f.call('write_file', { token, path: 'too-big.txt', text, expectedSha256: null })).isError, true);
-  assert.equal((await f.call('submit_result', { token, status: 'completed', summary: '', result: text })).isError, true);
+  const tooLargeFile = await f.call('write_file', { token, path: 'too-big.txt', text: 'x'.repeat(10 * MiB + 1), expectedSha256: null });
+  assert.equal(tooLargeFile.isError, true);
+  assert.match(tooLargeFile.content[0].text, /<=10 MiB/);
+  assert.equal((await f.call('submit_result', { token, status: 'completed', summary: '', result: '\u0001'.repeat(MiB + 1) })).isError, true);
   assert.equal(existsSync(join(f.root, 'too-big.txt')), false);
-  assert.equal((await f.call('get_task', { token })).structuredContent.status, 'running');
+  const task = (await f.call('get_task', { token })).structuredContent;
+  assert.equal(task.status, 'running');
+  assert.deepEqual(task.changes, []);
 }));
 
 test('lone UTF-16 surrogates are rejected without breaking normal Unicode', () => fixture(async f => {
@@ -250,13 +292,22 @@ test('valid applied journals restore missing receipts without replaying file edi
 }));
 
 test('oversized wire bodies are rejected and do not disable the worker', () => fixture(async f => {
-  const response = await f.post(' '.repeat(8 * MiB + 1), {}, true);
+  const response = await rawPost(f.config.mcpPort, '/mcp', { 'content-length': 128 * MiB + 1 });
   assert.equal(response.status, 413);
+  assert.equal(JSON.parse(response.text).error.message, 'request too large');
   assert.equal((await f.rpc('ping')).result !== undefined, true);
   await f.register('large-control');
   await assert.rejects(f.admin('register', {
     id: 'too-large', instructions: 'x'.repeat(2 * MiB), inputs: {},
   }), /request too large/);
+  // The shared parser must still count actual bytes without Content-Length.
+  // Exercise its smaller controller budget without a second 128 MiB fixture.
+  const chunked = await rawPost(f.config.controlPort, '/register', {
+    authorization: 'Bearer ' + readFileSync(join(f.dir, 'controller.key'), 'utf8'),
+    'transfer-encoding': 'chunked',
+  }, ' '.repeat(2 * MiB + 1));
+  assert.equal(chunked.status, 413);
+  assert.equal(JSON.parse(chunked.text).error, 'request too large');
   assert.equal((await f.admin('tasks')).running, 1);
 }));
 

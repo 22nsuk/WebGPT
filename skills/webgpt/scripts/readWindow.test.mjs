@@ -84,8 +84,8 @@ test('range reading keeps file scope, read grants, link checks and whole-file li
   assert.throws(()=>readWorkspace(grant,'outside/hardlink.txt',{limit:1}),/symlink/);
   writeFileSync(join(root,'invalid.txt'),Buffer.from([0x61,0x0a,0xff]));
   assert.throws(()=>readWorkspace(grant,'invalid.txt',{limit:1}),/UTF-8/);
-  writeFileSync(join(root,'large.txt'),'a\n'+'x'.repeat(1024*1024));
-  assert.throws(()=>readWorkspace(grant,'large.txt',{limit:1}),/1 MiB/);
+  writeFileSync(join(root,'large.txt'),'a\n'+'x'.repeat(10*1024*1024));
+  assert.throws(()=>readWorkspace(grant,'large.txt',{limit:1}),/10 MiB/);
 }));
 
 test('MCP advertises optional bounded read arguments and returns range metadata with whole-file hash',()=>fixture(async({base,root})=>{

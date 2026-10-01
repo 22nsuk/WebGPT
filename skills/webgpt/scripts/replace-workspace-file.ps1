@@ -48,7 +48,7 @@ try {
         $source = [IO.File]::OpenRead($file)
         $sha = [Security.Cryptography.SHA256]::Create()
         try {
-            if ($source.Length -gt 1048576) { $reason = 'revision_conflict'; throw 'file revision conflict' }
+            if ($source.Length -gt 10485760) { $reason = 'revision_conflict'; throw 'file revision conflict' }
             $digest = [BitConverter]::ToString($sha.ComputeHash($source)).Replace('-', '').ToLowerInvariant()
             if ($digest -ne $request.expectedSha256) { $reason = 'revision_conflict'; throw 'file revision conflict' }
         } finally { $source.Dispose(); $sha.Dispose() }

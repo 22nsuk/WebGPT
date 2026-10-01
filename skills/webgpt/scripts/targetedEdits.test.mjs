@@ -46,7 +46,7 @@ for (const [name, original, oldText, text] of [
   ['overlapping', 'aaa', 'aa', 'x'], ['empty match', 'abc', '', 'x'],
   ['no-op', 'abc', 'b', 'b'], ['NUL match', 'abc', '\0', 'x'],
   ['bad Unicode match', 'abc', '\uD800', 'x'], ['bad Unicode replacement', 'abc', 'b', '\uD800'],
-  ['NUL replacement', 'abc', 'b', '\0'], ['output too large', 'a'.repeat(1024 * 1024 - 1) + 'b', 'b', 'xx'],
+  ['NUL replacement', 'abc', 'b', '\0'], ['output too large', 'a'.repeat(10 * 1024 * 1024 - 1) + 'b', 'b', 'xx'],
 ]) test(`exact edit rejects ${name} before creating recovery artifacts`, t => {
   const f = fixture(t, original);
   assert.throws(() => f.write({ oldText, text }));
@@ -111,15 +111,26 @@ test('invalid read revisions/options and exact-delete arguments fail closed', t 
   assert.deepEqual(fs.readdirSync(f.dir), []);
 });
 
-test('small exact edits reduce request payload without changing the 1 MiB file ceiling', t => {
-  const f = fixture(t, 'a'.repeat(1024 * 1024 - 1) + 'b');
+test('small exact edits and deletion preserve 10 MiB files and original backups', t => {
+  const limit = 10 * 1024 * 1024, f = fixture(t, 'a'.repeat(limit - 1) + 'b');
   const whole = { path: 'a.txt', expectedSha256: hash(f.text), text: f.text.slice(0, -1) + 'c' };
   const exact = { path: 'a.txt', expectedSha256: hash(f.text), oldText: 'b', text: 'c' };
   assert.ok(Buffer.byteLength(JSON.stringify(exact)) < 200);
-  assert.ok(Buffer.byteLength(JSON.stringify(whole)) > 1024 * 1024);
+  assert.ok(Buffer.byteLength(JSON.stringify(whole)) > limit);
   const receipt = f.write(exact);
-  assert.equal(fs.statSync(f.file).size, 1024 * 1024);
+  assert.equal(fs.statSync(f.file).size, limit);
   assert.equal(receipt.afterSha256, hash(whole.text));
+  assert.equal(fs.readFileSync(receipt.backup, 'utf8'), f.text);
+  assert.deepEqual(inspectRecovery(f.dir, 'owned'), { receipts: [receipt], unresolved: [] });
+  const deleted = changeWorkspace(f.grant, f.dir, 'owned', {
+    path: 'a.txt', expectedSha256: receipt.afterSha256,
+  }, true);
+  assert.equal(fs.existsSync(f.file), false);
+  assert.equal(fs.readFileSync(deleted.backup, 'utf8'), whole.text);
+  const recovery = inspectRecovery(f.dir, 'owned');
+  assert.deepEqual(recovery.unresolved, []);
+  assert.deepEqual(new Map(recovery.receipts.map(item => [item.operation, item])),
+    new Map([receipt, deleted].map(item => [item.operation, item])));
 });
 
 // Real MCP boundary tests run in the repository and standalone-installed suites.

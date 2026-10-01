@@ -2,7 +2,7 @@
 
 Use the normal [parent workflow](parent-workflow.md): one coherent assignment,
 worker validation/correction → `review` → gap-only parent checks/disposition → `collect`. This page is for code/test work,
-not another preflight checklist. The seven tools, project grant, 1 MiB UTF-8 file
+not another preflight checklist. The seven tools, project grant, 10 MiB UTF-8 file
 limit, recovery evidence and separate acceptance/collection remain the boundary.
 
 <a id="1-send-one-useful-validation-handoff"></a>
@@ -163,9 +163,12 @@ for broad changes rather than many tiny calls and recovery journals.
 The service constructs the new full text from its validated current snapshot, then
 uses the **same** backup, whole-file conflict recheck, permissions-preserving write
 and recovery receipt. Unrelated bytes, BOM and newline style are retained. The result
-must still fit 1 MiB; NUL/binary files remain unsupported. This reduces request text,
-not server hashing, snapshot reads or recovery cost. The 8 MiB wire-body ceiling also
-remains. A failed/uncertain response is not authorization to repeat a write.
+must fit 10 MiB, as must each supplied `text` and `oldText` value when encoded as UTF-8;
+NUL/binary files remain unsupported. For small changes in larger files, use the needed
+read windows and a small, unambiguous old span. This reduces transferred text, not server
+hashing, snapshot reads or recovery cost. The MCP request-body ceiling is 128 MiB to
+allow JSON escaping; it does not expand the decoded-text or 1 MiB result limits.
+A failed/uncertain response is not authorization to repeat a write.
 
 ### Pin subsequent read windows
 
@@ -181,7 +184,7 @@ Use these arguments only when the actual installed connector advertises them.
 Update matching scripts through the existing stopped-worker process and refresh
 its schema when needed; do not silently drop `oldText` on an older worker (that
 would turn replacement text into a whole-file overwrite). Existing callers need
-no migration. When required binary, >1 MiB or native CLI evidence exists only on
+no migration. When required binary, >10 MiB or native CLI evidence exists only on
 the parent's host, use the optional parent-only [artifact input helper](artifact-inputs.md):
 fingerprint the approved source once, select bounded text/hex windows, review the
 new evidence and pass its text in named `inputs`. First reuse adequate evidence

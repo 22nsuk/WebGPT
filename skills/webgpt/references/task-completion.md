@@ -45,7 +45,7 @@ native locations. Do not force an entire multi-source task into one repository.
 | Git repository/PR | Use the task's actual local inputs or authorized remote branch, then [development](development-loop.md) and [GitHub](github-workflow.md) completion rules. | Only the unavailable operation or required local integration, not all verification by default. |
 
 The workspace is an ordinary allowed directory, not a Git registration. The MCP
-file tools still accept only supported UTF-8 text up to 1 MiB per file; they do not
+file tools accept supported UTF-8 text up to 10 MiB per file; they do not
 provide a shell or transport binary artifacts. A separate sandbox or app may work
 with larger/binary inputs within its own actual limits and permissions. Use that
 route when available rather than delegating every native conversion to the parent.

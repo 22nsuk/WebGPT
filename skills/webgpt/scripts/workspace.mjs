@@ -8,7 +8,8 @@ import { readBoundedFile } from './bounded-read.mjs';
 import { readWindowOptions, textWindow } from './text-window.mjs';
 import { windowsReplacementFailure } from './windows-replacement-diagnostics.mjs';
 
-const MAX_BYTES = 1024 * 1024;
+const MAX_BYTES = 10 * 1024 * 1024;
+const JOURNAL_MAX_BYTES = 1024 * 1024;
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const metadata = path => { try { return lstatSync(path); } catch (e) { if (e.code === 'ENOENT') return null; throw e; } };
 function windowsReplacement(action,file,temporary,expectedSha256,context) {
@@ -87,9 +88,9 @@ function target(grant,path,writing=false,createParents=false,directory=false) {
   }
   return cursor;
 }
-function snapshot(path) {
-  const saved=readBoundedFile(path,MAX_BYTES,reason=>Error(reason==='overflow'
-    ?'UTF-8 text file required':'file must be regular, unlinked and <=1 MiB'));
+function snapshot(path,limit=MAX_BYTES) {
+  const saved=readBoundedFile(path,limit,reason=>Error(reason==='overflow'
+    ?'UTF-8 text file required':`file must be regular, unlinked and <=${limit/(1024*1024)} MiB`));
   if(!saved)return {exists:false,text:null,sha256:null};
   const {bytes,stat}=saved,text=bytes.toString('utf8');
   if(text.includes('\0') || !Buffer.from(text).equals(bytes))throw Error('UTF-8 text file required');
@@ -174,7 +175,9 @@ export function inspectRecovery(dir, taskId) {
     try {
       // snapshot owns named/opened type, link, size and identity checks.
       // Do not repeat a weaker metadata pass before the same bounded read.
-      const entry=JSON.parse(snapshot(journal).text);
+      // Journals hold receipt metadata, not file contents. Keep their smaller
+      // allowance while originals share the workspace's full content limit.
+      const entry=JSON.parse(snapshot(journal,JOURNAL_MAX_BYTES).text);
       if(!entry||typeof entry!=='object'||Array.isArray(entry)||entry.state!=='applied'
           ||typeof entry.operation!=='string'||!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(entry.operation)
           ||name!==entry.operation+'.json')throw Error('unresolved journal');
@@ -194,7 +197,7 @@ export function inspectRecovery(dir, taskId) {
 
 export function changeWorkspace(grant,dir,taskId,{path,text,expectedSha256,oldText},deleting=false) {
   if(expectedSha256!==null && (typeof expectedSha256!=='string' || !/^[0-9a-f]{64}$/.test(expectedSha256))) throw Error('expectedSha256 required (null only for create)');
-  if(!deleting && (typeof text!=='string' || !text.isWellFormed() || text.includes('\0') || Buffer.byteLength(text)>MAX_BYTES)) throw Error('text must be <=1 MiB');
+  if(!deleting && (typeof text!=='string' || !text.isWellFormed() || text.includes('\0') || Buffer.byteLength(text)>MAX_BYTES)) throw Error('text must be <=10 MiB');
   if(oldText!==undefined && (deleting || expectedSha256===null || typeof oldText!=='string' || !oldText
       || !oldText.isWellFormed() || oldText.includes('\0') || Buffer.byteLength(oldText)>MAX_BYTES))
     throw Error('oldText requires nonempty UTF-8 text and an existing file revision');
@@ -210,7 +213,7 @@ export function changeWorkspace(grant,dir,taskId,{path,text,expectedSha256,oldTe
     if(offset<0 || before.text.indexOf(oldText,offset+1)!==-1)throw Error('oldText must match exactly once');
     if(oldText===text)throw Error('replacement would not change the file');
     text=before.text.slice(0,offset)+text+before.text.slice(offset+oldText.length);
-    if(Buffer.byteLength(text)>MAX_BYTES)throw Error('resulting text must be <=1 MiB');
+    if(Buffer.byteLength(text)>MAX_BYTES)throw Error('resulting text must be <=10 MiB');
   }
   const permissions=before.exists?lstatSync(file):null;
   if(!deleting && process.platform!=='win32' && permissions && (permissions.mode & 0o7000))throw Error('editing special-mode files is not supported');

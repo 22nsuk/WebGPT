@@ -8,6 +8,7 @@ const marked = value => value === true || typeof value === 'string';
 export default async function* testFeedback(source) {
   let retainedFailures = 0, observedFailures = 0, omittedFailures = 0, bytes = 0;
   for await (const { type, data } of source) {
+    if (type !== 'test:complete' && type !== 'test:fail') continue;
     // Root after hooks have a standalone test:fail with no completion/type.
     // Early Node 22 also omits type on ordinary test hooks: take those from
     // test:fail only, so their completion mirrors are not counted twice.

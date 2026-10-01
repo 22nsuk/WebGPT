@@ -28,12 +28,12 @@ subscription, bypass usage limits or guarantee quota savings.
 | --- | --- |
 | Research, analysis and writing | Web ChatGPT's reasoning and separately available, authorized tools |
 | Local folder/project review | A task-scoped `read` grant; Git is not required |
-| Local implementation | An `edit` grant for UTF-8 files up to 1 MiB: creation, replacement, exact-span editing and deletion |
+| Local implementation | An `edit` grant for UTF-8 files up to 10 MiB: creation, replacement, exact-span editing and deletion |
 | Conflict protection | Whole-file SHA-256 preconditions; stale writes are rejected |
 | Completion and recovery | Saved results, read-only review, integrity-checked collection and retained evidence |
 | Shell, local Git, test execution through the file worker | **Not provided by MCP.** Use available authorized worker tools; parent assistance is for actual host/capability gaps |
 | Remote branch/commit/PR operations | Possible through **separately connected GitHub tools** and their permissions |
-| Large/binary files and native CLI evidence | Use available authorized attachment/analysis/app tools; [parent-side evidence](skills/webgpt/references/artifact-inputs.md) for host-only inputs. No MCP execution or binary writes |
+| Files over 10 MiB, binary files and native CLI evidence | Use available authorized attachment/analysis/app tools; [parent-side evidence](skills/webgpt/references/artifact-inputs.md) for host-only inputs. No MCP execution or binary writes |
 | Arbitrary binary files or recursive deletion | Not supported by the file tools |
 
 The worker exposes seven MCP tools: `get_task`, `read_input`, `list_files`,

@@ -44,6 +44,8 @@ function diagnosticEvidence(f,taskId) {
 }
 
 for(const restricted of [true,false])test(`Windows edit preserves ${restricted?'restricted':'inherited'} DACL and owner/group, including private staging`,{skip:!windows},()=>fixture(f=>{
+  const original='original 한국어\r\n'+'x'.repeat(2*1024*1024);
+  fs.writeFileSync(f.file,original);
   ps(`$users=[Security.Principal.SecurityIdentifier]::new('S-1-5-32-545');
     $parent=[IO.Directory]::GetAccessControl($request.root);
     $parent.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($users,'ReadAndExecute','ContainerInherit,ObjectInherit','None','Allow'));
@@ -75,7 +77,7 @@ for(const restricted of [true,false])test(`Windows edit preserves ${restricted?'
   assert.equal(staged.protected,true);assert.equal(staged.users,0);assert.equal(staged.rules.length,1);
   assert.equal(evidence(f.file).sddl,before.sddl);
   assert.equal(fs.readFileSync(f.file,'utf8'),'changed 한국어');
-  assert.equal(fs.readFileSync(receipt.backup,'utf8'),'original');
+  assert.equal(fs.readFileSync(receipt.backup,'utf8'),original);
   assert.deepEqual(inspectRecovery(f.dir,'permissions'),{receipts:[receipt],unresolved:[]});
   assert.equal(fs.readdirSync(join(f.dir,'recovery','permissions')).some(name=>name.endsWith('.diagnostic.txt')),false);
   assert.deepEqual(fs.readdirSync(f.root),[f.path]);

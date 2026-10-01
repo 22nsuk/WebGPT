@@ -47,6 +47,7 @@ test('passing, TODO and skipped events are silent; unrelated output is not copie
     type: 'test:complete', data: { ...failure().data, details: { ...failure().data.details, passed } },
   }));
   assert.equal(await report([{ type: 'test:pass', data: {} }, ...notFailures, ...marked,
+    { type: 'test:watch:drained', data: undefined }, { type: 'test:watch:restarted', data: undefined },
     { type: 'test:stdout', data: { message: 'private output'.repeat(100000) } }]), '');
   const ordinary = failure('unmarked failure');
   Object.assign(ordinary.data, { todo: false, skip: false });
