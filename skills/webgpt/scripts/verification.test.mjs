@@ -137,7 +137,19 @@ for (const scenario of verificationScenarios) test(`${scenario} exercise checks 
   const f = await fixture(t, scenario);
   assert.equal((await f.check()).localVerdict, 'PENDING');
   await performFixture(f, scenario);
-  const before = f.state(), report = await f.check();
+  // Extend the existing acceptance fixture instead of running a second copy
+  // just to measure I/O. Collection still owns its separate fresh verification.
+  const checkOnce = async () => {
+    const path = join(f.dir, f.task.id + '.result.txt'), size = fs.statSync(path).size;
+    const read = observeFileRead(t, path);
+    let report;
+    try { report = await f.check(); } finally { read.restore(); }
+    const { opens, closes, bytes } = read.evidence;
+    assert.deepEqual({ opens, closes, bytes }, { opens: 1, closes: 1, bytes: size },
+      'verify and parse one fresh result snapshot; neither rescan nor cache acceptance');
+    return report;
+  };
+  const before = f.state(), report = await checkOnce();
   assert.equal(report.localVerdict, 'PASS'); assert.equal(report.collection, 'uncollected'); assertNotLive(report);
   assert.equal(report.dispatch.availability, 'not_recorded'); assert.equal(report.measurements.availability, 'not_recorded');
   if (scenario === 'connection') {
@@ -153,7 +165,7 @@ for (const scenario of verificationScenarios) test(`${scenario} exercise checks 
   assert.deepEqual(f.state(), before, 'checks cannot retire input/token or publish another result');
   assert.equal((await f.tool('get_task')).isError, false);
   assert.equal((await collectTask(f.task.id, f.config)).collected, true);
-  const collected = f.state(), after = await f.check();
+  const collected = f.state(), after = await checkOnce();
   assert.equal(after.collection, 'collected'); assert.equal(after.localVerdict, 'PASS'); assertNotLive(after);
   assert.deepEqual(f.state(), collected);
   const stored = readJson(join(f.dir, 'state.json'))[0];
@@ -194,6 +206,37 @@ test('later tampering, missing results and recovery candidates fail freshly with
   const report = await f.check();
   assert.equal(report.checks.recovery, 'FAIL'); assert.equal(report.localVerdict, 'FAIL');
   assert.deepEqual(fs.readFileSync(path + '.tmp'), bytes); assert.deepEqual(f.state(), before);
+});
+
+test('verification keeps the existing JSON BOM policy with the shared verified-result reader', async t => {
+  for (const [prefix, expected] of [['\ufeff', 'PASS'], ['\ufeff\ufeff', 'FAIL'], [' \ufeff', 'FAIL']]) {
+    const f = await fixture(t);
+    const result = prefix + JSON.stringify(resultFor('text'));
+    assert.equal((await f.tool('submit_result', { status: 'completed', summary: 'BOM fixture', result })).isError, false);
+    const before = f.state(), report = await f.check();
+    assert.equal(report.checks.result, expected); assert.equal(report.localVerdict, expected);
+    assertNotLive(report); assert.deepEqual(f.state(), before);
+  }
+});
+
+test('verification does not trust a result path or an integrity label from the controller', async t => {
+  const f = await fixture(t); await performFixture(f, 'text');
+  const other = join(f.base, 'not-the-owned-result.txt');
+  fs.copyFileSync(join(f.dir, f.task.id + '.result.txt'), other);
+  const proxy = await controllerProxy(f.config, ({ phase, data, res }) => {
+    if (phase !== 'after') return false;
+    Object.assign(data.tasks[0], { artifact: other, integrity: 'verified' });
+    replyJson(res, data); return true;
+  });
+  t.after(() => proxy.close());
+  const before = f.state(), read = observeFileRead(t, other);
+  let report;
+  try { report = await checkVerification(f.run, { ...f.config, controlPort: proxy.port }); }
+  finally { read.restore(); }
+  assert.equal(report.checks.result, 'FAIL'); assert.equal(report.localVerdict, 'FAIL'); assertNotLive(report);
+  assert.equal(read.evidence.opens, 0); assert.equal(read.evidence.bytes, 0);
+  assert.deepEqual(proxy.actions, ['/reconcile?id=' + f.task.id]); assert.deepEqual(f.state(), before);
+  assert.equal(JSON.stringify(report).includes(other), false);
 });
 
 test('project checks never evaluate arbitrary returned code or silently ignore extra files', async t => {
