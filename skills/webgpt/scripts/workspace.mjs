@@ -17,7 +17,9 @@ function windowsReplacement(action,file,temporary,expectedSha256,context) {
   let result;
   try {
     result=spawnSync(executable,['-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',helper,action],{
-      input:JSON.stringify({file,temporary,expectedSha256}),encoding:'utf8',windowsHide:true,maxBuffer:64*1024,
+      // Bound each synchronous helper invocation; a stalled PowerShell must not
+      // wait indefinitely in the worker. Timeout is an uncertain mutation, not a retry.
+      input:JSON.stringify({file,temporary,expectedSha256}),encoding:'utf8',windowsHide:true,maxBuffer:64*1024,timeout:30000,
     });
   } catch(error) {result={error};}
   if(result.error||result.status!==0||result.signal)throw windowsReplacementFailure(action,result,context);

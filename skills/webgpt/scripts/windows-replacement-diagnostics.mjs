@@ -12,7 +12,7 @@ const types=new Set(['unknown','System.Exception','System.IO.IOException',
   'System.UnauthorizedAccessException','System.ArgumentException','System.ArgumentNullException',
   'System.NotSupportedException','System.Security.SecurityException','System.ComponentModel.Win32Exception',
   'System.Management.Automation.MethodInvocationException','System.Management.Automation.RuntimeException']);
-const processCodes=new Set(['ENOENT','EACCES','EPERM','EAGAIN','EMFILE','ENFILE','ENOMEM','ENOBUFS']);
+const processCodes=new Set(['ENOENT','EACCES','EPERM','EAGAIN','EMFILE','ENFILE','ENOMEM','ENOBUFS','ETIMEDOUT']);
 const int32=value=>Number.isInteger(value)&&value>=-2147483648&&value<=2147483647;
 const exactKeys=(value,keys)=>value!==null&&typeof value==='object'&&!Array.isArray(value)
   &&Object.keys(value).length===keys.length&&keys.every(key=>Object.hasOwn(value,key));
@@ -54,7 +54,8 @@ export function diagnoseReplacement(action,result) {
     processCode:null,exceptions:[],chainTruncated:false};
   if(result?.error) {
     diagnostic.processCode=processCodes.has(result.error.code)?result.error.code:'unknown';
-    diagnostic.diagnosticStatus=diagnostic.processCode==='ENOBUFS'?'output_limit':'process_error';
+    diagnostic.diagnosticStatus=diagnostic.processCode==='ETIMEDOUT'?'process_timeout'
+      :diagnostic.processCode==='ENOBUFS'?'output_limit':'process_error';
     return diagnostic;
   }
   if(result?.signal) {diagnostic.diagnosticStatus='process_interrupted';return diagnostic;}
