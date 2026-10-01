@@ -11,12 +11,18 @@ import { readDiagnosticBytes } from './audit.mjs';
 import { inspectDispatchEvidence } from './dispatch.mjs';
 import { grantWorkspace } from './workspace.mjs';
 
-export const verificationScenarios = Object.freeze(['text', 'read', 'edit', 'resume']);
+export const verificationScenarios = Object.freeze(['text', 'read', 'edit', 'resume', 'connection']);
 const metricNames = ['browserToolCalls', 'returnedBytes', 'parentInterventions', 'sendAttempts',
   'duplicateMessages', 'endToEndMs', 'inputTokens', 'outputTokens'];
 const orders = '[{"quantity":2,"unitPrice":10},{"quantity":2,"unitPrice":7}]\n';
 const original = 'export const total = rows => rows.reduce((sum, row) => sum + row.unitPrice, 0);\n';
 const corrected = original.replace('sum + row.unitPrice', 'sum + row.quantity * row.unitPrice');
+const connectionSeed = 'status=before\n한글 🧪\nkeep=this line\n';
+const connectionFinal = connectionSeed.replace('status=before', 'status=after');
+const connectionTemporary = '임시 연결 검증\n';
+const connectionSample = '연결 검증 입력\n한글 🧪\n';
+const connectionClaims = ['pinnedReadVerified', 'staleReadRejected', 'staleWriteRejected', 'temporaryLifecycleVerified'];
+const projectMode = scenario => scenario === 'read' ? 'read' : ['edit', 'connection'].includes(scenario) ? 'edit' : null;
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const exactKeys = (value, keys) => object(value) && isDeepStrictEqual(Object.keys(value).sort(), [...keys].sort());
@@ -47,10 +53,22 @@ export function prepareVerification(scenario, path, mode) {
   const dir = join(directory(dirname(path)), basename(path));
   mkdirSync(dir, { mode: 0o700 });
   const run = { version: 1, taskId: 'verify-' + randomUUID(), scenario, mode, createdAt: new Date().toISOString() };
-  const inputs = { orders }, project = ['read', 'edit'].includes(scenario);
+  const inputs = scenario === 'connection' ? { sample: connectionSample } : { orders }, modeForProject = projectMode(scenario);
   let instructions = '제공한 orders의 총 수량과 수량을 반영한 합계를 계산해 주세요. ';
   let resultShape = 'total(숫자 합계), units(숫자 총수량)';
-  if (project) {
+  if (scenario === 'connection') {
+    const root = join(dir, 'project'); mkdirSync(root, { mode: 0o700 });
+    writeFileSync(join(root, 'seed.txt'), connectionSeed, { flag: 'wx', mode: 0o600 });
+    instructions = 'get_task으로 배정을 확인하고 read_input으로 sample을 읽으세요. 배정된 프로젝트의 파일 목록과 seed.txt 전체를 읽고 최초 SHA를 보존하세요. '
+      + 'write_file의 oldText="status=before", text="status=after"와 최초 expectedSha256으로 한 구간만 수정하고 나머지 바이트를 보존하세요. '
+      + '수정 후 전체 SHA로 고정 읽기를 확인한 뒤, 최초 SHA를 사용한 read_file과 write_file을 각각 한 번 시도해 revision conflict 거부를 확인하세요. '
+      + '오래된 쓰기는 같은 oldText/text를 사용하세요. 거부 후 다시 시도하거나 우회하지 말고 seed.txt가 그대로인지 확인하세요. '
+      + '그 다음 temp.txt를 정확히 "임시 연결 검증\\n"(실제 줄바꿈)으로 expectedSha256=null을 사용해 생성하고, 직접 읽은 전체 SHA로 삭제하세요. '
+      + 'temp.txt의 exists:false, 최종 목록에 seed.txt만 남음, seed.txt의 최종 내용과 전체 SHA를 확인하세요. '
+      + '순서는 seed 수정 → temp 생성 → temp 삭제이며 다른 파일은 만들거나 수정하지 마세요. '
+      + '예상한 거부가 아닌 실패나 예기치 않은 쓰기 성공이 발생하면 즉시 변경을 멈추고 남은 증거를 보존하여 failed로 제출하세요. ';
+    resultShape = 'sample(실제로 읽은 입력 문자열), seedSha256(최종 전체 SHA), pinnedReadVerified, staleReadRejected, staleWriteRejected, temporaryLifecycleVerified(각 실제 확인 여부를 JSON boolean으로 표시)';
+  } else if (modeForProject) {
     const root = join(dir, 'project'); mkdirSync(root, { mode: 0o700 });
     for (const [name, text] of [['orders.json', orders], ['total.mjs', original]])
       writeFileSync(join(root, name), text, { flag: 'wx', mode: 0o600 });
@@ -70,7 +88,7 @@ export function prepareVerification(scenario, path, mode) {
     + '확인이나 작업이 실패하면 성공으로 보고하지 말고 실패 상태와 구체적인 한계를 제출하세요. '
     + '셸·Git·프로세스 실행 권한은 없습니다. 부모가 결과를 따로 검증합니다.';
   const registration = { id: run.taskId, instructions, inputs,
-    ...(project ? { workspace: { root: join(dir, 'project'), mode: scenario === 'read' ? 'read' : 'edit' } } : {}) };
+    ...(modeForProject ? { workspace: { root: join(dir, 'project'), mode: modeForProject } } : {}) };
   writeJson(join(dir, 'verification.json'), run);
   writeJson(join(dir, 'request.json'), registration);
   writeJson(join(dir, 'measurements.json'), { taskId: run.taskId,
@@ -83,13 +101,32 @@ export function prepareVerification(scenario, path, mode) {
 function workspaceCheck(dir, scenario, task) {
   if (!Object.hasOwn(task, 'workspace')) return 'UNAVAILABLE';
   try {
-    const expected = ['read', 'edit'].includes(scenario)
-      ? grantWorkspace({ root: directory(join(dir, 'project')), mode: scenario }) : null;
+    const mode = projectMode(scenario);
+    const expected = mode ? grantWorkspace({ root: directory(join(dir, 'project')), mode }) : null;
     return isDeepStrictEqual(task.workspace, expected) ? 'PASS' : 'FAIL';
   } catch { return 'FAIL'; }
 }
 
+// A missing temp file alone does not prove create/delete. Require the three
+// owner-recorded revisions as well; reconciliation owns journal/backup integrity.
+function connectionChecks(dir, task) {
+  let files = 'FAIL';
+  try {
+    const root = directory(join(dir, 'project'));
+    const bytes = readDiagnosticBytes(join(root, 'seed.txt'), 4096);
+    if (isDeepStrictEqual(readdirSync(root), ['seed.txt']) && bytes?.equals(Buffer.from(connectionFinal))) files = 'PASS';
+  } catch { /* Missing/unreadable bytes and unexpected entries remain failed evidence. */ }
+  const receipts = task.changes.map(({ action, path, beforeSha256, afterSha256 }) => [action, path, beforeSha256, afterSha256]);
+  const expected = [
+    ['edit', 'seed.txt', digest(connectionSeed), digest(connectionFinal)],
+    ['create', 'temp.txt', null, digest(connectionTemporary)],
+    ['delete', 'temp.txt', digest(connectionTemporary), null],
+  ];
+  return { files, arithmetic: 'NOT_APPLICABLE', receipts: isDeepStrictEqual(receipts, expected) ? 'PASS' : 'FAIL' };
+}
+
 async function projectChecks(dir, scenario, task) {
+  if (scenario === 'connection') return connectionChecks(dir, task);
   if (!['read', 'edit'].includes(scenario)) return { files: 'NOT_APPLICABLE', arithmetic: 'NOT_APPLICABLE', receipts: task.changes.length ? 'FAIL' : 'PASS' };
   let files = 'FAIL', arithmetic = 'NOT_RUN';
   try {
@@ -116,7 +153,8 @@ function resultCheck(run, task, config) {
     // Read the fixed owned result path, not an arbitrary path from the manifest or report.
     const bytes = readDiagnosticBytes(join(config.dataDir, run.taskId + '.result.txt'), 1024 * 1024);
     if (!bytes || digest(bytes) !== task.sha256) return 'FAIL';
-    const expected = run.scenario === 'read' ? { actual: 17, expected: 34, finding: 'quantity_ignored' }
+    const expected = run.scenario === 'connection' ? { sample: connectionSample, seedSha256: digest(connectionFinal),
+      ...Object.fromEntries(connectionClaims.map(name => [name, true])) } : run.scenario === 'read' ? { actual: 17, expected: 34, finding: 'quantity_ignored' }
       : { total: 34, units: 4, ...(run.scenario === 'edit' ? { staleWriteRejected: true } : {}) };
     return isDeepStrictEqual(JSON.parse(decode(bytes)), expected) ? 'PASS' : 'FAIL';
   } catch { return 'FAIL'; }
@@ -128,10 +166,11 @@ export async function checkVerification(path, config = configuration()) {
     scope: 'controller_and_fixture', browserChecked: false, liveVerdict: 'NOT_EVALUATED',
     localVerdict: 'BLOCKED', taskStatus: null, collection: 'unknown', checks: {},
     dispatch: { availability: 'not_recorded' },
-    unverifiedClaims: run.scenario === 'edit' ? ['staleWriteRejected'] : [],
+    unverifiedClaims: run.scenario === 'connection' ? [...connectionClaims] : run.scenario === 'edit' ? ['staleWriteRejected'] : [],
     measurements: { source: 'parent_reported', availability: 'not_recorded', values: null },
     parentMustVerify: ['actual_browser_mode_connector_and_new_message', 'registered_task_and_grant', 'retained_chat', 'result_quality',
-      ...(run.scenario === 'edit' ? ['actual_stale_write_rejection_call'] : []),
+      ...(['edit', 'connection'].includes(run.scenario) ? ['actual_stale_write_rejection_call'] : []),
+      ...(run.scenario === 'connection' ? ['actual_task_and_input_read_calls', 'actual_pinned_and_stale_read_calls', 'actual_temporary_file_read_and_absence_calls'] : []),
       ...(run.scenario === 'resume' ? ['fresh_parent_resume_without_redispatch'] : [])] };
   try {
     const metrics = readJson(join(dir, 'measurements.json'));

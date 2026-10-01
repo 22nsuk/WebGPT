@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { syncBuiltinESMExports } from 'node:module';
 import { start } from './worker.mjs';
 import { request, collectTask } from './client.mjs';
@@ -43,9 +44,51 @@ async function fixture(t, scenario = 'text', changeRegistration = () => {}) {
   };
   return f;
 }
-const resultFor = scenario => scenario === 'read' ? { actual: 17, expected: 34, finding: 'quantity_ignored' }
+const connectionSeed = 'status=before\n한글 🧪\nkeep=this line\n';
+const connectionFinal = 'status=after\n한글 🧪\nkeep=this line\n';
+const connectionSample = '연결 검증 입력\n한글 🧪\n';
+const connectionClaims = ['pinnedReadVerified', 'staleReadRejected', 'staleWriteRejected', 'temporaryLifecycleVerified'];
+const resultFor = scenario => scenario === 'connection' ? { sample: connectionSample,
+  seedSha256: createHash('sha256').update(connectionFinal).digest('hex'),
+  ...Object.fromEntries(connectionClaims.map(name => [name, true])) } : scenario === 'read' ? { actual: 17, expected: 34, finding: 'quantity_ignored' }
   : { total: 34, units: 4, ...(scenario === 'edit' ? { staleWriteRejected: true } : {}) };
+async function performConnection(f) {
+  const assigned = await f.tool('get_task'); assert.equal(assigned.isError, false);
+  assert.equal(assigned.structuredContent.id, f.task.id);
+  const input = await f.tool('read_input', { name: 'sample' }); assert.equal(input.isError, false);
+  assert.equal(input.structuredContent.text, connectionSample);
+  const initial = await f.tool('list_files', { path: '.' }); assert.equal(initial.isError, false);
+  assert.deepEqual(initial.structuredContent.entries.map(entry => entry.name), ['seed.txt']);
+  const before = await f.tool('read_file', { path: 'seed.txt' }); assert.equal(before.isError, false);
+  assert.equal(before.structuredContent.text, connectionSeed);
+  const edit = { path: 'seed.txt', oldText: 'status=before', text: 'status=after', expectedSha256: before.structuredContent.sha256 };
+  const changed = await f.tool('write_file', edit); assert.equal(changed.isError, false);
+  const pinned = await f.tool('read_file', { path: 'seed.txt', expectedSha256: changed.structuredContent.afterSha256 });
+  assert.equal(pinned.isError, false); assert.equal(pinned.structuredContent.text, connectionFinal);
+  const state = f.state();
+  for (const [name, args] of [['read_file', { path: 'seed.txt', expectedSha256: edit.expectedSha256 }], ['write_file', edit]]) {
+    const rejected = await f.tool(name, args);
+    assert.equal(rejected.isError, true); assert.match(rejected.content[0].text, /file revision conflict/);
+    assert.deepEqual(f.state(), state, 'a rejected call cannot add a receipt or change task state');
+  }
+  const preserved = await f.tool('read_file', { path: 'seed.txt', expectedSha256: pinned.structuredContent.sha256 });
+  assert.equal(preserved.isError, false); assert.equal(preserved.structuredContent.text, connectionFinal);
+  const created = await f.tool('write_file', { path: 'temp.txt', text: '임시 연결 검증\n', expectedSha256: null });
+  assert.equal(created.isError, false);
+  const temporary = await f.tool('read_file', { path: 'temp.txt' }); assert.equal(temporary.isError, false);
+  assert.equal(temporary.structuredContent.text, '임시 연결 검증\n');
+  assert.equal(temporary.structuredContent.sha256, created.structuredContent.afterSha256);
+  assert.equal((await f.tool('delete_file', { path: 'temp.txt', expectedSha256: temporary.structuredContent.sha256 })).isError, false);
+  const absent = await f.tool('read_file', { path: 'temp.txt' }); assert.equal(absent.isError, false);
+  assert.equal(absent.structuredContent.exists, false);
+  const listing = await f.tool('list_files', { path: '.' }); assert.equal(listing.isError, false);
+  assert.deepEqual(listing.structuredContent.entries.map(entry => entry.name), ['seed.txt']);
+  const final = await f.tool('read_file', { path: 'seed.txt' }); assert.equal(final.isError, false);
+  assert.equal(final.structuredContent.text, connectionFinal); assert.equal(final.structuredContent.sha256, pinned.structuredContent.sha256);
+  return { ...resultFor('connection'), sample: input.structuredContent.text, seedSha256: final.structuredContent.sha256 };
+}
 async function performFixture(f, scenario) {
+  if (scenario === 'connection') { await f.submit(await performConnection(f)); return; }
   assert.equal((await f.tool('read_input', { name: 'orders' })).isError, false);
   if (['read', 'edit'].includes(scenario)) {
     const before = (await f.tool('read_file', { path: 'total.mjs' })).structuredContent;
@@ -97,6 +140,12 @@ for (const scenario of verificationScenarios) test(`${scenario} exercise checks 
   const before = f.state(), report = await f.check();
   assert.equal(report.localVerdict, 'PASS'); assert.equal(report.collection, 'uncollected'); assertNotLive(report);
   assert.equal(report.dispatch.availability, 'not_recorded'); assert.equal(report.measurements.availability, 'not_recorded');
+  if (scenario === 'connection') {
+    assert.deepEqual(report.unverifiedClaims, connectionClaims);
+    assert.equal(report.checks.arithmetic, 'NOT_APPLICABLE');
+    assert.ok(report.parentMustVerify.includes('actual_pinned_and_stale_read_calls'));
+    assert.ok(report.parentMustVerify.includes('actual_temporary_file_read_and_absence_calls'));
+  }
   if (scenario === 'edit') {
     assert.deepEqual(report.unverifiedClaims, ['staleWriteRejected']);
     assert.ok(report.parentMustVerify.includes('actual_stale_write_rejection_call'));
@@ -124,10 +173,10 @@ test('checker uses only one owned scoped read and never emits controller secrets
 });
 
 test('a verified result hash or self-reported success cannot replace fixture acceptance', async t => {
-  for (const scenario of ['text', 'edit']) {
+  for (const scenario of ['text', 'edit', 'connection']) {
     const f = await fixture(t, scenario);
     // edit claims a fix and conflict rejection, but never changes the project.
-    await f.submit(scenario === 'text' ? { total: 17, units: 4 } : resultFor('edit'));
+    await f.submit(scenario === 'text' ? { total: 17, units: 4 } : resultFor(scenario));
     const before = f.state(), report = await f.check();
     assert.equal(report.localVerdict, 'FAIL'); assertNotLive(report); assert.deepEqual(f.state(), before);
     if (scenario === 'text') assert.equal(report.checks.result, 'FAIL');
@@ -342,7 +391,7 @@ test('PENDING describes the running lifecycle even when final fixture checks cur
   assert.equal(terminal.report.localVerdict, 'FAIL'); assertNotLive(terminal.report);
 });
 
-for (const scenario of ['read', 'edit'])
+for (const scenario of ['read', 'edit', 'connection'])
   test(`${scenario} acceptance binds receipts and local fixture bytes to the owner-recorded root`, async t => {
     const f = await fixture(t, scenario, (registration, f) => {
       const other = join(f.base, 'other-project'); fs.cpSync(join(f.run, 'project'), other, { recursive: true });
@@ -350,9 +399,13 @@ for (const scenario of ['read', 'edit'])
     });
     await performFixture(f, scenario);
     // Equal contents and relative receipt paths are not evidence of the same root.
-    if (scenario === 'edit') fs.copyFileSync(join(f.registration.workspace.root, 'total.mjs'), join(f.run, 'project', 'total.mjs'));
+    if (scenario !== 'read') {
+      const name = scenario === 'connection' ? 'seed.txt' : 'total.mjs';
+      fs.copyFileSync(join(f.registration.workspace.root, name), join(f.run, 'project', name));
+    }
     const before = f.state(), { code, report } = await cliCheck(f);
-    for (const key of ['files', 'arithmetic', 'receipts', 'result']) assert.equal(report.checks[key], 'PASS', key);
+    for (const key of ['files', 'receipts', 'result']) assert.equal(report.checks[key], 'PASS', key);
+    assert.equal(report.checks.arithmetic, scenario === 'connection' ? 'NOT_APPLICABLE' : 'PASS');
     assert.equal(report.checks.workspaceGrant, 'FAIL'); assert.equal(report.localVerdict, 'FAIL'); assert.equal(code, 2);
     assertNotLive(report); assert.deepEqual(f.state(), before); assert.equal(JSON.stringify(report).includes(f.base), false);
   });
@@ -417,4 +470,127 @@ test('missing owner proof remains BLOCKED instead of inferring no grant or healt
   }
   assert.deepEqual(f.state(), before);
   assert.ok(proxy.actions.every(action => action === '/reconcile?id=' + f.task.id), 'never widen to /tasks or retry an old endpoint');
+});
+
+
+test('connection preparation creates only the private Unicode seed, without registration or executable fixture code', async t => {
+  const f = baseFixture(t); f.run = join(f.base, '연결 검증 #');
+  const { stdout, stderr } = await exec(process.execPath, [script, 'prepare', 'connection', f.run, 'pro'], { cwd: f.base, timeout: 10000 });
+  assert.equal(stderr, ''); const prepared = JSON.parse(stdout);
+  assert.equal(prepared.scenario, 'connection'); assert.equal(prepared.registered, false); assert.equal(prepared.browserChecked, false);
+  const registration = readJson(join(f.run, 'request.json'));
+  assert.deepEqual(registration.inputs, { sample: connectionSample });
+  assert.equal(registration.workspace.mode, 'edit'); assert.equal(registration.workspace.root, join(f.run, 'project'));
+  assert.deepEqual(fs.readdirSync(registration.workspace.root), ['seed.txt']);
+  assert.equal(fs.readFileSync(join(registration.workspace.root, 'seed.txt'), 'utf8'), connectionSeed);
+  assert.deepEqual(fs.readdirSync(f.run).sort(), ['measurements.json', 'project', 'request.json', 'verification.json']);
+  assert.equal(registration.instructions.includes(resultFor('connection').seedSha256), false);
+  assert.match(registration.instructions, /oldText/); assert.match(registration.instructions, /exists:false/);
+  assert.throws(() => prepareVerification('connection', f.run, 'pro'), { code: 'EEXIST' });
+  assert.equal(fs.readFileSync(join(registration.workspace.root, 'seed.txt'), 'utf8'), connectionSeed);
+});
+
+test('connection acceptance needs create/delete receipts even when the final seed and claimed result are correct', async t => {
+  const f = await fixture(t, 'connection');
+  const before = (await f.tool('read_file', { path: 'seed.txt' })).structuredContent;
+  assert.equal((await f.tool('write_file', { path: 'seed.txt', oldText: 'status=before', text: 'status=after', expectedSha256: before.sha256 })).isError, false);
+  await f.submit(resultFor('connection'));
+  const state = f.state(), { code, report } = await cliCheck(f);
+  assert.equal(code, 2); assert.equal(report.localVerdict, 'FAIL'); assert.equal(report.checks.files, 'PASS');
+  assert.equal(report.checks.result, 'PASS'); assert.equal(report.checks.receipts, 'FAIL'); assertNotLive(report);
+  assert.deepEqual(f.state(), state); assert.equal((await f.tool('get_task')).isError, false);
+});
+
+test('connection checker rejects wrong receipt sequences without accepting boolean claims as invocation evidence', async t => {
+  const f = await fixture(t, 'connection'); await performFixture(f, 'connection');
+  let change;
+  const proxy = await controllerProxy(f.config, ({ phase, data, res }) => {
+    if (phase !== 'after') return false;
+    change(data.tasks[0]); replyJson(res, data); return true;
+  });
+  t.after(() => proxy.close());
+  const state = f.state();
+  for (change of [
+    task => { task.changes = []; },
+    task => { task.changes.pop(); },
+    task => { task.changes.reverse(); },
+    task => { task.changes[1].path = 'other.txt'; },
+    task => { task.changes[0].beforeSha256 = '0'.repeat(64); },
+    task => { task.changes[1].afterSha256 = '0'.repeat(64); },
+    task => { task.changes[2].afterSha256 = '0'.repeat(64); },
+  ]) {
+    const report = await checkVerification(f.run, { ...f.config, controlPort: proxy.port });
+    assert.equal(report.localVerdict, 'FAIL'); assert.equal(report.checks.receipts, 'FAIL');
+    assert.equal(report.checks.files, 'PASS'); assert.equal(report.checks.result, 'PASS'); assertNotLive(report);
+  }
+  assert.equal((await f.check()).localVerdict, 'PASS'); assert.deepEqual(f.state(), state);
+  assert.ok(proxy.actions.every(action => action === '/reconcile?id=' + f.task.id));
+});
+
+for (const artifact of ['seed', 'temp', 'extra']) test(`connection checker freshly rejects ${artifact} changes without repairing or retiring evidence`, async t => {
+  const f = await fixture(t, 'connection'); await performFixture(f, 'connection');
+  const path = join(f.run, 'project', artifact === 'seed' ? 'seed.txt' : artifact + '.txt');
+  fs.writeFileSync(path, 'PRESERVE_UNEXPECTED_FIXTURE');
+  const state = f.state(), { code, report } = await cliCheck(f);
+  assert.equal(code, 2); assert.equal(report.localVerdict, 'FAIL'); assert.equal(report.checks.files, 'FAIL');
+  assert.equal(report.checks.receipts, 'PASS'); assert.equal(report.checks.result, 'PASS'); assertNotLive(report);
+  assert.equal(fs.readFileSync(path, 'utf8'), 'PRESERVE_UNEXPECTED_FIXTURE'); assert.deepEqual(f.state(), state);
+  assert.equal(JSON.stringify(report).includes('PRESERVE_UNEXPECTED_FIXTURE'), false);
+});
+
+test('connection acceptance still requires the real seed and deleted-temp backups', async t => {
+  const f = await fixture(t, 'connection'); await performFixture(f, 'connection');
+  const task = JSON.parse(f.state())[0], state = f.state();
+  for (const index of [0, 2]) {
+    const backup = task.changes[index].backup, bytes = fs.readFileSync(backup);
+    fs.writeFileSync(backup, 'PRESERVE_DAMAGED_BACKUP');
+    const report = await f.check();
+    assert.equal(report.localVerdict, 'FAIL'); assert.equal(report.checks.recovery, 'FAIL');
+    assert.equal(report.checks.files, 'PASS'); assert.equal(report.checks.receipts, 'PASS'); assertNotLive(report);
+    assert.equal(fs.readFileSync(backup, 'utf8'), 'PRESERVE_DAMAGED_BACKUP'); assert.deepEqual(f.state(), state);
+    fs.writeFileSync(backup, bytes); // Restore only disposable test evidence, never production recovery.
+  }
+  assert.equal((await f.check()).localVerdict, 'PASS');
+});
+
+test('connection result rejection and grant mismatch cannot be hidden by correct local bytes', async t => {
+  const f = await fixture(t, 'connection'), result = await performConnection(f);
+  await f.submit({ ...result, staleReadRejected: false });
+  const state = f.state(), { code, report } = await cliCheck(f);
+  assert.equal(code, 2); assert.equal(report.localVerdict, 'FAIL'); assert.equal(report.checks.result, 'FAIL');
+  assert.equal(report.checks.files, 'PASS'); assert.equal(report.checks.receipts, 'PASS'); assertNotLive(report);
+  assert.deepEqual(report.unverifiedClaims, connectionClaims); assert.deepEqual(f.state(), state);
+  const proxy = await controllerProxy(f.config, ({ phase, data, res }) => {
+    if (phase !== 'after') return false;
+    data.tasks[0].workspace.mode = 'read'; replyJson(res, data); return true;
+  });
+  t.after(() => proxy.close());
+  const mismatch = await checkVerification(f.run, { ...f.config, controlPort: proxy.port });
+  assert.equal(mismatch.checks.workspaceGrant, 'FAIL');
+  for (const secret of [f.base, f.task.token, connectionFinal, connectionSample]) assert.equal(JSON.stringify(report).includes(secret), false);
+});
+
+test('connection evidence survives a clean worker restart and explicit collection without redispatch', async t => {
+  const f = await fixture(t, 'connection'), result = await performConnection(f);
+  const changes = JSON.parse(f.state())[0].changes;
+  const restart = async () => {
+    await f.worker.close();
+    f.worker = await start({ dir: f.dir, port: 0, controlPort: 0, waitMs: 20 });
+    f.config.controlPort = f.worker.controlPort;
+  };
+  await restart();
+  assert.equal((await f.tool('get_task')).structuredContent.status, 'running');
+  assert.deepEqual(JSON.parse(f.state())[0].changes, changes);
+  const pending = await f.check(); assert.equal(pending.localVerdict, 'PENDING');
+  assert.equal(pending.checks.files, 'PASS'); assert.equal(pending.checks.receipts, 'PASS');
+  await f.submit(result);
+  const checked = await cliCheck(f); assert.equal(checked.code, 0); assertNotLive(checked.report);
+  assert.equal((await collectTask(f.task.id, f.config)).collected, true);
+  await restart();
+  const state = f.state(), retired = await cliCheck(f);
+  assert.equal(retired.code, 0); assert.equal(retired.report.collection, 'collected'); assertNotLive(retired.report);
+  assert.equal((await f.tool('get_task')).isError, true);
+  assert.equal((await f.tool('read_file', { path: 'seed.txt' })).isError, true);
+  assert.deepEqual(f.state(), state); assert.deepEqual(JSON.parse(state)[0].changes, changes);
+  assert.equal(fs.existsSync(join(f.run, 'dispatch.json')), false);
 });
