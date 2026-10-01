@@ -17,7 +17,8 @@ async function fixture(run) {
 const sha = text => createHash('sha256').update(text).digest('hex');
 
 test('bounded reads preserve the whole-file default and original Unicode/line endings across pages',()=>fixture(({root,grant})=>{
-  const text='첫째 😀\r\n\r\nthird\rfourth\n마지막 🧪';
+  const lines=['첫째 😀\r\n','third\r','\r\n','\n','\r','fourth\n','마지막 🧪\u2028\u2029'];
+  const text=lines.join('');
   writeFileSync(join(root,'source.txt'),text);
   const full=readWorkspace(grant,'source.txt');
   assert.equal(full.text,text);
@@ -30,21 +31,22 @@ test('bounded reads preserve the whole-file default and original Unicode/line en
   do {
     const page=readWorkspace(grant,'source.txt',{offset,limit:2});
     assembled+=page.text;ranges.push([page.startLine,page.endLine]);
-    assert.equal(page.totalLines,5);assert.equal(page.partial,true);
+    assert.equal(page.text,lines.slice(offset-1,offset+1).join(''));
+    assert.equal(page.totalLines,lines.length);assert.equal(page.partial,true);
     assert.equal(page.sha256,full.sha256);assert.equal(page.text.isWellFormed(),true);
     offset=page.nextOffset;
   } while(offset!==null);
   assert.equal(assembled,text);
-  assert.deepEqual(ranges,[[1,2],[3,4],[5,5]]);
+  assert.deepEqual(ranges,[[1,2],[3,4],[5,6],[7,7]]);
   assert.equal(readWorkspace(grant,'source.txt',{limit:10}).partial,false);
 }));
 
 test('character bounds return complete lines and a continuation without losing a long-line tail',()=>fixture(({root,grant})=>{
-  const text='a\n😀😀\nlast';writeFileSync(join(root,'source.txt'),text);
+  const text='a\n😀😀\r\nlast';writeFileSync(join(root,'source.txt'),text);
   const first=readWorkspace(grant,'source.txt',{maxChars:4});
   assert.equal(first.text,'a\n');assert.equal(first.nextOffset,2);
-  assert.throws(()=>readWorkspace(grant,'source.txt',{offset:first.nextOffset,maxChars:4}),/first requested line exceeds maxChars/);
-  const rest=readWorkspace(grant,'source.txt',{offset:2,maxChars:20});
+  assert.throws(()=>readWorkspace(grant,'source.txt',{offset:first.nextOffset,maxChars:5}),/first requested line exceeds maxChars/);
+  const rest=readWorkspace(grant,'source.txt',{offset:2,maxChars:10});
   assert.equal(first.text+rest.text,text);assert.equal(rest.nextOffset,null);
   writeFileSync(join(root,'long.txt'),'x'.repeat(200001));
   assert.throws(()=>readWorkspace(grant,'long.txt',{maxChars:200000}),/exceeds maxChars/);
@@ -84,7 +86,13 @@ test('range reading keeps file scope, read grants, link checks and whole-file li
   assert.throws(()=>readWorkspace(grant,'outside/hardlink.txt',{limit:1}),/symlink/);
   writeFileSync(join(root,'invalid.txt'),Buffer.from([0x61,0x0a,0xff]));
   assert.throws(()=>readWorkspace(grant,'invalid.txt',{limit:1}),/UTF-8/);
-  writeFileSync(join(root,'large.txt'),'a\n'+'x'.repeat(10*1024*1024));
+  const maxBytes=10*1024*1024,content='\n'.repeat(maxBytes);
+  writeFileSync(join(root,'large.txt'),content);
+  const page=readWorkspace(grant,'large.txt',{maxChars:128});
+  assert.equal(page.text,'\n'.repeat(128));assert.equal(page.sha256,sha(content));
+  assert.deepEqual([page.startLine,page.endLine,page.totalLines,page.nextOffset],[1,128,maxBytes,129]);
+  assert.equal(page.partial,true);
+  writeFileSync(join(root,'large.txt'),content+'a');
   assert.throws(()=>readWorkspace(grant,'large.txt',{limit:1}),/10 MiB/);
 }));
 

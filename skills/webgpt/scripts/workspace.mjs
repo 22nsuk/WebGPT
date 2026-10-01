@@ -1,3 +1,4 @@
+import { isUtf8 } from 'node:buffer';
 import { createHash, randomUUID } from 'node:crypto';
 import { closeSync, constants, fchmodSync, fchownSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, opendirSync, readdirSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, parse, resolve, sep } from 'node:path';
@@ -92,8 +93,10 @@ function snapshot(path,limit=MAX_BYTES) {
   const saved=readBoundedFile(path,limit,reason=>Error(reason==='overflow'
     ?'UTF-8 text file required':`file must be regular, unlinked and <=${limit/(1024*1024)} MiB`));
   if(!saved)return {exists:false,text:null,sha256:null};
-  const {bytes,stat}=saved,text=bytes.toString('utf8');
-  if(text.includes('\0') || !Buffer.from(text).equals(bytes))throw Error('UTF-8 text file required');
+  const {bytes,stat}=saved;
+  if(!isUtf8(bytes))throw Error('UTF-8 text file required');
+  const text=bytes.toString('utf8');
+  if(text.includes('\0'))throw Error('UTF-8 text file required');
   return {exists:true,text,sha256:hash(bytes),mode:Number(stat.mode & 0o777n)};
 }
 // Optional bounded reads keep the original whole-file snapshot/revision contract.

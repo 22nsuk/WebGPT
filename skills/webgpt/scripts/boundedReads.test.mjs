@@ -221,8 +221,8 @@ test('I/O failures propagate while the caller retains descriptor ownership', t =
   } finally { t.mock.restoreAll(); syncBuiltinESMExports(); fs.closeSync(fd); }
 });
 
-test('exact-limit Korean, emoji and CRLF contents keep 10 MiB file revisions and 1 MiB result integrity', t => {
-  const f = fixture(t), prefix = '한글 🧪\r\n';
+test('exact-limit BOM, Korean, emoji and CRLF contents keep 10 MiB file revisions and 1 MiB result integrity', t => {
+  const f = fixture(t), prefix = '\uFEFF한글 � 🧪\r\n';
   const text = prefix + 'x'.repeat(WORKSPACE_LIMIT - Buffer.byteLength(prefix));
   fs.writeFileSync(f.file, text);
   const whole = readWorkspace(f.grant, f.path);
@@ -238,8 +238,17 @@ test('exact-limit Korean, emoji and CRLF contents keep 10 MiB file revisions and
 
 test('workspace rejects invalid UTF-8 and NUL rather than decoding a partial prefix', t => {
   const f = fixture(t);
-  for (const bytes of [Buffer.from([0xff]), Buffer.from('ok\0not-text'), Buffer.from([0xf0, 0x9f, 0xa7])]) {
+  const invalid = error => error.constructor === Error && error.message === 'UTF-8 text file required' && error.code === undefined;
+  for (const bytes of [Buffer.from([0xff]), Buffer.from('ok\0not-text'), Buffer.from([0xf0, 0x9f, 0xa7]),
+    Buffer.from([0xc0, 0xaf]), Buffer.from([0xed, 0xa0, 0x80])]) {
     fs.writeFileSync(f.file, bytes);
-    assert.throws(() => readWorkspace(f.grant, f.path), /UTF-8 text file required/);
+    const mode = fs.statSync(f.file).mode;
+    assert.throws(() => readWorkspace(f.grant, f.path), invalid);
+    assert.throws(() => changeWorkspace(f.grant, f.dir, 'owned', {
+      path: f.path, text: 'replacement', expectedSha256: hash(bytes),
+    }), invalid);
+    assert.deepEqual(fs.readFileSync(f.file), bytes);
+    assert.equal(fs.statSync(f.file).mode, mode);
+    assert.equal(fs.existsSync(join(f.dir, 'recovery')), false);
   }
 });

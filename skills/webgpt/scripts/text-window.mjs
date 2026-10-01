@@ -19,18 +19,21 @@ export function readWindowOptions(options = {}) {
 // Callers validate options before acquiring their snapshot. Selection cannot
 // authorize a file access or turn an excerpt's hash into a whole-source revision.
 export function textWindow(text, { offset, limit, maxChars }, source = 'file') {
-  let totalLines = 0, endLine = offset - 1, characters = 0, stopped = false;
-  const parts = [];
-  for (const match of text.matchAll(/[^\r\n]*(?:\r\n|\r|\n|$)/g)) {
-    if (!match[0]) continue;
+  let totalLines = 0, endLine = offset - 1, characters = 0, stopped = false, cursor = 0;
+  const parts = [], endings = /\r\n|\r|\n/g;
+  // Count every line for metadata, but only slice the selected lines.
+  while (cursor < text.length) {
+    const start = cursor;
+    cursor = endings.test(text) ? endings.lastIndex : text.length;
     totalLines++;
     if (totalLines < offset || stopped) continue;
     if (parts.length === limit) { stopped = true; continue; }
-    if (characters + match[0].length > maxChars) {
+    const length = cursor - start;
+    if (characters + length > maxChars) {
       if (parts.length === 0) throw Error(`first requested line exceeds maxChars; increase maxChars or read the whole ${source}`);
       stopped = true; continue;
     }
-    parts.push(match[0]); characters += match[0].length; endLine = totalLines;
+    parts.push(text.slice(start, cursor)); characters += length; endLine = totalLines;
   }
   if (offset > Math.max(1, totalLines)) throw Error(`read offset is beyond the ${source}`);
   return { text: parts.join(''), partial: offset !== 1 || endLine < totalLines,
