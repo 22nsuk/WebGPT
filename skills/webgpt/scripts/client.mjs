@@ -297,6 +297,9 @@ async function acknowledgeCollection(id, before, config, { signal }) {
   let ackError;
   try { await request('collect', { id, expectedStatus: before.status, expectedSha256: before.sha256 }, config, { signal }); }
   catch (error) {
+    // Abort reasons may be null or caller-owned records, not controller errors.
+    // Preserve the original reason before inspecting or enriching error fields.
+    signal?.throwIfAborted();
     // An older worker must fail closed, never downgrade to its unchecked /ack.
     if (error.statusCode === 404)
       throw Object.assign(Error('conditional collection is unavailable; check controller routing and update the idle worker and client together'), {
@@ -310,7 +313,7 @@ async function acknowledgeCollection(id, before, config, { signal }) {
     // request preserves non-success HTTP statuses even when their JSON is invalid.
     // Observe once, never retry the write or widen the wait retry policy. Explicit
     // rejection and caller cancellation still take precedence over parse failures.
-    if (error.statusCode !== undefined || signal?.aborted
+    if (error.statusCode !== undefined
         || !(retryableControllerError(error) || error instanceof SyntaxError)) throw error;
     ackError = error;
   }
