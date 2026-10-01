@@ -8,9 +8,14 @@ const marked = value => value === true || typeof value === 'string';
 export default async function* testFeedback(source) {
   let retainedFailures = 0, observedFailures = 0, omittedFailures = 0, bytes = 0;
   for await (const { type, data } of source) {
-    // TODO/skip outcomes do not fail Node's run. Never infer successful execution
-    // from their presence, or from an empty report (the process may have crashed).
-    if (type !== 'test:fail' || marked(data.todo) || marked(data.skip)) continue;
+    // Root after hooks have a standalone test:fail with no completion/type.
+    // Early Node 22 also omits type on ordinary test hooks: take those from
+    // test:fail only, so their completion mirrors are not counted twice.
+    const untypedHook = data.details?.error?.failureType === 'hookFailed' && data.details.type === undefined;
+    const failed = untypedHook ? type === 'test:fail'
+      : type === 'test:complete' && data.details?.passed === false;
+    // Other completions arrive promptly even behind a stalled preceding test.
+    if (!failed || marked(data.todo) || marked(data.skip)) continue;
     observedFailures++;
     if (retainedFailures >= MAX_FAILURES) { omittedFailures++; continue; }
     let truncated = false;

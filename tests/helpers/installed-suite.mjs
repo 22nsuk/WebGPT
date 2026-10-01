@@ -106,9 +106,16 @@ async function runFile(directory, file, timeoutMs, progress) {
   if (!error && (!counts || counts.tests < 1 || counts.fail !== 0 || counts.cancelled !== 0))
     error = Error(`installed test file did not report a successful TAP summary: ${file}`);
   const elapsed = Math.round(performance.now() - started);
-  progress(`${error ? 'FAIL' : 'DONE'} ${file} (${elapsed} ms)`);
-  if (error) progress(`${error.message}\nstdout tail:\n${stdout}\nstderr tail:\n${stderr}`);
-  return { file, counts, error, cleanupSafe };
+  const result = { file, counts, error, cleanupSafe };
+  try {
+    progress(`${error ? 'FAIL' : 'DONE'} ${file} (${elapsed} ms)`);
+    if (error) progress(`${error.message}\nstdout tail:\n${stdout}\nstderr tail:\n${stderr}`);
+  } catch (progressError) {
+    // Save the completed outcome before this slot rejects. Logging must not
+    // replace the original test error or abandon the other active child.
+    result.progressError = progressError;
+  }
+  return result;
 }
 
 export async function runInstalledSuite(directory, {
@@ -121,7 +128,11 @@ export async function runInstalledSuite(directory, {
   const results = [];
   // One budget of two active test files. Continue after failure, like node --test.
   const pools = await Promise.allSettled([0, 1].map(async () => {
-    while (next < files.length) results.push(await runFile(directory, files[next++], timeoutMs, progress));
+    while (next < files.length) {
+      const result = await runFile(directory, files[next++], timeoutMs, progress);
+      results.push(result);
+      if (Object.hasOwn(result, 'progressError')) throw result.progressError;
+    }
   }));
   const failures = results.filter(result => result.error);
   const unexpected = pools.filter(pool => pool.status === 'rejected').map(pool => pool.reason);

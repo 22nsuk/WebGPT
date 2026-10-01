@@ -76,12 +76,23 @@ file and supply its text in a named `inputs` value for the next task; the worker
 uses `read_input`. Do not supply a parent-local path as though the web worker can
 read it without a grant. Other test frameworks keep their own native reports.
 
-The reporter emits only unexpected `test:fail` events, with test location,
-error/cause message, stack and Node/platform/architecture. It retains at most 12
-failure events and 32 KiB total, marks clipped fields and counts omitted failures.
+The reporter emits unexpected failed `test:complete` events (`details.passed:false`),
+with test location, error/cause message, stack and Node/platform/architecture.
+Completion order lets a later parallel failure appear while an earlier test is
+still running. Declaration-order `test:fail` mirrors are ignored, not stored for
+deduplication; distinct completions with identical names remain distinct evidence.
+Untyped hook failures are the exception: root `after()` hooks can emit only
+`test:fail`, so those events are retained. Early Node 22 also omits type metadata
+for ordinary test hooks; their failures use `test:fail` instead of `test:complete`
+and therefore retain declaration-order timing. Typed test/suite hook failures use
+completion order. This avoids name/path guesses, version checks and duplicate caches.
+It retains at most 12 failure events and 32 KiB total, marks clipped fields and counts omitted failures.
 It does not parse unstable TAP presentation, buffer passing-test output, capture
-stdout/stderr/environment variables, or run anything. Nested suite/file failure
-events may describe the same cause; `observedFailures` is **not a test count**.
+stdout/stderr/environment variables, or run anything. Nested suite/file completion
+events may describe the same failure cause; `observedFailures` is **not a test count**.
+In particular, a file-completion summary can add an event that Node suppresses in
+its declaration-order output. Counts and entry order can differ from older reports;
+use TAP/process evidence for the run verdict, not this event counter.
 The test name/file/line identify its declaration; the stack may identify the actual
 assertion. TODO/skip failures are excluded, not relabeled passing checks. Empty
 string reasons still mark those outcomes; explicit false does not. The repository's
@@ -90,8 +101,9 @@ cancelled and skipped counts, so a successful process does not hide pending test
 
 Failure entries are written as they arrive, inside one bounded JSON document,
 not buffered until the last test finishes. Normal stream exhaustion still produces
-one version-1 JSONL record with the same fields and final counters; consumers must
-parse the complete document rather than depend on object-key or chunk order.
+one version-1 JSONL record with the same fields and final counters (including the
+existing `evidence:node-test-failure-events` label); consumers must parse the complete
+document rather than depend on object-key or chunk order.
 If the stream throws, stalls or its process is killed, an already emitted prefix
 may survive but lacks final counters and closing syntax. Treat it as incomplete
 failure evidence, not a JSON report; do not append guessed totals or closing braces.
@@ -110,6 +122,11 @@ phase ordering, concurrency, exit handling and installed-layout checks. Each ins
 test-file runner also loads the reporter from the copied skill, not the repository.
 On failure, its existing `stderr tail` includes that file's bounded failure events,
 even when later TAP diagnostics have displaced the assertion from `stdout tail`.
+A synchronous progress-output exception stops that reporting slot without retry.
+The runner retains the completed file outcome and both errors, waits for the other
+active slot, and keeps its existing conservative cleanup policy. Output failure
+after a passing file still fails the run; async stream errors are not handled by
+this synchronous callback guard.
 The outer installed-layout summary may still name only the harness: inspect the
 matching `[installed] FAIL` detail first, rather than rerunning just to recover an
 early assertion. Limits apply per test-file process, not to the whole installation;

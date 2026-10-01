@@ -51,7 +51,9 @@ for (const damage of ['missing', 'changed', 'symlink', 'hardlink']) {
   for (const restarted of [false, true]) test(`${damage} original backup blocks only the affected task${restarted ? ' after restart' : ''}`, t => fixture(async f => {
     writeFileSync(join(f.root, 'source.txt'), 'original 한국어');
     const { token } = await f.register();
-    const receipt = (await f.call('write_file', { token, path: 'source.txt', text: 'edited', expectedSha256: hash('original 한국어') })).structuredContent;
+    const written = await f.call('write_file', { token, path: 'source.txt', text: 'edited', expectedSha256: hash('original 한국어') });
+    assert.equal(written.isError, false, JSON.stringify(written));
+    const receipt = written.structuredContent;
     const journal = join(f.dir, 'recovery', 'a', receipt.operation + '.json');
     const journalBytes = readFileSync(journal);
     if (damage === 'changed') writeFileSync(receipt.backup, 'wrong');

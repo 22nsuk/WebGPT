@@ -68,6 +68,34 @@ test('unexpected progress failure waits for the other slot and preserves its fai
   });
 });
 
+
+for (const phase of ['FAIL', 'detail', 'DONE']) test(`terminal ${phase} output failure retains the finished result and settles the other slot`, async t => {
+  const f = await fixture(t), marker = join(f.root, 'other-finished'), sinkError = Error('terminal progress sink failed');
+  const failed = phase !== 'DONE';
+  await f.write('a.test.mjs', `import test from 'node:test';
+test('owned outcome', () => { ${failed ? "throw Error('owned assertion');" : ''} });`);
+  await f.write('b.test.mjs', `import test from 'node:test'; import {writeFileSync} from 'node:fs';
+import {setTimeout} from 'node:timers/promises';
+test('other slot completes', async () => { await setTimeout(100); writeFileSync(${JSON.stringify(marker)}, 'done'); });`);
+  let attempts = 0;
+  await assert.rejects(runInstalledSuite(f.root, { progress: message => {
+    const selected = phase === 'detail' ? message.startsWith('installed test file failed: a.test.mjs;')
+      : message.startsWith(phase + ' a.test.mjs ');
+    if (selected) { attempts++; throw sinkError; }
+  } }), error => {
+    assert.equal(existsSync(marker), true, 'an output error must not abandon the other active child');
+    assert.equal(error.cleanupSafe, false, 'keep the existing conservative unexpected-error policy');
+    assert.equal(error.errors.at(-1), sinkError);
+    assert.equal(error.errors.length, failed ? 2 : 1);
+    if (failed) {
+      assert.match(error.errors[0].message, /a\.test\.mjs; code=1, signal=null/);
+      assert.equal(error.cause, error.errors[0], 'the test failure remains the primary cause');
+    } else assert.equal(error.cause, sinkError, 'a passing test cannot hide output failure');
+    return true;
+  });
+  assert.equal(attempts, 1, 'do not retry the failed sink');
+});
+
 test('installed runner preserves ordinary failures while settling all files and bounding output', async t => {
   const f = await fixture(t), messages = [];
   await f.write('a.test.mjs', `import test from 'node:test'; test('fails', () => { throw Error('original assertion'); });`);
@@ -181,10 +209,20 @@ await test('later noise', () => new Promise(resolve => process.stdout.write('z'.
   const stderr = detail.split('\nstderr tail:\n')[1];
   assert.ok(stderr.includes('node-test-failure-events'), 'missing bounded installed failure evidence');
   const feedback = JSON.parse(stderr);
-  assert.equal(feedback.observedFailures, 20);
+  assert.equal(feedback.observedFailures, 21); // 20 assertions and one file-completion summary
   assert.ok(feedback.failures.length > 0 && feedback.failures.length <= 12);
-  assert.equal(feedback.omittedFailures, 20 - feedback.failures.length);
-  assert.ok(feedback.failures.every(item => item.truncated));
+  assert.equal(feedback.omittedFailures, 21 - feedback.failures.length);
+  const assertions = feedback.failures.filter(item => item.failureType === 'testCodeFailure');
+  const summaries = feedback.failures.filter(item => item.failureType === 'subtestsFailed');
+  assert.ok(assertions.length > 0 && assertions.every(item => item.truncated));
+  // The short final file summary may fit after the byte budget omitted long
+  // assertions. Keep that legitimate event without pretending it was clipped.
+  assert.ok(summaries.length <= 1);
+  for (const item of summaries) {
+    assert.equal(await fs.realpath(item.file), await fs.realpath(join(f.root, 'many.test.mjs')));
+    assert.equal(item.truncated, false);
+  }
+  assert.equal(assertions.length + summaries.length, feedback.failures.length);
   assert.ok(feedback.failures.every(item => !item.message.includes('\ufffd')));
   assert.ok(Buffer.byteLength(stderr) <= 32 * 1024);
   assert.ok(messages.every(line => line.length < 140000));

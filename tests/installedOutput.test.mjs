@@ -62,7 +62,8 @@ await test('unrelated output', () => console.log('tests 2\\nsuites 0\\npass 2\\n
   assert.equal(messages.filter(line => line.startsWith('DONE ')).length, 0);
   const detail = messages.find(line => line.includes('\nstderr tail:\n'));
   const feedback = JSON.parse(detail.split('\nstderr tail:\n')[1]);
-  assert.equal(feedback.observedFailures, 1);
+  assert.equal(feedback.observedFailures, 2); // assertion and file-completion summary
+  assert.equal(feedback.failures[1].failureType, 'subtestsFailed');
   assert.equal(feedback.failures[0].message, 'preserve actual failure');
 });
 
@@ -89,9 +90,17 @@ await test('large Unicode output', t => t.diagnostic(${JSON.stringify(symbol)}.r
   });
 }
 
-test('installed timeout keeps early failure evidence even after the TAP tail rolls over', async t => {
+for (const concurrent of [false, true]) test(`installed timeout retains ${concurrent ? 'later concurrent' : 'early serial'} failure evidence`, async t => {
   const cleanup = { safe: false };
-  const root = await fixture(t, `import test from 'node:test';
+  const root = await fixture(t, concurrent ? `import {describe,it} from 'node:test';
+describe('concurrent suite', {concurrency:2}, () => {
+  it('first never settles', () => new Promise(() => { setInterval(() => {}, 1000); }));
+  it('later failing test', () => {
+    process.stdout.write('한'.repeat(100000) + '\\n');
+    throw Error('early error must survive timeout');
+  });
+});
+` : `import test from 'node:test';
 await test('early failure', () => { throw Error('early error must survive timeout'); });
 await test('large later output', t => t.diagnostic('한'.repeat(100000)));
 await test('never settles', () => new Promise(() => { setInterval(() => {}, 1000); }));
