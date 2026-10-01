@@ -2,13 +2,15 @@
 // Run alongside the normal reporter. No filesystem, subprocess, network or task access.
 const MAX_BYTES = 32 * 1024, MAX_FAILURES = 12;
 const integer = value => Number.isSafeInteger(value) && value >= 0 ? value : null;
+// A string is a reason, including an empty one; false/undefined are not marks.
+const marked = value => value === true || typeof value === 'string';
 
 export default async function* testFeedback(source) {
   let retainedFailures = 0, observedFailures = 0, omittedFailures = 0, bytes = 0;
   for await (const { type, data } of source) {
     // TODO/skip outcomes do not fail Node's run. Never infer successful execution
     // from their presence, or from an empty report (the process may have crashed).
-    if (type !== 'test:fail' || data.todo || data.skip) continue;
+    if (type !== 'test:fail' || marked(data.todo) || marked(data.skip)) continue;
     observedFailures++;
     if (retainedFailures >= MAX_FAILURES) { omittedFailures++; continue; }
     let truncated = false;

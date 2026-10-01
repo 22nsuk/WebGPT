@@ -39,7 +39,7 @@ test('installed runner executes nested files with two active slots and visible p
     });
   `);
   const counts = await runInstalledSuite(f.root, { progress: line => messages.push(line) });
-  assert.deepEqual(counts, { tests: 3, pass: 3, fail: 0, cancelled: 0, skipped: 0 });
+  assert.deepEqual(counts, { tests: 3, pass: 3, fail: 0, cancelled: 0, skipped: 0, todo: 0 });
   const events = (await fs.readFile(trace, 'utf8')).trim().split('\n').map(JSON.parse);
   let active = 0, peak = 0;
   for (const event of events) { active += event.event === 'start' ? 1 : -1; peak = Math.max(peak, active); assert.ok(active <= 2); }

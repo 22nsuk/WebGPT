@@ -34,10 +34,18 @@ test('feedback keeps actual assertion and location without inventing exit/revisi
 });
 
 test('passing, TODO and skipped events are silent; unrelated output is not copied', async () => {
-  const todo = failure(); todo.data.todo = true;
-  const skip = failure(); skip.data.skip = 'platform';
-  assert.equal(await report([{ type: 'test:pass', data: {} }, todo, skip,
+  const marked = [];
+  for (const field of ['todo', 'skip']) for (const value of [true, '', 'reason']) {
+    const event = failure(); event.data[field] = value; marked.push(event);
+  }
+  assert.equal(await report([{ type: 'test:pass', data: {} }, ...marked,
     { type: 'test:stdout', data: { message: 'private output'.repeat(100000) } }]), '');
+  const ordinary = failure('unmarked failure');
+  Object.assign(ordinary.data, { todo: false, skip: false });
+  // Ignored events must not consume the 12-entry budget or inflate counters.
+  const value = JSON.parse(await report([...marked, ...marked, ...marked, ordinary]));
+  assert.equal(value.observedFailures, 1); assert.equal(value.omittedFailures, 0);
+  assert.deepEqual(value.failures.map(item => item.name), ['unmarked failure']);
 });
 
 test('feedback bounds entries and bytes with explicit omission/truncation, including Unicode escaping', async () => {
@@ -108,8 +116,14 @@ test('real Node reporters preserve failing exit status, normal output and compac
   const dir = mkdtempSync(join(tmpdir(), 'webgpt-test-feedback-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const file = join(dir, 'fixture.mjs');
+  // Reuse the real failing and successful child runs; empty reasons still mark
+  // Node outcomes, whereas explicit false must preserve an ordinary failure.
+  const markedTests = "test('todo option', {todo:''}, () => {throw Error('marked failure');});\n"
+    + "test('todo context', t => {t.todo('');throw Error('marked failure');});\n"
+    + "test('skip option', {skip:''}, () => {throw Error('marked failure');});\n"
+    + "test('skip context', t => {t.skip('');throw Error('marked failure');});\n";
   writeFileSync(file, "import test from 'node:test'; import assert from 'node:assert/strict';\n"
-    + "test('pass',()=>{});test('real assertion',()=>assert.equal(1,2));\n");
+    + markedTests + "test('pass',()=>{});test('real assertion',{todo:false,skip:false},()=>assert.equal(1,2));\n");
   const reporterUrl = new URL('./test-feedback.mjs', import.meta.url).href;
   const env = { ...process.env }; delete env.NODE_TEST_CONTEXT;
   const args = ['--test', '--test-reporter=tap', `--test-reporter=${reporterUrl}`,
@@ -118,6 +132,7 @@ test('real Node reporters preserve failing exit status, normal output and compac
     assert.equal(error.code, 1);
     assert.match(error.stdout, /not ok .*real assertion/);
     const value = JSON.parse(error.stderr);
+    assert.equal(value.observedFailures, 1); assert.equal(value.failures.length, 1);
     assert.equal(value.failures[0].name, 'real assertion');
     // Node reports the resolved source path (e.g. macOS /var -> /private/var).
     assert.equal(value.failures[0].file, realpathSync(file));
@@ -125,7 +140,9 @@ test('real Node reporters preserve failing exit status, normal output and compac
     assert.match(value.failures[0].message, /1 !== 2/);
     return true;
   });
-  writeFileSync(file, "import test from 'node:test'; test('pass',()=>{});\n");
+  writeFileSync(file, "import test from 'node:test'; test('pass',()=>{});\n" + markedTests);
   const result = await promisify(execFile)(process.execPath, args, { timeout: 15000, env });
   assert.equal(result.stderr, ''); assert.match(result.stdout, /ok 1 - pass/);
+  assert.match(result.stdout, /# fail 0\r?\n/);
+  assert.match(result.stdout, /# skipped 2\r?\n/); assert.match(result.stdout, /# todo 2\r?\n/);
 });
