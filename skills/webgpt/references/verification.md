@@ -79,6 +79,12 @@ readers; the controller may still perform its usual readiness canary and live qu
 observation. Reading the dispatch ledger briefly takes its existing cooperative lock.
 Do not run this checker concurrently with the parent's ledger mutation.
 
+For an eligible completed result, `check` uses the shared `readVerifiedResult` reader
+once: it verifies the owned path, file type/link/size and SHA, then parses those same
+UTF-8 bytes. One leading BOM is accepted for this JSON check, as before. The checker
+does not first run the public `reconcileTasks` artifact audit and then reopen the result.
+Every later check reads again; explicit collection keeps its own independent checks.
+
 Keep each report separately (e.g. `local-before.json`, `local-after.json`). `checks`
 distinguishes controller availability, its current state observation, global health,
 registered workspace identity, task recovery, result contents, fixture bytes, arithmetic

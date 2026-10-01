@@ -6,7 +6,8 @@ import { mkdirSync, writeFileSync, realpathSync, lstatSync, readdirSync } from '
 import { basename, dirname, isAbsolute, join } from 'node:path';
 import { isCliEntry } from './cli-entry.mjs';
 import { isDeepStrictEqual } from 'node:util';
-import { configuration, reconcileTasks } from './client.mjs';
+import { configuration, request } from './client.mjs';
+import { readVerifiedResult } from './results.mjs';
 import { readDiagnosticBytes } from './audit.mjs';
 import { inspectDispatchEvidence } from './dispatch.mjs';
 import { grantWorkspace } from './workspace.mjs';
@@ -148,15 +149,15 @@ async function projectChecks(dir, scenario, task) {
 }
 function resultCheck(run, task, config) {
   if (task.status === 'running' || !task.artifact) return 'NOT_RUN';
-  if (task.status !== 'completed' || task.integrity !== 'verified') return 'FAIL';
+  if (task.status !== 'completed') return 'FAIL';
   try {
-    // Read the fixed owned result path, not an arbitrary path from the manifest or report.
-    const bytes = readDiagnosticBytes(join(config.dataDir, run.taskId + '.result.txt'), 1024 * 1024);
-    if (!bytes || digest(bytes) !== task.sha256) return 'FAIL';
+    // Verify the owned path/link/size/SHA and parse that same snapshot once.
+    // The shared reader preserves BOMs; keep this checker's one-leading-BOM JSON policy.
+    const text = readVerifiedResult(task, config.dataDir).replace(/^\uFEFF/, '');
     const expected = run.scenario === 'connection' ? { sample: connectionSample, seedSha256: digest(connectionFinal),
       ...Object.fromEntries(connectionClaims.map(name => [name, true])) } : run.scenario === 'read' ? { actual: 17, expected: 34, finding: 'quantity_ignored' }
       : { total: 34, units: 4, ...(run.scenario === 'edit' ? { staleWriteRejected: true } : {}) };
-    return isDeepStrictEqual(JSON.parse(decode(bytes)), expected) ? 'PASS' : 'FAIL';
+    return isDeepStrictEqual(JSON.parse(text), expected) ? 'PASS' : 'FAIL';
   } catch { return 'FAIL'; }
 }
 
@@ -191,7 +192,7 @@ export async function checkVerification(path, config = configuration()) {
     }
   } catch { report.dispatch.availability = 'invalid_or_unavailable'; }
   let snapshot;
-  try { snapshot = await reconcileTasks(config, { ids: [run.taskId] }); }
+  try { snapshot = await request('reconcile', { ids: [run.taskId] }, config); }
   catch { report.checks.controller = 'UNAVAILABLE'; return report; }
   const task = snapshot.tasks[0];
   if (!['running', 'completed', 'failed', 'cancelled'].includes(task.status)
