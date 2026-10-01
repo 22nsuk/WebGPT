@@ -141,18 +141,60 @@ test('malformed successful wait JSON is still not a transport retry', async t =>
   assert.deepEqual(f.actions, ['/wait?id=owned']); assert.deepEqual(readFileSync(f.stateFile), before);
 });
 
-test('an explicit SyntaxError abort after commit is not treated as a malformed ack', async t => {
-  const controller = new AbortController(), reason = new SyntaxError('parent cancelled observation');
-  let committed;
-  const f = await fixture(t, ({ req, res, phase, stateFile }) => {
-    if (req.url !== '/collect' || phase !== 'after') return;
-    committed = readFileSync(stateFile); controller.abort(reason);
-    res.writeHead(200); res.end('{'); return true;
+// Abort reasons are caller-owned values, not decoded controller errors. Reuse
+// the real collection fixture; abort at the exact before/after commit boundary.
+for (const resume of [false, true]) for (const committed of [false, true])
+  test(`${resume ? 'resumed' : 'ordinary'} collection preserves arbitrary abort reasons ${committed ? 'after' : 'before'} commit`, async t => {
+    for (const [kind, reason] of [
+      ['syntax', new SyntaxError('parent cancelled observation')],
+      ['null', null], ['false', false],
+      ['http-shaped', { statusCode: 404 }],
+      ['recovery-shaped', { code: 'COLLECTION_RECOVERY_REQUIRED', details: { attention: 'caller-owned' } }],
+      ['frozen-recovery', Object.freeze({ code: 'COLLECTION_RECOVERY_REQUIRED' })],
+    ]) {
+      const controller = new AbortController();
+      const fields = reason && typeof reason === 'object' ? Object.keys(reason) : null;
+      let observedState;
+      const f = await fixture(t, ({ req, res, phase, stateFile }) => {
+        if (controller.signal.aborted || req.url !== '/collect' || phase !== (committed ? 'after' : 'before')) return;
+        observedState = readFileSync(stateFile); controller.abort(reason);
+        res.writeHead(200); res.end('{'); return true;
+      });
+      await assert.rejects(collectTask('owned', f.config, { resume, signal: controller.signal }),
+        error => Object.is(error, reason), kind);
+      if (fields) assert.deepEqual(Object.keys(reason), fields, 'do not enrich caller-owned reasons');
+      assert.deepEqual(f.actions, [...collectionStart(resume), '/collect'], 'no post-abort observation or retry');
+      assert.deepEqual(readFileSync(f.stateFile), observedState);
+      assert.equal(f.state().collected, committed);
+      assert.equal(f.state().token, committed ? undefined : f.task.token);
+      assert.equal(readFileSync(f.artifact, 'utf8'), resultText);
+      // A later explicit resume uses fresh authority; cancellation cannot undo
+      // a prior commit or cause a second collection write for a retired task.
+      const observed = await collectTask('owned', f.config, { resume: true });
+      assert.equal(observed.disposition, committed ? 'already_collected' : 'collected');
+      assert.deepEqual(f.actions, [...collectionStart(resume), '/collect', '/reconcile?id=owned',
+        ...(committed ? [] : ['/collect', '/reconcile?id=owned'])]);
+    }
   });
-  await assert.rejects(collectTask('owned', f.config, { signal: controller.signal }), error => error === reason);
+
+for (const status of [404, 409]) test(`HTTP ${status} without cancellation retains collection error handling`, async t => {
+  const details = { error: 'fixture recovery required', code: 'COLLECTION_RECOVERY_REQUIRED',
+    attention: 'inspect_recovery', reconciliation: { id: 'owned' } };
+  const f = await fixture(t, ({ req, res, phase }) => {
+    if (req.url !== '/collect' || phase !== 'before') return;
+    reply(res, status === 409 ? details : {}, status); return true;
+  });
+  const before = readFileSync(f.stateFile);
+  await assert.rejects(collectTask('owned', f.config), error => {
+    assert.equal(error.code, status === 404 ? 'COLLECTION_UNSUPPORTED' : 'COLLECTION_RECOVERY_REQUIRED');
+    if (status === 409) {
+      assert.equal(error.statusCode, 409); assert.equal(error.attention, details.attention);
+      assert.deepEqual(error.reconciliation, details.reconciliation);
+    }
+    return true;
+  });
   assert.deepEqual(f.actions, ['/wait?id=owned', '/collect']);
-  assert.deepEqual(readFileSync(f.stateFile), committed); assert.equal(f.state().collected, true);
-  assert.equal(readFileSync(f.artifact, 'utf8'), resultText);
+  assert.deepEqual(readFileSync(f.stateFile), before); assert.equal(f.state().token, f.task.token);
 });
 
 for (const malformed of [false, true]) for (const change of ['missing', 'corrupt'])
