@@ -172,8 +172,13 @@ test('completion feedback retains hook, cancelled-child, timeout and file-level 
       + "describe('before suite',()=>{before(()=>{throw Error('before boundary');});it('not run',()=>{});});\n"
       + "describe('after suite',()=>{after(()=>{throw Error('after boundary');});it('passed child',()=>{});});\n",
       ['hookFailed'], ['before boundary', 'after boundary']],
-    ["import test from 'node:test'; test('parent',t=>{t.test('cancelled child',()=>new Promise(()=>{}));});\n",
-      ['cancelledByParent', 'subtestsFailed'], []],
+    // Newer Node versions wait for outstanding subtests after a successful
+    // parent body. Fail the parent after the child starts to force cancellation.
+    ["import test from 'node:test'; test('parent',async t=>{\n"
+      + "let started; const ready=new Promise(resolve=>{started=resolve;});\n"
+      + "t.test('cancelled child',()=>{started();return new Promise(()=>{});});\n"
+      + "await ready; throw Error('parent cancellation boundary');});\n",
+      ['cancelledByParent', 'subtestsFailed'], ['parent cancellation boundary']],
     ["import test from 'node:test'; import {setTimeout} from 'node:timers/promises';\n"
       + "test('deadline',{timeout:20},()=>setTimeout(100));\n", ['testTimeoutFailure'], []],
     ["throw Error('file startup boundary');\n", ['testCodeFailure'], []],
@@ -184,6 +189,8 @@ test('completion feedback retains hook, cancelled-child, timeout and file-level 
     await assert.rejects(promisify(execFile)(process.execPath, args, { timeout: 15000, env }), error => {
       assert.equal(error.code, 1, JSON.stringify({ source, signal: error.signal, killed: error.killed,
         stdout: error.stdout?.slice(-8192), stderr: error.stderr?.slice(-8192) }));
+      assert.equal(error.killed, false, 'the fixture must finish without the execFile watchdog');
+      assert.equal(error.signal, null);
       const value = JSON.parse(error.stderr);
       assert.ok(value.failures.length > 0, source);
       assert.equal(value.observedFailures, value.failures.length, 'no duplicate declaration-order events');
