@@ -204,6 +204,19 @@ After explicitly collecting, check again and use the old token once to confirm a
 rejected; do not re-register, resend or revive the task. Keep private evidence, not tokens
 or native paths in public reports. `check` never sends this token probe itself.
 
+### Windows replacement helper timeout
+
+Each Windows permission-preserving replacement helper invocation (`prepare` and
+`replace`) has a 30-second process timeout. This bounds the configured child wait,
+not the whole file operation or kernel I/O; Node still waits for process exit.
+A timeout remains `WINDOWS_REPLACEMENT_FAILED`, with `process_timeout` and
+`ETIMEDOUT` in its allowlisted private diagnostic. It is **not** proof that the
+file is unchanged: replacement may have happened before the helper exited.
+Keep the original backup, prepared journal and any remaining stage; do not retry,
+promote the journal, roll back or delete evidence automatically. Existing recovery
+inspection is required before further edits. A successful `connection` smoke does
+not demonstrate timeout recovery or a hard operating-system termination deadline.
+
 ### Windows startup is a separate acceptance boundary
 
 A successful file connection smoke does **not** test Task Scheduler/WinSW, logoff,
