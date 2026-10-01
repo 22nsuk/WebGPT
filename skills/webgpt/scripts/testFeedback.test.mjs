@@ -56,6 +56,23 @@ test('passing, TODO and skipped events are silent; unrelated output is not copie
   assert.deepEqual(value.failures.map(item => item.name), ['unmarked failure']);
 });
 
+test('hook failures retain standalone events and count completion mirrors once', async () => {
+  for (const type of ['test', 'suite', undefined]) {
+    const event = failure('hook');
+    event.data.details.error.failureType = 'hookFailed';
+    if (type !== undefined) event.data.details.type = type;
+    const mirror = { ...event, type: 'test:fail' };
+    const value = JSON.parse(await report([event, mirror]));
+    assert.equal(value.observedFailures, 1);
+    assert.equal(value.failures[0].failureType, 'hookFailed');
+  }
+  const standalone = failure('root after');
+  standalone.type = 'test:fail';
+  standalone.data.details.error.failureType = 'hookFailed';
+  delete standalone.data.details.passed;
+  assert.equal(JSON.parse(await report([standalone])).failures[0].name, 'root after');
+});
+
 test('feedback bounds entries and bytes with explicit omission/truncation, including Unicode escaping', async () => {
   const events = Array.from({ length: 1000 }, () => {
     const event = failure('\0'.repeat(10000));
@@ -172,6 +189,12 @@ test('completion feedback retains hook, cancelled-child, timeout and file-level 
       + "describe('before suite',()=>{before(()=>{throw Error('before boundary');});it('not run',()=>{});});\n"
       + "describe('after suite',()=>{after(()=>{throw Error('after boundary');});it('passed child',()=>{});});\n",
       ['hookFailed'], ['before boundary', 'after boundary']],
+    ["import test,{after} from 'node:test'; test('passing child',()=>{});\n"
+      + "after(()=>{throw Error('root after boundary');});\n", ['hookFailed'], ['root after boundary']],
+    ...['beforeEach', 'afterEach'].map(hook => [
+      `import test,{${hook}} from 'node:test'; ${hook}(()=>{throw Error('${hook} boundary');}); test('child',()=>{});\n`,
+      ['hookFailed'], [`${hook} boundary`],
+    ]),
     // Newer Node versions wait for outstanding subtests after a successful
     // parent body. Fail the parent after the child starts to force cancellation.
     ["import test from 'node:test'; test('parent',async t=>{\n"
@@ -195,7 +218,7 @@ test('completion feedback retains hook, cancelled-child, timeout and file-level 
       assert.ok(value.failures.length > 0, source);
       assert.equal(value.observedFailures, value.failures.length, 'no duplicate declaration-order events');
       for (const type of types) assert.ok(value.failures.some(item => item.failureType === type), JSON.stringify(value));
-      for (const message of messages) assert.ok(value.failures.some(item => item.message.includes(message)), JSON.stringify(value));
+      for (const message of messages) assert.equal(value.failures.filter(item => item.message.includes(message)).length, 1, JSON.stringify(value));
       assert.equal(value.processExitCode, null); assert.equal(value.revision, null);
       assert.ok(Buffer.byteLength(error.stderr) <= 32 * 1024);
       return true;

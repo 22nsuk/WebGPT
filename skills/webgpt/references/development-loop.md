@@ -81,6 +81,11 @@ with test location, error/cause message, stack and Node/platform/architecture.
 Completion order lets a later parallel failure appear while an earlier test is
 still running. Declaration-order `test:fail` mirrors are ignored, not stored for
 deduplication; distinct completions with identical names remain distinct evidence.
+Untyped hook failures are the exception: root `after()` hooks can emit only
+`test:fail`, so those events are retained. Early Node 22 also omits type metadata
+for ordinary test hooks; their failures use `test:fail` instead of `test:complete`
+and therefore retain declaration-order timing. Typed test/suite hook failures use
+completion order. This avoids name/path guesses, version checks and duplicate caches.
 It retains at most 12 failure events and 32 KiB total, marks clipped fields and counts omitted failures.
 It does not parse unstable TAP presentation, buffer passing-test output, capture
 stdout/stderr/environment variables, or run anything. Nested suite/file completion
