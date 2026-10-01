@@ -183,7 +183,9 @@ async function recoveryFixture(run) {
     writeFileSync(join(f.root, 'source.txt'), 'before');
     const { token } = await f.register('damaged');
     const before = (await f.call('read_file', { token, path: 'source.txt' })).structuredContent;
-    const receipt = (await f.call('write_file', { token, path: 'source.txt', text: 'after', expectedSha256: before.sha256 })).structuredContent;
+    const written = await f.call('write_file', { token, path: 'source.txt', text: 'after', expectedSha256: before.sha256 });
+    assert.equal(written.isError, false, JSON.stringify(written));
+    const receipt = written.structuredContent;
     const other = await f.register('independent');
     const journal = join(f.dir, 'recovery', 'damaged', receipt.operation + '.json');
     const original = JSON.parse(readFileSync(journal, 'utf8'));
