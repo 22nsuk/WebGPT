@@ -40,7 +40,7 @@ async function fixture(t, kind) {
     run = () => readVerifiedResult({ id: 'owned', ...saved }, dir);
     expected = text; invalid = { code: 'RESULT_INVALID' };
   } else if (kind === 'workspace') {
-    fs.writeFileSync(file, text);
+    fs.writeFileSync(file, text); limit = 10 * MiB;
     const grant = grantWorkspace({ root: dir, mode: 'read' });
     run = () => readWorkspace(grant, 'data.txt').text;
     expected = text; invalid = /file must be|UTF-8 text/;

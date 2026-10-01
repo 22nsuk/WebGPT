@@ -253,15 +253,24 @@ test('corrupt journal blocks the affected task without replay or stopping unrela
 
 test('an applied but unrecorded mutation is restored from its receipt after restart without replaying project writes', t => fixture(async f => {
   const a = await f.register('a', 'edit');
-  const changed = await withStateWriteFailure(t, f.dir, () => f.call('write_file', { token: a.token, path: 'a.txt', text: 'first', expectedSha256: null }));
+  const original = 'first\n' + 'x'.repeat(2 * 1024 * 1024);
+  writeFileSync(join(f.root, 'a.txt'), original);
+  const read = await f.call('read_file', { token: a.token, path: 'a.txt', limit: 1 });
+  assert.equal(read.isError, false); assert.equal(read.structuredContent.text, 'first\n');
+  const changed = await withStateWriteFailure(t, f.dir, () => f.call('write_file', {
+    token: a.token, path: 'a.txt', oldText: 'first', text: 'edited', expectedSha256: read.structuredContent.sha256,
+  }));
   assert.equal(changed.isError, true);
-  assert.equal(readFileSync(join(f.root, 'a.txt'), 'utf8'), 'first');
+  assert.equal(readFileSync(join(f.root, 'a.txt'), 'utf8'), 'edited\n' + original.slice(6));
   writeFileSync(join(f.root, 'a.txt'), 'later parent edit');
   await f.restart();
   const task = (await f.call('get_task', { token: a.token })).structuredContent;
   assert.equal(task.changes.length, 1); assert.deepEqual(task.recoveryRequired, []);
+  assert.equal(readFileSync(task.changes[0].backup, 'utf8'), original);
   assert.equal(readFileSync(join(f.root, 'a.txt'), 'utf8'), 'later parent edit');
   assert.equal((await f.admin('ready')).ok, true);
+  assert.equal((await f.complete(a.token)).isError, false);
+  assert.equal((await collectTask('a', f.config)).integrity, 'verified');
 }));
 
 test('workspace unavailability is diagnosed independently of worker liveness', () => fixture(async f => {

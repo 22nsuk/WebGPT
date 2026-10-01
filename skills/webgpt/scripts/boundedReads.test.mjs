@@ -15,6 +15,7 @@ import { readBytesUpTo } from './bounded-read.mjs';
 import { observeFileRead } from './test-fixtures/file-read.mjs';
 
 const LIMIT = 1024 * 1024;
+const WORKSPACE_LIMIT = 10 * LIMIT;
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 function fixture(t, cleanup = true) {
   const base = fs.realpathSync.native(fs.mkdtempSync(join(tmpdir(), 'webgpt-bounded-')));
@@ -25,13 +26,13 @@ function fixture(t, cleanup = true) {
   fs.writeFileSync(file, 'original');
   return { base, root, dir, path, file, grant: grantWorkspace({ root, mode: 'edit' }) };
 }
-function growAfterStat(t, file, operation, { at = 1 } = {}) {
+function growAfterStat(t, file, operation, { at = 1, limit = LIMIT } = {}) {
   let metadataReads = 0, bytesBeforeGrowth = 0, grew = false;
   const trace = observeFileRead(t, file, { afterStat() {
     if (++metadataReads !== at) return;
     // Retry-flush first verifies the original; count only reads after this race.
     bytesBeforeGrowth = trace.evidence.bytes;
-    fs.writeFileSync(file, Buffer.alloc(2 * LIMIT, 120));
+    fs.writeFileSync(file, Buffer.alloc(2 * limit, 120));
     grew = true;
   } });
   const finish = () => {
@@ -39,8 +40,8 @@ function growAfterStat(t, file, operation, { at = 1 } = {}) {
     assert.equal(grew, true, 'the regression must reach the post-stat growth window');
     assert.equal(trace.evidence.opens, trace.evidence.closes, 'every opened descriptor must close on rejection');
     const bytesRead = trace.evidence.bytes - bytesBeforeGrowth;
-    assert.ok(bytesRead <= LIMIT + 1, `read ${bytesRead} bytes; limit plus sentinel is ${LIMIT + 1}`);
-    assert.equal(fs.statSync(file).size, 2 * LIMIT, 'a rejected read must not rewrite its input');
+    assert.equal(bytesRead, limit + 1, 'read exactly the domain limit plus its overflow sentinel');
+    assert.equal(fs.statSync(file).size, 2 * limit, 'a rejected read must not rewrite its input');
   };
   // Async operations are used only for the real loopback integration tests.
   let result;
@@ -56,7 +57,7 @@ for (const options of [{}, { offset: 1, limit: 1, maxChars: 100 }]) {
     const f = fixture(t);
     growAfterStat(t, f.file, () => {
       assert.throws(() => readWorkspace(f.grant, f.path, options), /UTF-8 text file required/);
-    });
+    }, { limit: WORKSPACE_LIMIT });
   });
 }
 
@@ -67,7 +68,7 @@ for (const deleting of [false, true]) test(`${deleting ? 'delete' : 'edit'} pref
       path: f.path, text: 'replacement', expectedSha256: hash('original'),
     }, deleting), /UTF-8 text file required/);
     assert.equal(fs.existsSync(join(f.dir, 'recovery')), false);
-  });
+  }, { limit: WORKSPACE_LIMIT });
 });
 
 for (const kind of ['verify', 'candidate', 'retry-flush']) test(`result ${kind} reads enforce a byte cap even after growth`, t => {
@@ -98,7 +99,7 @@ for (const kind of ['journal', 'backup']) test(`recovery ${kind} growth remains 
     const recovery = inspectRecovery(f.dir, 'owned');
     assert.deepEqual(recovery.receipts, []); assert.deepEqual(recovery.unresolved, [journal]);
     assert.equal(fs.readFileSync(f.file, 'utf8'), 'changed');
-  });
+  }, { limit: kind === 'journal' ? LIMIT : WORKSPACE_LIMIT });
 });
 
 async function workerFixture(t) {
@@ -120,7 +121,7 @@ test('MCP growth rejection keeps the editor usable and does not publish a receip
   await growAfterStat(t, f.file, async () => {
     const result = await f.call('read_file', { path: f.path, offset: 1, limit: 1 });
     assert.equal(result.isError, true); assert.match(result.content[0].text, /UTF-8 text file required/);
-  });
+  }, { limit: WORKSPACE_LIMIT });
   const task = (await f.call('get_task', {})).structuredContent;
   assert.equal(task.status, 'running'); assert.deepEqual(task.changes, []);
   const write = await f.call('write_file', { path: 'unrelated.txt', text: 'allowed', expectedSha256: null });
@@ -220,17 +221,18 @@ test('I/O failures propagate while the caller retains descriptor ownership', t =
   } finally { t.mock.restoreAll(); syncBuiltinESMExports(); fs.closeSync(fd); }
 });
 
-test('exact-limit Korean, emoji and CRLF contents keep whole-file revisions and result integrity', t => {
+test('exact-limit Korean, emoji and CRLF contents keep 10 MiB file revisions and 1 MiB result integrity', t => {
   const f = fixture(t), prefix = '한글 🧪\r\n';
-  const text = prefix + 'x'.repeat(LIMIT - Buffer.byteLength(prefix));
+  const text = prefix + 'x'.repeat(WORKSPACE_LIMIT - Buffer.byteLength(prefix));
   fs.writeFileSync(f.file, text);
   const whole = readWorkspace(f.grant, f.path);
   assert.equal(whole.text, text); assert.equal(whole.sha256, hash(text));
   const part = readWorkspace(f.grant, f.path, { offset: 1, limit: 1 });
   assert.equal(part.text, prefix); assert.equal(part.sha256, whole.sha256); assert.equal(part.partial, true);
-  const saved = storeResult(f.dir, 'boundary', text);
+  const resultText = prefix + 'x'.repeat(LIMIT - Buffer.byteLength(prefix));
+  const saved = storeResult(f.dir, 'boundary', resultText);
   assert.equal(verifySavedResult({ id: 'boundary', ...saved }, f.dir), 'verified');
-  assert.deepEqual(storeResult(f.dir, 'boundary', text), saved, 'identical result retry still succeeds');
+  assert.deepEqual(storeResult(f.dir, 'boundary', resultText), saved, 'identical result retry still succeeds');
   assert.equal(fs.existsSync(saved.artifact + '.tmp'), false);
 });
 

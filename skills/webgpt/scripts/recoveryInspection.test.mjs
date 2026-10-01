@@ -117,7 +117,7 @@ for (const kind of ['journal', 'backup']) test(`recovery ${kind} failures remain
       let hook = {}, extra;
       if (damage === 'missing') { fs.unlinkSync(file); f.bytes.delete(file); }
       if (damage === 'hardlink') { extra = file + '.held'; fs.linkSync(file, extra); f.bytes.set(extra, original); }
-      if (damage === 'oversize') { fs.writeFileSync(file, Buffer.alloc(1024 * 1024 + 1, 120)); f.bytes.set(file, fs.readFileSync(file)); }
+      if (damage === 'oversize') { fs.writeFileSync(file, Buffer.alloc((kind === 'journal' ? 1 : 10) * 1024 * 1024 + 1, 120)); f.bytes.set(file, fs.readFileSync(file)); }
       if (damage === 'invalid-utf8') { fs.writeFileSync(file, Buffer.from([0xff])); f.bytes.set(file, Buffer.from([0xff])); }
       if (damage === 'read-error') hook = { beforeRead() { throw Object.assign(Error('fixture'), { code: 'EIO' }); } };
       if (damage === 'identity-swap') hook = { beforeOpen() {

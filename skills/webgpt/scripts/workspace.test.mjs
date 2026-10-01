@@ -68,9 +68,9 @@ test('file symlinks cannot expose files outside the project',t=>fixture(({dir,ro
 test('binary and oversized files cannot be read or replaced',()=>fixture(({dir,root,grant})=>{
   writeFileSync(join(root,'source.txt'),Buffer.from([0xff,0x00]));
   assert.throws(()=>readWorkspace(grant,'source.txt'),/UTF-8/);
-  writeFileSync(join(root,'source.txt'),'x'.repeat(1024*1024+1));
-  assert.throws(()=>readWorkspace(grant,'source.txt'),/1 MiB/);
-  assert.throws(()=>changeWorkspace(grant,dir,'task',{path:'new/fresh.txt',text:'x'.repeat(1024*1024+1),expectedSha256:null}),/1 MiB/);
+  writeFileSync(join(root,'source.txt'),'x'.repeat(10*1024*1024+1));
+  assert.throws(()=>readWorkspace(grant,'source.txt'),/10 MiB/);
+  assert.throws(()=>changeWorkspace(grant,dir,'task',{path:'new/fresh.txt',text:'x'.repeat(10*1024*1024+1),expectedSha256:null}),/10 MiB/);
   assert.equal(existsSync(join(root,'new')),false);
 }));
 test('one project grant can discover and edit newly chosen files without per-file registration',()=>fixture(({root,dir,grant})=>{

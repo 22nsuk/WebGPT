@@ -8,7 +8,7 @@ delegated project workspaces. Read-only grants prevent mutation, not disclosure.
 ## Original bytes are part of recovery integrity
 
 An applied edit/delete receipt is recoverable only when its named `.before.txt`
-backup is a regular single-link UTF-8 text file within the existing 1 MiB limit,
+backup is a regular single-link UTF-8 text file within the 10 MiB project-file limit,
 is not a symlink, and hashes to `beforeSha256`. A valid journal path alone does
 not prove the original bytes exist. Creation receipts have no original backup.
 The check does not compare an old receipt's `afterSha256` with the current project
@@ -30,6 +30,12 @@ Recover originals only from independently verified evidence; do not invent bytes
 remove receipts to clear readiness, or promote an applied candidate automatically.
 The parent must reconcile the intended change and actual files before any explicit
 recovery or cancellation. This patch provides no repair command.
+
+The larger file allowance also applies to retained originals, while mutation journals
+remain limited to 1 MiB. A worker from before the 10 MiB expansion cannot inspect an
+original backup over 1 MiB and may report it as unresolved recovery evidence. Keep a
+compatible worker version when restoring or rolling back a runtime with such backups;
+do not truncate originals or discard receipts to fit an older version's limit.
 
 ## Mutation ordering and interrupted publication
 

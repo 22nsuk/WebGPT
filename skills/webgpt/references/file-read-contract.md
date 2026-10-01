@@ -48,7 +48,8 @@ collection policy and evidence disposition do not move into the byte reader.
 | Runtime initialization marker | 28 bytes | Exact existing marker; absence differs from corrupt state |
 | Runtime worker/service lock owner | 4096 bytes | Lock directory, owner identity, host/PID and uncertain ownership |
 | Result and interrupted-result candidates | 1 MiB | Task-derived paths, full SHA, terminal status, UTF-8 for display |
-| Workspace files, journals and original backups | 1 MiB | Grant/path/Git boundaries, UTF-8 without NUL, full SHA, receipt validation |
+| Workspace files and original backups | 10 MiB | Grant/path/Git boundaries, UTF-8 without NUL, full SHA, original-byte verification |
+| Mutation journals | 1 MiB | Strict UTF-8/JSON, operation/path/hash binding and receipt validation |
 | Diagnostic byte adapter | Caller-selected | Existing audit 1 MiB, offline state 32 MiB and marker/service discovery 4096-byte allowances; each consumer's parse/privacy policy |
 | Dispatch ledger, CLI payload and release-time lock read | 2 MiB | Ledger ownership, input-specific errors, conditional publication and no-resend evidence |
 
