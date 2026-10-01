@@ -269,11 +269,12 @@ their meanings.
 | Stage | Reason examples | Interpretation |
 | --- | --- | --- |
 | `cli_arguments` | `invalid_arguments`, `unknown_action`, `begin_arguments_invalid` | Invalid argument vector, unsupported action or wrong action-specific argument count; no file access. |
-| `cli_arguments` | `<action>_ledger_path_invalid`, `<action>_payload_path_invalid` | Expected an absolute ledger `.json` path or absolute payload path; no file access. |
+| `cli_arguments` | `<action>_ledger_path_invalid`, `<action>_payload_path_invalid` | Expected a well-formed Unicode absolute ledger `.json` path or absolute payload path; no file access. |
 | `payload_read` | `<action>_payload_missing`, `<action>_payload_file_invalid` | Missing payload, unsafe type/link, oversized data or changed file identity; not a corrupt task ledger diagnosis. I/O failures still use `DISPATCH_STORAGE` and its fixed reason. |
 | `payload_decode` | `<action>_payload_utf8_invalid`, `<action>_payload_json_invalid` | Payload bytes could not be decoded or parsed; no parser excerpt and no ledger mutation. |
 | `payload_validate` | `register_input_shape_invalid`, `begin_input_shape_invalid` | Wrong top-level routing fields, rejected before taking a ledger lock. |
 | `payload_validate` | `begin_input_invalid`, `prepare_input_invalid`, `register_input_invalid` | A core input/observation check rejected the value. Existing readiness, stored-ledger and conflict checks are not relabeled as input errors. |
+| `ledger_path` | `native_path_not_utf8` | The canonical ledger path cannot be represented as UTF-8. `DISPATCH_LEDGER` refuses it before locking or writing; this is not a payload error. |
 
 A decodable but incomplete `confirm` observation deliberately keeps the existing behavior: it
 records `uncertain`/`evidence_unconfirmed` and can exit zero, or refuses to downgrade `submitted`.

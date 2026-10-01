@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, writeFileSync, rmSync, existsSync, linkSync, symlinkSync, lstatSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, existsSync, linkSync, symlinkSync, lstatSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -48,8 +48,10 @@ test('missing process is diagnosed before any ledger, payload or browser access'
     import { preflightDispatchRuntime, registerDispatch, dispatchPrompt, dispatchCli, dispatchDiagnostic } from ${JSON.stringify(moduleUrl)};
     const file = process.argv[1];
     let accesses = 0;
-    for (const method of ['lstatSync', 'readFileSync', 'realpathSync', 'writeFileSync', 'openSync', 'readSync', 'fstatSync', 'fsyncSync', 'closeSync'])
+    for (const method of ['lstatSync', 'readFileSync', 'realpathSync', 'writeFileSync', 'openSync', 'readSync', 'fstatSync', 'fsyncSync', 'closeSync']) {
       fs[method] = () => { accesses++; throw Error(${JSON.stringify(secret)}); };
+      if (method === 'realpathSync') fs[method].native = fs[method];
+    }
     syncBuiltinESMExports();
     delete globalThis.process;
     for (const operation of [() => preflightDispatchRuntime(), () => registerDispatch(file, {}),
@@ -71,7 +73,7 @@ test('missing process is diagnosed before any ledger, payload or browser access'
 });
 
 for (const [stage, method, predicate, code, reason] of [
-  ['ledger_path', 'realpathSync', 'true', 'DISPATCH_STORAGE', 'permission_denied'],
+  ['ledger_path', 'realpathSync.native', 'true', 'DISPATCH_STORAGE', 'permission_denied'],
   ['lock_acquire', 'openSync', "args[0].endsWith('.dispatch.lock')", 'DISPATCH_STORAGE', 'permission_denied'],
   ['ledger_read', 'openSync', "args[0].endsWith('ledger.json')", 'DISPATCH_STORAGE', 'permission_denied'],
   ['ledger_write', 'openSync', "args[0].includes('.tmp-')", 'DISPATCH_STORAGE', 'permission_denied'],
@@ -86,9 +88,10 @@ for (const [stage, method, predicate, code, reason] of [
     import fs from 'node:fs';
     import { syncBuiltinESMExports } from 'node:module';
     import { prepareDispatch, dispatchDiagnostic } from ${JSON.stringify(moduleUrl)};
-    const original = fs[${JSON.stringify(method)}];
+    const method = ${JSON.stringify(method)}, owner = method === 'realpathSync.native' ? fs.realpathSync : fs;
+    const key = method === 'realpathSync.native' ? 'native' : method, original = owner[key];
     let calls = 0;
-    fs[${JSON.stringify(method)}] = (...args) => {
+    owner[key] = (...args) => {
       if (${predicate}) throw Object.assign(Error(${JSON.stringify(secret + target.chatUrl)}), { code: 'EACCES', path: process.argv[1] });
       return original(...args);
     };
@@ -608,19 +611,20 @@ test('no confirmation before sending and no readiness check with a changed outgo
   assert.equal(read(file).dispatch.state, 'registered');
 });
 
-test('directory aliases share the same canonical task-ledger lock', async t => {
-  const { file, dir } = fixture(t);
+test('Unicode directory aliases share the same canonical task-ledger lock', async t => {
+  const { dir: base } = fixture(t), dir = join(base, '한글-🧪-\ufffd'); mkdirSync(dir);
+  const name = '원장-🧪-\ufffd.json', file = join(dir, name);
   const other = mkdtempSync(join(tmpdir(), 'webgpt-dispatch-alias-'));
   t.after(() => rmSync(other, { recursive: true, force: true }));
   const alias = join(other, 'linked-dir');
   symlinkSync(dir, alias, process.platform === 'win32' ? 'junction' : 'dir');
-  await registerDispatch(file, spec());
+  await registerDispatch(join(alias, name), spec());
   let release, entered;
   const gate = new Promise(resolve => { release = resolve; });
   const started = new Promise(resolve => { entered = resolve; });
   const work = dispatchPrompt(file, prompt, adapter({ fillAndSend: async () => { entered(); await gate; } }));
   await started;
-  try { await assert.rejects(beginDispatch(join(alias, 'ledger.json'), { prompt, observation: ready() }), { code: 'DISPATCH_LOCKED' }); }
+  try { await assert.rejects(beginDispatch(join(alias, name), { prompt, observation: ready() }), { code: 'DISPATCH_LOCKED' }); }
   finally { release(); }
   assert.equal((await work).state, 'submitted');
 });

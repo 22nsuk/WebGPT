@@ -5,6 +5,14 @@ canonical. No new task state, controller protocol or browser transport is introd
 
 ## Reads and creation
 
+Input paths must be well-formed Unicode. Canonical ledger paths are resolved as
+native bytes and checked for valid UTF-8 before decoding, locking or writing.
+This prevents an unrepresentable directory name from selecting a different file
+whose name contains the replacement character U+FFFD. Normal Unicode directory
+aliases, including literal U+FFFD names, still share the canonical ledger lock.
+An invalid native path returns `DISPATCH_LEDGER` at `ledger_path` with the fixed
+reason `native_path_not_utf8`; the private path is not included in the diagnostic.
+
 Ledger, CLI payload and lock reads validate the named file and opened descriptor,
 reject links or changed file identity, and read at most 2 MiB plus one overflow
 sentinel byte. Overflow is an error, never a truncated JSON value. Exact-limit

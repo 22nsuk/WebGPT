@@ -69,8 +69,10 @@ test('CLI rejects non-string vectors and unknown/prototype actions without echoi
 
 for (const action of payloadActions) test(`CLI ${action} distinguishes paths, missing payload, UTF-8 and JSON without changing the ledger`, async t => {
   const f = fixture(t), before = fs.readFileSync(f.file);
-  await assert.rejects(dispatchCli([action, 'relative.json', f.payload]), inputFailure(f, 'cli_arguments', action + '_ledger_path_invalid'));
-  await assert.rejects(dispatchCli([action, f.file, 'relative.json']), inputFailure(f, 'cli_arguments', action + '_payload_path_invalid'));
+  for (const invalid of ['relative.json', join(f.dir, 'path-\ud800.json')]) {
+    await assert.rejects(dispatchCli([action, invalid, f.payload]), inputFailure(f, 'cli_arguments', action + '_ledger_path_invalid'));
+    await assert.rejects(dispatchCli([action, f.file, invalid]), inputFailure(f, 'cli_arguments', action + '_payload_path_invalid'));
+  }
   await assert.rejects(dispatchCli([action, f.file, f.payload]), inputFailure(f, 'payload_read', action + '_payload_missing'));
   for (const [bytes, suffix] of [[Buffer.from([0xff]), 'payload_utf8_invalid'], [Buffer.from('{"secret":"' + secret), 'payload_json_invalid']]) {
     fs.writeFileSync(f.payload, bytes);
