@@ -116,9 +116,12 @@ function assertNotLive(report) {
   assert.ok(report.parentMustVerify.includes('actual_browser_mode_connector_and_new_message'));
 }
 
-test('preparation only creates a new private fixture and leaves registration and runtime untouched', t => {
+test('preparation only creates a new private fixture and leaves registration and runtime untouched', async t => {
   const f = baseFixture(t);
-  t.mock.method(globalThis, 'fetch', () => { throw Error('prepare must not use the network'); });
+  const parent = join(f.base, '검증 🧪 \uFFFD'); fs.mkdirSync(parent);
+  f.run = join(parent, 'exercise-\uFFFD');
+  let requests = 0;
+  t.mock.method(globalThis, 'fetch', () => { requests++; throw Error('prepare must not use the network'); });
   const prepared = prepareVerification('text', f.run, 'xhigh');
   assert.equal(prepared.registered, false); assert.equal(prepared.browserChecked, false);
   assert.deepEqual(fs.readdirSync(f.run).sort(), ['measurements.json', 'request.json', 'verification.json']);
@@ -131,7 +134,39 @@ test('preparation only creates a new private fixture and leaves registration and
   assert.deepEqual(fs.readFileSync(join(f.run, 'request.json')), before);
   for (const args of [['unknown', join(f.base, 'bad'), 'pro'], ['text', 'relative', 'pro'], ['text', join(f.base, 'bad'), 'other']])
     assert.throws(() => prepareVerification(...args));
+  let rejected;
+  try { prepareVerification('text', join(f.base, 'new-\ud800'), 'pro'); } catch (error) { rejected = error; }
+  assert.equal(fs.existsSync(join(f.base, 'new-\uFFFD')), false, 'an invalid leaf must not create a replacement-character run');
+  assert.match(rejected?.message ?? '', /invalid verification input/);
+  await assert.rejects(checkVerification(f.run.replace('\uFFFD', '\ud800'), { dataDir: f.base, controlPort: 1 }), /invalid verification input/);
+  assert.deepEqual(fs.readFileSync(join(f.run, 'request.json')), before);
+  assert.equal(requests, 0);
 });
+
+test('verification rejects non-UTF-8 native directory aliases without selecting a replacement-character sibling',
+  { skip: process.platform !== 'linux' ? 'native arbitrary-byte directory fixture requires Linux' : false }, async t => {
+    const f = baseFixture(t), raw = Buffer.concat([Buffer.from(f.base + '/'), Buffer.from([0xff])]);
+    const rawPath = suffix => Buffer.concat([raw, Buffer.from('/' + suffix)]);
+    const sibling = join(f.base, '\uFFFD'), alias = join(f.base, 'ordinary-alias');
+    fs.mkdirSync(raw); fs.mkdirSync(sibling);
+    fs.mkdirSync(rawPath('nested')); fs.mkdirSync(join(sibling, 'nested'));
+    fs.symlinkSync(raw, alias, 'dir');
+    const existing = join(sibling, 'nested', 'existing');
+    prepareVerification('text', existing, 'pro');
+    fs.mkdirSync(rawPath('nested/existing'));
+    const files = fs.readdirSync(existing), before = files.map(file => fs.readFileSync(join(existing, file)));
+    for (const file of files) fs.copyFileSync(join(existing, file), rawPath('nested/existing/' + file));
+    let requests = 0, rejected;
+    t.mock.method(globalThis, 'fetch', () => { requests++; throw Error('invalid paths must not reach the controller'); });
+    try { prepareVerification('text', join(alias, 'nested', 'new-run'), 'pro'); } catch (error) { rejected = error; }
+    assert.deepEqual(fs.readdirSync(join(sibling, 'nested')), ['existing'], 'do not create the requested run in the sibling');
+    assert.deepEqual(fs.readdirSync(rawPath('nested')), ['existing']);
+    assert.match(rejected?.message ?? '', /invalid verification input/);
+    await assert.rejects(checkVerification(join(alias, 'nested', 'existing'), { dataDir: f.base, controlPort: 1 }), /invalid verification input/);
+    assert.deepEqual(files.map(file => fs.readFileSync(join(existing, file))), before);
+    assert.deepEqual(files.map(file => fs.readFileSync(rawPath('nested/existing/' + file))), before);
+    assert.equal(requests, 0);
+  });
 
 for (const scenario of verificationScenarios) test(`${scenario} exercise checks real local evidence without acknowledging or claiming live success`, async t => {
   const f = await fixture(t, scenario);

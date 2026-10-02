@@ -44,6 +44,50 @@ function redacted(error, f) {
   for (const privateText of [f.dir, prompt, 'PRIVATE_FIXTURE_ONLY', target.tabId]) assert.ok(!value.includes(privateText));
 }
 
+test('native-byte directory aliases cannot select a replacement-character ledger', {
+  skip: process.platform !== 'linux' ? 'native arbitrary-byte directory fixture requires Linux' : false,
+}, async t => {
+  const f = await fixture(t), alias = join(f.dir, 'selected-directory');
+  const raw = Buffer.concat([Buffer.from(f.dir + '/native-'), Buffer.from([0xff])]);
+  const replacement = join(f.dir, 'native-\ufffd');
+  fs.mkdirSync(raw); fs.mkdirSync(replacement); fs.symlinkSync(raw, alias, 'dir');
+  const rawFile = Buffer.concat([raw, Buffer.from('/ledger.json')]), other = join(replacement, 'ledger.json');
+  const original = Buffer.from('{"ownership":"requested native directory"}'), sibling = Buffer.from('{"ownership":"different directory"}');
+  fs.writeFileSync(rawFile, original); fs.writeFileSync(other, sibling);
+  assert.equal(alias.isWellFormed(), true);
+  assert.deepEqual(fs.realpathSync.native(alias, { encoding: 'buffer' }), raw);
+  const rejected = error => {
+    redacted(error, f);
+    const diagnostic = dispatchDiagnostic(error);
+    assert.equal(diagnostic.code, 'DISPATCH_LEDGER'); assert.equal(diagnostic.stage, 'ledger_path');
+    assert.equal(diagnostic.reason, 'native_path_not_utf8'); return true;
+  };
+  await assert.rejects(registerDispatch(join(alias, 'ledger.json'), spec), rejected);
+  const payload = join(f.dir, 'payload.json'); fs.writeFileSync(payload, JSON.stringify(spec));
+  await assert.rejects(dispatchCli(['register', join(alias, 'ledger.json'), payload]), rejected);
+  assert.deepEqual(fs.readFileSync(rawFile), original); assert.deepEqual(fs.readFileSync(other), sibling);
+  for (const directory of [raw, replacement]) assert.deepEqual(fs.readdirSync(directory), ['ledger.json']);
+});
+
+test('ill-formed ledger paths cannot address literal replacement-character names', async t => {
+  const f = await fixture(t), parent = join(f.dir, 'parent-\ufffd'); fs.mkdirSync(parent);
+  const paths = [
+    [join(f.dir, 'ledger-\ufffd.json'), join(f.dir, 'ledger-\ud800.json')],
+    [join(parent, 'ledger.json'), join(f.dir, 'parent-\udc00', 'ledger.json')],
+  ];
+  const before = Buffer.from('{"ownership":"preserve"}');
+  for (const [file] of paths) fs.writeFileSync(file, before);
+  const entries = fs.readdirSync(f.dir).sort();
+  for (const [, invalid] of paths) {
+    await assert.rejects(registerDispatch(invalid, spec), error => {
+      redacted(error, f); assert.equal(error.code, 'DISPATCH_INPUT'); return true;
+    });
+    for (const [file] of paths) assert.deepEqual(fs.readFileSync(file), before);
+    assert.deepEqual(fs.readdirSync(f.dir).sort(), entries);
+    assert.deepEqual(fs.readdirSync(parent), ['ledger.json']);
+  }
+});
+
 for (const held of [true, false]) test(`pre-lock displaced inode metadata does not bypass ${held ? 'the current owner' : 'the committed send barrier'}`, async t => {
   const f = await fixture(t), lock = f.file + '.dispatch.lock';
   if (held) fs.writeFileSync(lock, 'another parent owns publication', { mode: 0o600 });

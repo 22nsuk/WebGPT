@@ -51,6 +51,10 @@ never use a new one to bypass an already attempted send. The static manifest ide
 an exercise; it is not another completion ledger. Keep the request/manifest unchanged.
 POSIX creation modes do not replace appropriate Windows ACLs on the private parent.
 
+`prepare` and `check` require well-formed Unicode input paths and a UTF-8 native
+canonical directory. Unrepresentable paths are refused before reading or creating
+run files; ordinary Unicode names, including literal U+FFFD, remain supported.
+
 ## Run the existing delegation path
 
 Read the generated request and register it **once** using the identified controller:

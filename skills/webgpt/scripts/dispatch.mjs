@@ -1,6 +1,7 @@
 // Parent-only browser dispatch bookkeeping. No browser, controller or MCP transport.
 // Extend the one private task ledger; completion remains authoritative in the controller.
 // Storage and evidence handling: ../references/dispatch-storage.md.
+import { isUtf8 } from 'node:buffer';
 import { createHash, randomUUID } from 'node:crypto';
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync, writeFileSync, renameSync, unlinkSync, realpathSync } from 'node:fs';
 import { dirname, basename, isAbsolute, join } from 'node:path';
@@ -36,7 +37,7 @@ const cliReasons = ['arguments_invalid', 'ledger_path_invalid', 'payload_path_in
 const diagnosticStages = new Set([...Object.values(defaults).map(([stage]) => stage), ...storageStages,
   'lock_release', 'cli_arguments', 'payload_decode', 'payload_validate']);
 const diagnosticReasons = new Set([...Object.values(defaults).map(([, reason]) => reason),
-  'not_found', 'permission_denied', 'storage_full', 'lock_owner_changed', 'lock_release_failed',
+  'not_found', 'permission_denied', 'storage_full', 'native_path_not_utf8', 'lock_owner_changed', 'lock_release_failed',
   'invalid_arguments', 'unknown_action', ...cliActions.flatMap(action => cliReasons.map(reason => action + '_' + reason))]);
 const diagnostics = new WeakMap();
 class DispatchError extends Error {
@@ -167,6 +168,12 @@ function safeSummary(d) {
 function fileInfo(file) {
   try { return lstatSync(file); } catch (e) { if (e.code === 'ENOENT') return null; throw e; }
 }
+function canonicalLedgerPath(file) {
+  // The JS resolver can replace symlink bytes even when its output encoding is 'buffer'.
+  const bytes = realpathSync.native(file, { encoding: 'buffer' });
+  if (!isUtf8(bytes)) throw new DispatchError('LEDGER', 'ledger_path', 'native_path_not_utf8');
+  return bytes.toString('utf8');
+}
 function readBytes(file) {
   return readBoundedFile(file, MAX_BYTES, () => new DispatchError('LEDGER'))?.bytes ?? null;
 }
@@ -203,15 +210,15 @@ async function withLedger(file, work) {
   let lock, owner, acquired = false;
   let stage = 'input';
   try {
-    if (typeof file !== 'string' || !isAbsolute(file) || !file.endsWith('.json')) fail('INPUT');
+    if (typeof file !== 'string' || !file.isWellFormed() || !isAbsolute(file) || !file.endsWith('.json')) fail('INPUT');
     // Canonicalize native aliases (including existing filenames) without following a linked ledger.
     // Do not create directories or change ACLs. Every parent must use the same canonical ledger.
     stage = 'ledger_path';
-    file = join(realpathSync(dirname(file)), basename(file));
+    file = join(canonicalLedgerPath(dirname(file)), basename(file));
     const candidate = fileInfo(file);
     if (candidate) {
       if (!candidate.isFile() || candidate.isSymbolicLink()) fail('LEDGER');
-      file = realpathSync(file);
+      file = canonicalLedgerPath(file);
     }
     // A publisher may replace the inode during the path lookup above. Validate
     // link count, size and opened identity only after acquiring its shared lock.
@@ -429,9 +436,9 @@ export async function dispatchCli(args) {
     const count = action === 'preflight' ? 1 : Object.hasOwn(noPayload, action) ? 2 : 3;
     if (args.length !== count) throw inputError('arguments_invalid', 'cli_arguments');
     if (action === 'preflight') return preflightDispatchRuntime();
-    if (!isAbsolute(file) || !file.endsWith('.json')) throw inputError('ledger_path_invalid', 'cli_arguments');
+    if (!file.isWellFormed() || !isAbsolute(file) || !file.endsWith('.json')) throw inputError('ledger_path_invalid', 'cli_arguments');
     if (Object.hasOwn(noPayload, action)) return await noPayload[action](file);
-    if (!isAbsolute(payloadFile)) throw inputError('payload_path_invalid', 'cli_arguments');
+    if (!payloadFile.isWellFormed() || !isAbsolute(payloadFile)) throw inputError('payload_path_invalid', 'cli_arguments');
     let bytes;
     try { bytes = readBytes(payloadFile); }
     catch (error) {

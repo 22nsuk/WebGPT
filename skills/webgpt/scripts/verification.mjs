@@ -1,6 +1,7 @@
 // Opt-in parent workflow: prepare an isolated exercise, then inspect actual local
 // evidence. Never drive a browser or register/retire work. Only the exact bundled
 // arithmetic fixture may be evaluated; this is not a runner for returned code.
+import { isUtf8 } from 'node:buffer';
 import { randomUUID, createHash } from 'node:crypto';
 import { mkdirSync, writeFileSync, realpathSync, lstatSync, readdirSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join } from 'node:path';
@@ -32,10 +33,12 @@ const decode = bytes => new TextDecoder('utf-8', { fatal: true }).decode(bytes);
 const readJson = (file, limit = 32768) => JSON.parse(decode(readDiagnosticBytes(file, limit) ?? Buffer.alloc(0)));
 const writeJson = (file, value) => writeFileSync(file, JSON.stringify(value, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
 function directory(path) {
-  if (typeof path !== 'string' || !isAbsolute(path)) throw invalid();
+  if (typeof path !== 'string' || !path.isWellFormed() || !isAbsolute(path)) throw invalid();
   const info = lstatSync(path);
   if (!info.isDirectory() || info.isSymbolicLink()) throw invalid();
-  return realpathSync.native(path);
+  const bytes = realpathSync.native(path, { encoding: 'buffer' });
+  if (!isUtf8(bytes)) throw invalid();
+  return bytes.toString('utf8');
 }
 function loadRun(path) {
   const dir = directory(path), run = readJson(join(dir, 'verification.json'));
@@ -49,7 +52,7 @@ function loadRun(path) {
 
 export function prepareVerification(scenario, path, mode) {
   if (!verificationScenarios.includes(scenario) || !['pro', 'xhigh'].includes(mode)
-      || typeof path !== 'string' || !isAbsolute(path)) throw invalid();
+      || typeof path !== 'string' || !path.isWellFormed() || !isAbsolute(path)) throw invalid();
   // Never adopt an old run, register automatically, or delete a partial preparation.
   const dir = join(directory(dirname(path)), basename(path));
   mkdirSync(dir, { mode: 0o700 });
