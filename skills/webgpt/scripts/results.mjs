@@ -83,7 +83,16 @@ export function storeResult(dir, id, text) {
       throw fault('RESULT_CONFLICT', 'uncommitted result differs; preserve evidence and inspect before resubmitting');
   }
   prepareCandidate(saved ? artifact : temporary, bytes, saved ?? staged);
-  if (!saved) renameSync(temporary, artifact);
+  if (!saved) {
+    // Preparation must not authorize replacing a destination restored meanwhile.
+    // Even equal bytes or a dangling link are new evidence, not an absent path.
+    let present;
+    try { present = lstatSync(artifact); }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+    if (present) throw fault('RESULT_CONFLICT', 'result appeared before publication; preserve evidence');
+    // This observation is not an atomic no-replace rename or an external-writer lock.
+    renameSync(temporary, artifact);
+  }
   return { artifact, sha256: digest(bytes) };
 }
 

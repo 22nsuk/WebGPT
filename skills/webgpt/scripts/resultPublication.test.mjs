@@ -76,6 +76,66 @@ for (const mode of ['new', 'staged', 'saved']) {
   });
 }
 
+for (const mode of ['new', 'staged']) test(`result publication ${mode} preserves a late destination`, t => {
+  for (const same of [false, true]) {
+    const f = fixture(t, mode), arrived = same ? bytes : Buffer.from('restored evidence');
+    const trace = afterFlush(t, f, () => fs.writeFileSync(f.artifact, arrived, { flag: 'wx' }));
+    try { assert.throws(() => storeResult(f.dir, 'owned', text), { code: 'RESULT_CONFLICT', retryable: false }); }
+    finally { trace.restore(); }
+    assert.equal(trace.injected, true); assert.equal(trace.flushed, 1);
+    assert.equal(trace.trace.evidence.opens, trace.trace.evidence.closes);
+    assert.deepEqual(fs.readFileSync(f.file), bytes);
+    assert.deepEqual(fs.readFileSync(f.artifact), arrived);
+    assert.equal(fs.readFileSync(f.other, 'utf8'), 'unrelated evidence');
+    // Only a later explicit retry may accept equal candidates. It still retains
+    // the temporary evidence; a different result must remain a conflict.
+    if (same) assert.equal(storeResult(f.dir, 'owned', text).sha256, hash(bytes));
+    else assert.throws(() => storeResult(f.dir, 'owned', text), { code: 'RESULT_CONFLICT' });
+    assert.deepEqual(fs.readFileSync(f.file), bytes);
+    assert.deepEqual(fs.readFileSync(f.artifact), arrived);
+  }
+});
+
+test('result publication preserves a late destination directory', t => {
+  const f = fixture(t, 'new'), trace = afterFlush(t, f, () => fs.mkdirSync(f.artifact));
+  try { assert.throws(() => storeResult(f.dir, 'owned', text), { code: 'RESULT_CONFLICT', retryable: false }); }
+  finally { trace.restore(); }
+  assert.equal(trace.injected, true);
+  assert.equal(fs.lstatSync(f.artifact).isDirectory(), true);
+  assert.deepEqual(fs.readFileSync(f.file), bytes);
+});
+
+test('result publication preserves a late dangling destination link', { skip: process.platform === 'win32' }, t => {
+  const f = fixture(t, 'staged'), target = join(f.dir, 'missing');
+  const trace = afterFlush(t, f, () => fs.symlinkSync(target, f.artifact));
+  try { assert.throws(() => storeResult(f.dir, 'owned', text), { code: 'RESULT_CONFLICT', retryable: false }); }
+  finally { trace.restore(); }
+  assert.equal(trace.injected, true);
+  assert.equal(fs.readlinkSync(f.artifact), target);
+  assert.equal(fs.existsSync(target), false);
+  assert.deepEqual(fs.readFileSync(f.file), bytes);
+});
+
+test('result publication propagates late destination lookup failures without renaming', t => {
+  for (const code of ['EACCES', 'EIO']) {
+    const f = fixture(t, 'new'), failure = Object.assign(Error('fixture destination lookup failure'), { code });
+    let armed = false, observed = 0;
+    const trace = afterFlush(t, f, () => { armed = true; }), lstat = fs.lstatSync;
+    t.mock.method(fs, 'lstatSync', (path, ...args) => {
+      if (armed && path === f.artifact) { observed++; throw failure; }
+      return lstat(path, ...args);
+    });
+    syncBuiltinESMExports();
+    try { assert.throws(() => storeResult(f.dir, 'owned', text), error => error === failure); }
+    finally { trace.restore(); }
+    assert.equal(trace.injected, true); assert.equal(observed, 1);
+    assert.equal(trace.trace.evidence.opens, trace.trace.evidence.closes);
+    assert.equal(fs.existsSync(f.artifact), false);
+    assert.deepEqual(fs.readFileSync(f.file), bytes);
+    assert.equal(fs.readFileSync(f.other, 'utf8'), 'unrelated evidence');
+  }
+});
+
 for (const mode of ['staged', 'saved']) test(`result publication binds ${mode} retry before reading or flushing`, t => {
   const f = fixture(t, mode); fs.writeFileSync(f.replacement, bytes);
   let attempts = 0, swapped = false, flushed = 0;
@@ -175,7 +235,8 @@ test('result publication checks current type, link count and size after flushing
   }
 });
 
-for (const mode of ['new', 'staged', 'saved']) test(`result publication MCP ${mode} conflict preserves running state and recovery`, async t => {
+for (const [mode, conflict] of [['new', 'source'], ['staged', 'source'], ['saved', 'source'],
+  ['new', 'destination'], ['staged', 'destination']]) test(`result publication MCP ${mode} ${conflict} conflict preserves running state and recovery`, async t => {
   const { start } = await import('./worker.mjs');
   const { request, collectTask, reconcileTasks } = await import('./client.mjs');
   const { callTool } = await import('./test-fixtures/worker-http.mjs');
@@ -186,7 +247,12 @@ for (const mode of ['new', 'staged', 'saved']) test(`result publication MCP ${mo
     const owned = await request('register', { id: 'owned', instructions: 'retain', inputs: { source: 'private input' } }, config);
     const other = await request('register', { id: 'other', instructions: '', inputs: {} }, config);
     const f = fixture(t, mode, text, dir), state = fs.readFileSync(join(dir, 'state.json'));
-    const trace = afterFlush(t, f, () => swap(f));
+    const preserved = conflict === 'source' ? f.original : f.file;
+    const conflicting = conflict === 'source' ? f.file : f.artifact;
+    const trace = afterFlush(t, f, () => {
+      if (conflict === 'source') swap(f);
+      else fs.renameSync(f.replacement, f.artifact);
+    });
     let reply;
     try { reply = await callTool(worker, 'submit_result', { token: owned.token, status: 'completed', summary: 'fixture', result: text }); }
     finally { trace.restore(); }
@@ -201,13 +267,13 @@ for (const mode of ['new', 'staged', 'saved']) test(`result publication MCP ${mo
     assert.equal(inspection.collected, false); assert.equal(inspection.artifact, null);
     assert.equal(inspection.attention, 'inspect_uncommitted_result');
     await assert.rejects(collectTask('owned', config));
-    assert.deepEqual(fs.readFileSync(f.original), bytes);
-    assert.deepEqual(fs.readFileSync(f.file), Buffer.alloc(bytes.length, 120));
+    assert.deepEqual(fs.readFileSync(preserved), bytes);
+    assert.deepEqual(fs.readFileSync(conflicting), Buffer.alloc(bytes.length, 120));
     // The conflict is task-local, not authority to revoke or block other work.
     assert.equal((await callTool(worker, 'submit_result', { token: other.token, status: 'completed', summary: 'other', result: 'other result' })).isError, false);
     assert.equal((await collectTask('other', config)).integrity, 'verified');
     await request('cancel', { id: 'owned' }, config);
-    assert.deepEqual(fs.readFileSync(f.file), Buffer.alloc(bytes.length, 120));
+    assert.deepEqual(fs.readFileSync(conflicting), Buffer.alloc(bytes.length, 120));
     assert.equal((await callTool(worker, 'get_task', { token: owned.token })).isError, true);
   } finally { await worker.close(); }
 });
