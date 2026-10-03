@@ -378,7 +378,37 @@ export async function reconcileTasks(config = configuration(), { signal, ids } =
   }) };
 }
 
-if (isCliEntry(import.meta)) {
+// The client may first run as --import (main=false), then under a preserved
+// main URL. Claim its command once across those module instances, before await
+// or any controller call. Identity queries in cli-entry.mjs remain side-effect free.
+const cliExecuted = Symbol.for('webgpt.client.cli-executed');
+function claimClientCli() {
+  if (process[cliExecuted]) return false;
+  const claim = () => {
+    if (!Reflect.defineProperty(process, cliExecuted, { value: true }))
+      throw Error('client CLI execution state unavailable');
+  };
+  try {
+    // A self-preload's false native flag is cached before main. The existing
+    // fallback still excludes eval/stdin, unrelated imports and URL variants.
+    if (!isCliEntry(import.meta.main === false ? { url: import.meta.url } : import.meta)) return false;
+  } catch (error) {
+    claim(); // A matched entry's failed lookup cannot retry under a later alias.
+    throw error;
+  }
+  claim();
+  return true;
+}
+let executeCli = false;
+try { executeCli = claimClientCli(); }
+catch {
+  // Entry failures must neither succeed silently nor leak native lookup paths.
+  console.error('WebGPT: ' + JSON.stringify({ code: 'CLI_ENTRY_UNAVAILABLE',
+    message: 'Client entry unavailable; no command was run.' }));
+  process.exitCode = 1;
+}
+
+if (executeCli) {
   const [action, ...args] = process.argv.slice(2);
   try {
     let result;
