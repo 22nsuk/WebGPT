@@ -210,6 +210,7 @@ PASS를 만들기 위해 상태를 초기화하지 마세요.
 | 실용 요청문과 작업 설계 | [사용법](skills/webgpt/references/usage.md) · [부모 작업 절차](skills/webgpt/references/parent-workflow.md) · [일반 작업 완료](skills/webgpt/references/task-completion.md) |
 | 도구 계약과 제한 | [Workspace](skills/webgpt/references/workspace.md) |
 | 코드 수정과 네이티브 근거 | [개발 절차](skills/webgpt/references/development-loop.md) (정확한 구간 수정·리비전 고정 읽기·실패 요약) · [대형·바이너리 근거 입력](skills/webgpt/references/artifact-inputs.md) |
+| 개정된 배정서·수동 전달·검증 인계 | [입력 식별과 검증 피드백](skills/webgpt/references/worker-handoff.md) (`client.mjs handoff`, 명령 실행 없음) |
 | 전송·첨부·정리 | [Dispatch](skills/webgpt/references/dispatch.md) · [첨부](skills/webgpt/references/file-uploads.md) · [채팅 생명주기](skills/webgpt/references/chat-lifecycle.md) |
 | 결과·복구·배포 | [결과 검토](skills/webgpt/references/result-review.md) · [수집](skills/webgpt/references/collection-details.md) · [복구 무결성](skills/webgpt/references/recovery-integrity.md) · [백업 안전](skills/webgpt/references/backup-safety.md) · [Windows 운영](skills/webgpt/references/operations-windows.md) |
 | 진단과 수용 검증 | [진단](skills/webgpt/references/diagnostics.md) · [검증](skills/webgpt/references/verification.md) · [부모 수용](skills/webgpt/references/parent-acceptance.md) |

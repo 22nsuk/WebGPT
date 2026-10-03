@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 const root = fileURLToPath(new URL('../', import.meta.url));
 const refs = 'skills/webgpt/references/';
 const documents = ['README.md', 'README.ko.md', refs + 'install-manual.md',
-  refs + 'install-manual.ko.md', refs + 'upstream-review-2026-09-28.md'];
+  refs + 'install-manual.ko.md', refs + 'upstream-review-2026-09-28.md', refs + 'worker-handoff.md'];
 const normalizeNewlines = text => text.replace(/\r\n/g, '\n');
 const read = path => normalizeNewlines(readFileSync(join(root, path), 'utf8'));
 // A deliberately small checker for these authored Markdown files, not a general renderer.

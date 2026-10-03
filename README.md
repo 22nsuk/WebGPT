@@ -215,6 +215,7 @@ journals and result candidates; never reset them to manufacture a PASS.
 | Practical prompts and task design | [Usage (한국어)](skills/webgpt/references/usage.md) · [Parent workflow](skills/webgpt/references/parent-workflow.md) · [All task types](skills/webgpt/references/task-completion.md) |
 | Tool contracts and limits | [Workspace](skills/webgpt/references/workspace.md) |
 | Code changes and native evidence | [Development loop](skills/webgpt/references/development-loop.md) (exact edits, pinned reads, failure feedback) · [Artifact inputs](skills/webgpt/references/artifact-inputs.md) |
+| Revised or manual worker handoff | [Input identities and validation feedback](skills/webgpt/references/worker-handoff.md) (`client.mjs handoff`, no command execution) |
 | Sending, attachments and cleanup | [Dispatch](skills/webgpt/references/dispatch.md) · [Uploads](skills/webgpt/references/file-uploads.md) · [Chat lifecycle](skills/webgpt/references/chat-lifecycle.md) |
 | Results, recovery and deployment | [Result review](skills/webgpt/references/result-review.md) · [Collection](skills/webgpt/references/collection-details.md) · [Recovery integrity](skills/webgpt/references/recovery-integrity.md) · [Backup safety](skills/webgpt/references/backup-safety.md) · [Windows operations](skills/webgpt/references/operations-windows.md) |
 | Diagnosis and acceptance | [Diagnostics](skills/webgpt/references/diagnostics.md) · [Verification](skills/webgpt/references/verification.md) · [Parent acceptance](skills/webgpt/references/parent-acceptance.md) |

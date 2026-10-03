@@ -43,6 +43,9 @@ The remaining sections govern parent delegation, not ordinary repository mainten
 For assignment design and a complete parent walkthrough, see [parent-workflow.md](references/parent-workflow.md).
 User-facing examples remain in [usage.md](references/usage.md); tradeoffs are in
 [browser-use-comparison.md](references/browser-use-comparison.md).
+For revised/manual assignments and parent-only validation gaps, the optional
+[handoff guide](references/worker-handoff.md) binds the brief and selected inputs
+to narrow check feedback; it does not execute, dispatch or accept work.
 
 <a id="give-the-worker-a-useful-part-of-the-task"></a>
 

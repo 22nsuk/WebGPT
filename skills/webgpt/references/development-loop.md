@@ -9,6 +9,10 @@ limit, recovery evidence and separate acceptance/collection remain the boundary.
 
 ## 1. Keep validation and correction with the worker
 
+For a revised/manual assignment or a host-only check handoff, use the optional
+[revision-bound handoff](worker-handoff.md). It inventories selected inputs and
+compares caller-reported tested hashes, without running commands or granting authority.
+
 Before dispatch, name the authoritative source revision/workspace, desired outcome,
 authorized actions and any known parent-only check. The worker owns the available
 checks and corrective iterations, not just test-code authoring. Discover only the
