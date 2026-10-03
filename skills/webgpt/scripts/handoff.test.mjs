@@ -36,6 +36,7 @@ test('assignment identity follows exact brief/input bytes, not assignee or feedb
   const { spec } = fixture(t), first = buildHandoff(spec);
   assert.equal(first.assignment.briefSha256, hash('rev2\r\n🧪\r\n'));
   spec.assignee = 'xhigh'; spec.files.reverse();
+  spec.assignment = { revision: 'rev2', id: 'task-21' };
   assert.deepEqual(buildHandoff(spec).assignment, first.assignment);
   fs.writeFileSync(spec.files.find(f => f.role === 'evidence').source, 'new log');
   assert.deepEqual(buildHandoff(spec).assignment, first.assignment);

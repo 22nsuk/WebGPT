@@ -86,7 +86,7 @@ export function buildHandoff(spec) {
   });
   const brief = files.find(file => file.role === 'brief');
   requireValue(brief.status === 'observed');
-  const identity = { ...spec.assignment, briefSha256: brief.sha256,
+  const identity = { id: spec.assignment.id, revision: spec.assignment.revision, briefSha256: brief.sha256,
     files: files.map(({ label, role, requiredFor, status, sizeBytes, sha256 }) =>
       ({ label, role, requiredFor: [...requiredFor].sort(), status, sizeBytes, sha256 }))
       .filter(file => !['evidence', 'package'].includes(file.role)).sort((a, b) => a.label < b.label ? -1 : a.label > b.label ? 1 : 0) };
