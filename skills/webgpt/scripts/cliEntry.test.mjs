@@ -119,8 +119,17 @@ test('fallback distinguishes native-byte siblings instead of running an imported
     fs.writeFileSync(Buffer.concat([raw, Buffer.from('/main.mjs')]),
       `await import(${JSON.stringify(pathToFileURL(imported).href)});`);
     const alias = join(dir, 'alias'); fs.symlinkSync(raw, alias, 'dir');
-    for (const flags of [['--preserve-symlinks-main'], ['--preserve-symlinks', '--preserve-symlinks-main']])
-      output(run([...flags, join(alias, 'main.mjs')]));
+    const paths = [Buffer.concat([raw, Buffer.from('/main.mjs')]), join(alias, 'main.mjs'), imported];
+    const identities = paths.map(path => ({
+      native: fs.realpathSync.native(path, { encoding: 'buffer' }).toString('hex'),
+      ino: fs.statSync(path, { bigint: true }).ino.toString(),
+      content: fs.readFileSync(path, 'utf8'),
+    }));
+    for (const flags of [['--preserve-symlinks-main'], ['--preserve-symlinks', '--preserve-symlinks-main']]) {
+      const result = run([...flags, join(alias, 'main.mjs')]);
+      if (result.stdout !== '') t.diagnostic(JSON.stringify({ flags, identities }));
+      output(result);
+    }
     output(run([imported]), 'CLI\n'); // A literal replacement character remains valid.
   });
 
