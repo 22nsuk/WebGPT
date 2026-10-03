@@ -14,10 +14,12 @@ const nonnegative = value => Number.isSafeInteger(value) && value >= 0;
 export const validAuditTaskId = value => typeof value === 'string' && /^[a-zA-Z0-9_-]{1,80}$/.test(value)
   && !/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(value);
 const unavailable = () => Error('diagnostic data unavailable');
-const stat = file => { try { return lstatSync(file); } catch (e) { if (e.code === 'ENOENT') return null; throw e; } };
+// Preserve full-width identities through both observations; Number can alias
+// distinct device/inode values. This is not an external-writer lock.
+const stat = file => { try { return lstatSync(file, { bigint: true }); } catch (e) { if (e.code === 'ENOENT') return null; throw e; } };
 function regular(info, limit, privateFile = false) {
-  if (!info?.isFile() || info.isSymbolicLink() || info.nlink !== 1 || info.size > limit
-      || (privateFile && process.platform !== 'win32' && (info.mode & 0o077))) throw unavailable();
+  if (!info?.isFile() || info.isSymbolicLink() || info.nlink !== 1n || info.size > limit
+      || (privateFile && process.platform !== 'win32' && (info.mode & 0o077n))) throw unavailable();
 }
 
 export function auditFromEnvironment(env = process.env) {
@@ -78,7 +80,7 @@ export function createAuditWriter(dir, enabled = false, { warn = () => console.e
       // Inspect first, including dangling Windows symlinks: an exclusive open
       // alone is not sufficient there. Never chmod or follow an existing link.
       if (info) regular(info, AUDIT_LIMIT, true);
-      if (info && info.size + line.length > AUDIT_LIMIT) {
+      if (info && info.size > AUDIT_LIMIT - line.length) {
         const older = stat(previous);
         if (older) regular(older, AUDIT_LIMIT, true);
         renameSync(file, previous);
@@ -89,7 +91,7 @@ export function createAuditWriter(dir, enabled = false, { warn = () => console.e
       const fd = openSync(file, constants.O_WRONLY | constants.O_APPEND | constants.O_NOFOLLOW
         | (constants.O_NONBLOCK ?? 0) | (info ? 0 : constants.O_CREAT | constants.O_EXCL), 0o600);
       try {
-        const opened = fstatSync(fd);
+        const opened = fstatSync(fd, { bigint: true });
         regular(opened, AUDIT_LIMIT - line.length, true);
         if (info && (opened.dev !== info.dev || opened.ino !== info.ino)) throw unavailable();
         writeFileSync(fd, line);
