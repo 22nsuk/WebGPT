@@ -107,35 +107,51 @@ for (const code of ['ENOENT', 'ENOTDIR', 'EACCES', 'EIO']) {
   });
 }
 
-// POSIX permits filename bytes that cannot be represented in a JavaScript path.
+// Exercise the byte contract on every platform, including filesystems that
+// reject invalid UTF-8 filenames before the integration fixture can be built.
+for (const identical of [false, true]) {
+  test(`fallback compares native bytes without JS decoding (identical=${identical})`, t => {
+    const url = new URL('./artifact-input.mjs', import.meta.url);
+    const entryPath = resolve(process.argv[1]), modulePath = fileURLToPath(url);
+    const raw = Buffer.concat([Buffer.from('/native/'), Buffer.from([0xff])]);
+    const replacement = Buffer.from('/native/\ufffd');
+    const calls = [];
+    const native = (path, options) => {
+      calls.push(path);
+      assert.equal(options.encoding, 'buffer');
+      assert.ok(path === entryPath || path === modulePath);
+      return path === entryPath || identical ? raw : replacement;
+    };
+    t.mock.method(fs, 'realpathSync',
+      () => assert.fail('CLI identity must not use the decoding JS realpath'));
+    t.mock.method(fs.realpathSync, 'native', native);
+    syncBuiltinESMExports();
+    t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+    assert.equal(isCliEntry({ url: url.href }), identical);
+    assert.deepEqual(calls, [entryPath, modulePath]);
+  });
+}
+
 // The aliases are valid strings; only their native targets differ from U+FFFD.
+// Skip only fixture creation rejected with EILSEQ, not lookup/assertion failures.
 test('fallback distinguishes native-byte siblings instead of running an imported module',
   { skip: process.platform === 'win32' }, t => {
-    const { dir: temporary, real } = fixture(t);
-    // macOS exposes tmpdir through /var -> /private/var. Use one root identity
-    // so this regression isolates the undecodable target, not loader aliases.
-    const dir = fs.realpathSync.native(temporary);
+    const { dir, real } = fixture(t);
     const replacement = join(dir, '\ufffd'); fs.renameSync(real, replacement);
     const raw = Buffer.concat([Buffer.from(dir + '/'), Buffer.from([0xff])]);
-    fs.mkdirSync(raw);
+    try { fs.mkdirSync(raw); }
+    catch (error) {
+      if (error.code !== 'EILSEQ') throw error;
+      t.skip('filesystem rejects invalid UTF-8 fixture names'); return;
+    }
     const imported = join(replacement, 'main.mjs');
-    const helper = new URL('./cli-entry.mjs', import.meta.url).href;
-    fs.writeFileSync(imported, `import fs from 'node:fs'; import {fileURLToPath} from 'node:url';\n` +
-      `import {isCliEntry} from ${JSON.stringify(helper)};\n` +
-      `if (isCliEntry({url:import.meta.url})) { console.log('CLI');\n` +
-      `  if (process.argv[2] === 'import-probe') console.error(JSON.stringify({argv:process.argv[1],url:import.meta.url,` +
-      `entry:fs.realpathSync.native(process.argv[1],{encoding:'buffer'}).toString('hex'),` +
-      `module:fs.realpathSync.native(fileURLToPath(import.meta.url),{encoding:'buffer'}).toString('hex')})); }\n`);
     fs.writeFileSync(Buffer.concat([raw, Buffer.from('/main.mjs')]),
       `await import(${JSON.stringify(pathToFileURL(imported).href)});`);
     const alias = join(dir, 'alias'); fs.symlinkSync(raw, alias, 'dir');
     assert.notDeepEqual(fs.realpathSync.native(join(alias, 'main.mjs'), { encoding: 'buffer' }),
       fs.realpathSync.native(imported, { encoding: 'buffer' }));
-    for (const flags of [['--preserve-symlinks-main'], ['--preserve-symlinks', '--preserve-symlinks-main']]) {
-      const result = run([...flags, join(alias, 'main.mjs'), 'import-probe']);
-      if (result.stdout !== '') t.diagnostic(result.stderr);
-      output(result);
-    }
+    for (const flags of [['--preserve-symlinks-main'], ['--preserve-symlinks', '--preserve-symlinks-main']])
+      output(run([...flags, join(alias, 'main.mjs')]));
     output(run([imported]), 'CLI\n'); // A literal replacement character remains valid.
   });
 
@@ -143,7 +159,11 @@ test('fallback recognizes an identical native-byte target through a valid alias'
   { skip: process.platform === 'win32' }, t => {
     const { dir, real } = fixture(t);
     const raw = Buffer.concat([Buffer.from(dir + '/'), Buffer.from([0xff])]);
-    fs.renameSync(real, raw);
+    try { fs.renameSync(real, raw); }
+    catch (error) {
+      if (error.code !== 'EILSEQ') throw error;
+      t.skip('filesystem rejects invalid UTF-8 fixture names'); return;
+    }
     const alias = join(dir, 'alias'); fs.symlinkSync(raw, alias, 'dir');
     output(run(['--preserve-symlinks-main', join(alias, 'main.mjs')]), 'CLI\n');
   });
