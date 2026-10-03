@@ -27,7 +27,9 @@ A request exceeding its byte/structure budget receives HTTP 413; malformed JSON 
 UTF-8 receives HTTP 400. Capacity exhaustion returns HTTP 503 (MCP JSON-RPC -32000;
 controller `HTTP_BODY_BUSY`, retryable). No tool mutation has begun at this point.
 Incomplete rejected bodies are closed after the response rather than drained or
-queued. Failed, aborted and completed reads release their admission and staging
+queued. A client still uploading may observe a transport error instead of the
+refusal response; that error alone is not evidence of a capacity rejection and
+must not trigger a blind retry of a mutation. Failed, aborted and completed reads release their admission and staging
 budget. MCP and controller pools are independent, preserving administrative
 admission when MCP clients hold incomplete bodies. Health/readiness GET requests
 do not enter either body pool.
