@@ -20,7 +20,8 @@ function readOwner(lock) {
     const saved = readBoundedFile(resolve(lock, 'owner.json'), 4096,
       () => fault('LOCK_UNCERTAIN', 'runtime lock owner is missing or invalid; preserve it for inspection'));
     if (!saved) throw fault('LOCK_UNCERTAIN', 'runtime lock owner is missing; preserve it for inspection');
-    owner = JSON.parse(saved.bytes.toString('utf8'));
+    // Reject malformed wire bytes without changing the existing BOM/JSON policy.
+    owner = JSON.parse(new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(saved.bytes));
   } catch {
     throw fault('LOCK_UNCERTAIN', 'runtime lock owner is unreadable; preserve it for inspection');
   }
