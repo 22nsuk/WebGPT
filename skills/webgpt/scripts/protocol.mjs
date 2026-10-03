@@ -1,6 +1,7 @@
 // The file worker's small, stateless JSON-RPC boundary; no browser or shell transport.
 export const protocolVersions = Object.freeze(['2025-03-26', '2025-06-18']);
 const record = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+const MAX_REQUEST_ID_BYTES = 1024;
 
 export function validateMessage(message) {
   if (!record(message) || message.jsonrpc !== '2.0' || typeof message.method !== 'string' || !message.method
@@ -11,7 +12,12 @@ export function validateMessage(message) {
     if (!message.method.startsWith('notifications/')) throw Error('request ID required');
     return 'notification';
   }
-  if (!(typeof message.id === 'string' || Number.isSafeInteger(message.id))
+  // IDs are echoed even by tokenless ping/error responses, after body staging
+  // admission is released. Do not let the large edit-body budget size that echo.
+  const validId = typeof message.id === 'string'
+    ? message.id.length <= MAX_REQUEST_ID_BYTES && Buffer.byteLength(message.id) <= MAX_REQUEST_ID_BYTES
+    : Number.isSafeInteger(message.id);
+  if (!validId
       || message.method.startsWith('notifications/')) throw Error('invalid request ID or method');
   return 'request';
 }
