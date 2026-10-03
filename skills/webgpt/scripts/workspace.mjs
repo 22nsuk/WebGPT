@@ -247,12 +247,18 @@ export function changeWorkspace(grant,dir,taskId,{path,text,expectedSha256,oldTe
       if(process.platform==='win32') {
         windowsReplacement('prepare',file,temporary,undefined,{recovery,operation});
         created=true;
+        // Confirmed preparation owns this observed stage even if open fails.
+        // Rebind the descriptor below; never adopt a later path substitution.
+        stage=lstatSync(temporary,{bigint:true});
+        if(!ownedStage(stage))throw stageConflict();
       }
       const fd=openSync(temporary,constants.O_RDWR|constants.O_NOFOLLOW
         |(process.platform==='win32'?0:constants.O_CREAT|constants.O_EXCL),0o600);
       created=true;
       try {
-        stage=fstatSync(fd,{bigint:true});
+        const opened=fstatSync(fd,{bigint:true});
+        if(stage && !ownedStage(opened)) {preserveStage=true;throw stageConflict();}
+        stage=opened;
         if(!ownedStage(stage))throw stageConflict();
         writeFileSync(fd,text);
         if(process.platform!=='win32') {

@@ -146,3 +146,32 @@ test('create and delete retain their existing receipt paths without replacement 
   assert.equal(recovery.receipts.length, 2); assert.deepEqual(recovery.unresolved, []);
   assert.deepEqual(fs.readdirSync(f.project), ['note.txt']);
 });
+
+for (const failOpen of [false, true]) {
+  test(`Windows prepared stage substitution before ${failOpen ? 'failed' : 'successful'} open preserves foreign evidence`,
+    { skip: process.platform !== 'win32' }, t => {
+      const f = fixture(t), open = fs.openSync, close = fs.closeSync;
+      const failure = Object.assign(Error('injected stage open failure'), { code: 'EIO' });
+      let openedFd, closed = 0;
+      t.mock.method(fs, 'openSync', (path, ...args) => {
+        if (f.stage === null && typeof path === 'string' && /^\.webgpt-.*\.tmp$/.test(basename(path))) {
+          // The real Windows helper has prepared an empty private stage, whose
+          // named identity the operation must retain across this open boundary.
+          f.stage = path; assert.equal(fs.readFileSync(path, 'utf8'), '');
+          swap(f);
+          if (failOpen) throw failure;
+          openedFd = open(path, ...args); return openedFd;
+        }
+        return open(path, ...args);
+      });
+      t.mock.method(fs, 'closeSync', fd => {
+        if (openedFd !== undefined && fd === openedFd) closed++;
+        return close(fd);
+      });
+      syncBuiltinESMExports();
+      assert.throws(() => f.edit(), failOpen ? error => error === failure : changed);
+      assert.ok(f.stage); assert.equal(closed, failOpen ? 0 : 1); prepared(f);
+      assert.equal(fs.readFileSync(f.stage, 'utf8'), outsider);
+      assert.equal(fs.readFileSync(f.displaced, 'utf8'), '');
+    });
+}
