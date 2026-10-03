@@ -141,7 +141,7 @@ test('a source disappearing after its initial observation aborts rather than bec
 test('CLI reads a private spec without configuration, execution, delivery or runtime writes', t => {
   const { spec, check, dir, run } = fixture(t);
   const sentinel = join(dir, 'must-not-exist');
-  check.command = `node -e "require('fs').writeFileSync('${sentinel}', 'bad')"`;
+  check.command = `node -e "require('fs').writeFileSync(process.argv[1], 'bad')" "${sentinel}"`;
   spec.checks = [check];
   const source = join(dir, 'spec.json');
   fs.writeFileSync(join(dir, 'invalid-config'), '{'); fs.writeFileSync(source, '\ufeff' + JSON.stringify(spec));
