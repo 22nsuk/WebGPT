@@ -12,7 +12,7 @@ import { windowsReplacementFailure } from './windows-replacement-diagnostics.mjs
 const MAX_BYTES = 10 * 1024 * 1024;
 const JOURNAL_MAX_BYTES = 1024 * 1024;
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
-const metadata = path => { try { return lstatSync(path); } catch (e) { if (e.code === 'ENOENT') return null; throw e; } };
+const metadata = (path, options) => { try { return lstatSync(path, options); } catch (e) { if (e.code === 'ENOENT') return null; throw e; } };
 function windowsReplacement(action,file,temporary,expectedSha256,context) {
   const executable=resolve(process.env.SystemRoot || 'C:\\Windows','System32/WindowsPowerShell/v1.0/powershell.exe');
   const helper=fileURLToPath(new URL('./replace-workspace-file.ps1',import.meta.url));
@@ -236,7 +236,10 @@ export function changeWorkspace(grant,dir,taskId,{path,text,expectedSha256,oldTe
     writeFileSync(file,text,{flag:'wx',mode:0o644,flush:true});
   } else {
     const temporary=resolve(dirname(file),'.webgpt-'+operation+'.tmp');
-    let created=false, replacementAttempted=false;
+    let created=false, replacementAttempted=false, stage, preserveStage=false;
+    const ownedStage=info=>stage && info?.isFile() && !info.isSymbolicLink() && info.nlink===1n
+      && info.dev===stage.dev && info.ino===stage.ino;
+    const stageConflict=()=>Error('replacement staging file changed; preserve evidence and inspect');
     try {
       // Never put replacement bytes into a Windows file with an inherited DACL.
       // POSIX creation also starts private; chmod below applies the exact mode,
@@ -249,6 +252,8 @@ export function changeWorkspace(grant,dir,taskId,{path,text,expectedSha256,oldTe
         |(process.platform==='win32'?0:constants.O_CREAT|constants.O_EXCL),0o600);
       created=true;
       try {
+        stage=fstatSync(fd,{bigint:true});
+        if(!ownedStage(stage))throw stageConflict();
         writeFileSync(fd,text);
         if(process.platform!=='win32') {
           const staged=fstatSync(fd);
@@ -265,6 +270,12 @@ export function changeWorkspace(grant,dir,taskId,{path,text,expectedSha256,oldTe
       const current=lstatSync(file);
       if(current.dev!==permissions.dev || current.ino!==permissions.ino || current.mode!==permissions.mode
           || current.uid!==permissions.uid || current.gid!==permissions.gid)throw Error('file permissions or identity changed');
+      // Bind publication to the descriptor we wrote, not its reusable pathname.
+      // This is a final observation, not isolation from external filesystem writers.
+      const staged=metadata(temporary,{bigint:true});
+      if(!ownedStage(staged) || staged.size!==BigInt(Buffer.byteLength(text))) {
+        preserveStage=true;throw stageConflict();
+      }
       replacementAttempted=true;
       if(process.platform==='win32')windowsReplacement('replace',file,temporary,expectedSha256,{recovery,operation});
       else renameSync(temporary,file);
@@ -273,7 +284,10 @@ export function changeWorkspace(grant,dir,taskId,{path,text,expectedSha256,oldTe
       // Keep that staging file as evidence alongside the prepared journal.
       // Failed creation does not establish ownership of an existing stage;
       // an unconfirmed Windows preparation also leaves its evidence intact.
-      if(created && (process.platform!=='win32'||!replacementAttempted) && metadata(temporary))unlinkSync(temporary);
+      // Recheck even after a write/flush/source-check failure: a changed path is
+      // not ours to unlink, regardless of whether its bytes happen to match.
+      if(created && stage && !preserveStage && (process.platform!=='win32'||!replacementAttempted)
+          && ownedStage(metadata(temporary,{bigint:true})))unlinkSync(temporary);
     }
   }
   // Keep the prepared record intact if writing/flushing the applied state
