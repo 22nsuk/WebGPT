@@ -21,7 +21,7 @@ function rawPost(port, path, headers, body) {
       let text = ''; res.setEncoding('utf8');
       res.on('data', chunk => { text += chunk; });
       res.on('error', reject);
-      res.on('end', () => { resolve({ status: res.statusCode, text }); req.destroy(); });
+      res.on('end', () => { resolve({ status: res.statusCode, headers: res.headers, text }); req.destroy(); });
     });
     req.on('error', reject);
     req.setTimeout(5000, () => req.destroy(Error('request did not reject its oversized body')));
@@ -295,19 +295,29 @@ test('oversized wire bodies are rejected and do not disable the worker', () => f
   const response = await rawPost(f.config.mcpPort, '/mcp', { 'content-length': 128 * MiB + 1 });
   assert.equal(response.status, 413);
   assert.equal(JSON.parse(response.text).error.message, 'request too large');
+  assert.equal(response.headers.connection, 'close');
   assert.equal((await f.rpc('ping')).result !== undefined, true);
   await f.register('large-control');
-  await assert.rejects(f.admin('register', {
-    id: 'too-large', instructions: 'x'.repeat(2 * MiB), inputs: {},
-  }), /request too large/);
+  const state = readFileSync(join(f.dir, 'state.json'));
+  const authorization = 'Bearer ' + readFileSync(join(f.dir, 'controller.key'), 'utf8');
+  // A sender still uploading a large body can observe a transport failure when
+  // the receiver rejects its headers and closes early. Send only headers so the
+  // HTTP refusal contract is tested independently of that upload/close race.
+  const declared = await rawPost(f.config.controlPort, '/register', {
+    authorization, 'content-length': 2 * MiB + 1,
+  });
+  assert.equal(declared.status, 413);
+  assert.deepEqual(JSON.parse(declared.text), { error: 'request too large', retryable: false });
+  assert.equal(declared.headers.connection, 'close');
   // The shared parser must still count actual bytes without Content-Length.
   // Exercise its smaller controller budget without a second 128 MiB fixture.
   const chunked = await rawPost(f.config.controlPort, '/register', {
-    authorization: 'Bearer ' + readFileSync(join(f.dir, 'controller.key'), 'utf8'),
+    authorization,
     'transfer-encoding': 'chunked',
   }, ' '.repeat(2 * MiB + 1));
   assert.equal(chunked.status, 413);
   assert.equal(JSON.parse(chunked.text).error, 'request too large');
+  assert.ok(readFileSync(join(f.dir, 'state.json')).equals(state));
   assert.equal((await f.admin('tasks')).running, 1);
 }));
 
