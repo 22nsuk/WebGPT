@@ -125,6 +125,64 @@ test('invalid or contradictory check evidence rejects rather than manufacturing 
   }
 });
 
+for (const field of ['files', 'checks', 'requiredFor', 'testedFiles', 'evidenceLabels']) {
+  test(`handoff ${field} rejects missing own array slots before opening any source`, t => {
+    const { spec, check } = fixture(t);
+    spec.checks = [check];
+    const valid = { files: spec.files, checks: spec.checks, requiredFor: ['implementation'],
+      testedFiles: check.testedFiles, evidenceLabels: check.evidenceLabels }[field];
+    const original = fs.openSync;
+    let opens = 0;
+    t.mock.method(fs, 'openSync', (...args) => { opens++; return original(...args); });
+    const candidates = [new Array(1), [, valid[0]], [valid[0], ,], [undefined], [null]];
+    // Inherited entries are not explicitly supplied array elements either.
+    const inherited = valid.slice(), prototype = Object.create(Array.prototype);
+    delete inherited[0];
+    prototype[0] = valid[0]; Object.setPrototypeOf(inherited, prototype);
+    candidates.push(inherited);
+    for (const value of candidates) {
+      const candidate = { ...spec, files: spec.files.map(file => ({ ...file })), checks: [{ ...check }] };
+      if (field === 'files' || field === 'checks') candidate[field] = value;
+      else if (field === 'requiredFor') candidate.files[1].requiredFor = value;
+      else candidate.checks[0][field] = value;
+      assert.throws(() => buildHandoff(candidate), { code: 'HANDOFF_INVALID' });
+      assert.equal(opens, 0, 'invalid lists must reject before source reads');
+    }
+  });
+}
+
+test('sparse evidence cannot qualify PASS or FAIL and JSON null remains invalid', t => {
+  const { spec, check, dir, run } = fixture(t);
+  for (const status of ['PASS', 'FAIL']) {
+    spec.checks = [{ ...check, status, exitCode: status === 'PASS' ? 0 : 1, evidenceLabels: new Array(1) }];
+    assert.throws(() => buildHandoff(spec), { code: 'HANDOFF_INVALID' });
+    const source = join(dir, 'sparse.json');
+    fs.writeFileSync(source, JSON.stringify(spec)); // JSON represents the hole as null.
+    const child = run([source]);
+    assert.equal(child.error, undefined); assert.equal(child.status, 1);
+    assert.equal(child.stdout, ''); assert.match(child.stderr, /HANDOFF_FAILED/);
+    assert.ok(!child.stderr.includes(dir));
+  }
+  assert.equal(fs.existsSync(join(dir, 'no-runtime')), false);
+});
+
+test('dense and frozen lists retain evidence, input gaps and optional checks behavior', t => {
+  const { spec, check } = fixture(t);
+  spec.checks = [check];
+  const expected = buildHandoff(spec);
+  for (const file of spec.files) Object.freeze(file.requiredFor);
+  Object.freeze(check.testedFiles); Object.freeze(check.evidenceLabels);
+  Object.freeze(spec.files); Object.freeze(spec.checks);
+  assert.deepEqual(buildHandoff(spec), expected);
+  const noChecks = { ...spec }; delete noChecks.checks;
+  assert.deepEqual(buildHandoff(noChecks), buildHandoff({ ...spec, checks: [] }));
+  fs.unlinkSync(spec.files[1].source);
+  const missing = buildHandoff(spec);
+  assert.deepEqual(missing.inputGaps, { design: [], implementation: ['code'], validation: ['code'] });
+  assert.equal(missing.checks[0].applicability, 'unknown');
+  assert.deepEqual(missing.checks[0].unknownFiles, ['code']);
+});
+
 test('duplicate labels, unknown fields, malformed paths and oversized specifications reject', t => {
   const { spec } = fixture(t);
   for (const change of [ { files: [...spec.files, spec.files[0]] }, { shell: 'do not run' },
