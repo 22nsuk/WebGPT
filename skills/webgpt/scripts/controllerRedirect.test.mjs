@@ -25,10 +25,11 @@ async function server(t, handler) {
       await handler(req, res, Buffer.concat(chunks));
     }).catch(error => { failures.push(error); res.destroy(); });
   });
-  await new Promise(resolve => instance.listen(0, '127.0.0.1', resolve));
+  await new Promise((resolve, reject) => {
+    instance.once('error', reject); instance.listen(0, '127.0.0.1', resolve);
+  });
   t.after(async () => {
-    instance.closeAllConnections();
-    await new Promise(resolve => instance.close(resolve));
+    await new Promise(resolve => { instance.close(resolve); instance.closeAllConnections(); });
     assert.deepEqual(failures, []);
   });
   return { port: instance.address().port, url: `http://127.0.0.1:${instance.address().port}` };
@@ -52,7 +53,8 @@ for (const status of [301, 302, 303, 307, 308]) for (const scope of ['same-origi
     const dir = directory(t), key = 'fixture-only-controller-key';
     writeFileSync(join(dir, 'controller.key'), key);
     let visits = 0, originals = 0;
-    const destination = await server(t, (_req, res) => { visits++; json(res, { ok: true }); });
+    const destination = scope === 'other-port'
+      ? await server(t, (_req, res) => { visits++; json(res, { ok: true }); }) : null;
     const controller = await server(t, (req, res, body) => {
       if (req.url.startsWith('/target')) { visits++; json(res, { ok: true }); return; }
       originals++;
