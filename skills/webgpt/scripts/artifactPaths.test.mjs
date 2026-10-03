@@ -424,13 +424,17 @@ for (const route of ['default', 'flags', 'NODE_OPTIONS', 'NODE_PRESERVE_SYMLINKS
 
 for (const code of ['EACCES', 'EIO']) {
   test(`artifact failed preload lookup ${code} prevents later linked main execution`, t => {
+    // A successful alias lookup must identify the other spelling for this fault
+    // to belong to the CLI. Windows installed tests can arrive through an 8.3
+    // path; native lookup returns its long spelling, unlike the old JS lookup.
+    const target = fs.realpathSync.native(script);
     const { dir, source } = fixture(t), out = join(dir, 'must-not-create.json');
     const alias = join(dir, 'scripts'), preload = join(dir, 'failed-preload.mjs');
-    fs.symlinkSync(dirname(script), alias, process.platform === 'win32' ? 'junction' : 'dir');
+    fs.symlinkSync(dirname(target), alias, process.platform === 'win32' ? 'junction' : 'dir');
     fs.writeFileSync(preload, `import fs from 'node:fs';
       const original = fs.realpathSync.native, stat = fs.lstatSync;
       fs.realpathSync.native = (path, ...args) => {
-        if (path === ${JSON.stringify(script)})
+        if (path === ${JSON.stringify(target)})
           throw Object.assign(Error(${JSON.stringify(dir)}), { code: ${JSON.stringify(code)} });
         return original(path, ...args);
       };
@@ -438,7 +442,7 @@ for (const code of ['EACCES', 'EIO']) {
         if (path === ${JSON.stringify(source)}) throw Error('failed entry inspected source');
         return stat(path, ...args);
       };
-      await import(${JSON.stringify(pathToFileURL(script).href)});`);
+      await import(${JSON.stringify(pathToFileURL(target).href)});`);
     const result = node(['--preserve-symlinks', '--preserve-symlinks-main', '--import', pathToFileURL(preload).href,
       join(alias, 'artifact-input.mjs'), '--source', source, '--label', 'fixture', '--out', out]);
     assert.equal(result.error, undefined); assert.equal(result.signal, null);
