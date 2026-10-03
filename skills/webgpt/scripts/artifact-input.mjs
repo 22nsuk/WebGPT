@@ -199,17 +199,20 @@ function isCliEntry() {
   const entryPath = resolve(entry), modulePath = fileURLToPath(url);
   let realEntry, realModule;
   const errors = [];
-  try { realEntry = fs.realpathSync(entryPath); } catch (error) { errors.push(error); }
-  try { realModule = fs.realpathSync(modulePath); } catch (error) { errors.push(error); }
+  // Match cli-entry.mjs: JS realpath can decode link targets before returning
+  // even a Buffer. Native bytes preserve distinct invalid-UTF-8/U+FFFD names.
+  try { realEntry = fs.realpathSync.native(entryPath, { encoding: 'buffer' }); } catch (error) { errors.push(error); }
+  try { realModule = fs.realpathSync.native(modulePath, { encoding: 'buffer' }); } catch (error) { errors.push(error); }
   if (errors.length) {
     // Failed lookup alone does not establish that an unrelated importer is CLI.
     // Either spelling or one successful lookup must identify this module first.
-    const candidate = entryPath === modulePath || realEntry === modulePath || realModule === entryPath;
+    const candidate = entryPath === modulePath || realEntry?.equals(Buffer.from(modulePath))
+      || realModule?.equals(Buffer.from(entryPath));
     const failure = errors.find(error => error.code !== 'ENOENT' && error.code !== 'ENOTDIR');
     if (candidate && failure) throw failure;
     return false;
   }
-  return realEntry === realModule;
+  return realEntry.equals(realModule);
 }
 
 const cliExecuted = Symbol.for('webgpt.artifact-input.cli-executed');

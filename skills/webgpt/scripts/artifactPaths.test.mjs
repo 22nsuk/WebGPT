@@ -83,14 +83,159 @@ for (const flag of ['-e', '-p', '-pe', '--eval', '--print', '--eval=']) {
   });
 }
 
+// Exercise the private standalone guard through a real module import on every
+// Node version, including those whose import.meta.main is already available.
+for (const identical of [false, true]) {
+  test(`artifact entry compares native bytes without JS decoding (identical=${identical})`, t => {
+    const { dir, source } = fixture(t), out = join(dir, 'evidence.json');
+    const importer = join(dir, 'importer.mjs');
+    fs.writeFileSync(importer, `import fs from 'node:fs'; import assert from 'node:assert/strict';
+      const entry = ${JSON.stringify(importer)}, script = ${JSON.stringify(script)};
+      const source = ${JSON.stringify(source)}, out = ${JSON.stringify(out)};
+      const raw = Buffer.concat([Buffer.from('/native/'), Buffer.from([0xff])]);
+      const replacement = Buffer.from('/native/\\ufffd');
+      const calls = [], stat = fs.lstatSync; let reads = 0;
+      fs.lstatSync = (path, ...args) => { if (path === source) reads++; return stat(path, ...args); };
+      fs.realpathSync = () => assert.fail('must not use the decoding JS realpath');
+      fs.realpathSync.native = (path, options) => {
+        calls.push(path); assert.equal(options.encoding, 'buffer');
+        assert.ok(path === entry || path === script);
+        return path === entry || ${identical} ? raw : replacement;
+      };
+      const previousExit = process.exitCode;
+      const m = await import(${JSON.stringify(pathToFileURL(script).href)});
+      assert.deepEqual(calls, [entry, script]);
+      assert.equal(typeof m.buildArtifactInput, 'function');
+      assert.equal(process.exitCode, previousExit);
+      assert.equal(process[Symbol.for('webgpt.artifact-input.cli-executed')], ${identical ? 'true' : 'undefined'});
+      assert.equal(reads > 0, ${identical});
+      assert.equal(fs.existsSync(out), ${identical});`);
+    const result = node(['--preserve-symlinks', '--preserve-symlinks-main', importer,
+      '--source', source, '--label', 'fixture', '--out', out]);
+    assert.equal(result.error, undefined); assert.equal(result.signal, null);
+    assert.equal(result.status, 0, result.stderr); assert.equal(result.stderr, '');
+    if (identical) {
+      const bytes = fs.readFileSync(out);
+      assert.deepEqual(JSON.parse(result.stdout), { ok: true, inputBytes: bytes.length, sha256: hash(bytes) });
+      assert.equal(JSON.parse(bytes).source.sha256, hash('approved evidence\n'));
+    } else { assert.equal(result.stdout, ''); assert.equal(fs.existsSync(out), false); }
+    assert.equal(fs.readFileSync(source, 'utf8'), 'approved evidence\n');
+  });
+}
+
+// Native errors must not fall back to decoded JS identities. A successful side
+// may identify the failed candidate, but unrelated imports own no diagnostic.
+for (const successful of ['entry', 'module']) for (const candidate of [false, true]) {
+  test(`artifact partial EIO with successful ${successful} lookup (candidate=${candidate})`, t => {
+    const { dir, source } = fixture(t), out = join(dir, 'must-not-create.json');
+    const importer = join(dir, 'importer.mjs');
+    fs.writeFileSync(importer, `import fs from 'node:fs'; import assert from 'node:assert/strict';
+      const entry = ${JSON.stringify(importer)}, script = ${JSON.stringify(script)};
+      const calls = [], previousExit = process.exitCode, stat = fs.lstatSync;
+      fs.lstatSync = (path, ...args) => {
+        assert.notEqual(path, ${JSON.stringify(source)}, 'failed/imported entry must not inspect source');
+        return stat(path, ...args);
+      };
+      fs.realpathSync = () => assert.fail('native failure must not use JS fallback');
+      fs.realpathSync.native = (path, options) => {
+        calls.push(path); assert.equal(options.encoding, 'buffer');
+        if (path === ${successful === 'entry' ? 'entry' : 'script'})
+          return Buffer.from(${candidate ? (successful === 'entry' ? 'script' : 'entry') : "'/unrelated/native/path'"});
+        throw Object.assign(Error(${JSON.stringify(dir)}), { code: 'EIO' });
+      };
+      await import(${JSON.stringify(pathToFileURL(script).href)});
+      assert.deepEqual(calls, [entry, script]);
+      assert.equal(process.exitCode, ${candidate ? '1' : 'previousExit'});
+      assert.equal(process[Symbol.for('webgpt.artifact-input.cli-executed')], ${candidate ? 'true' : 'undefined'});
+      assert.equal(fs.existsSync(${JSON.stringify(out)}), false);`);
+    const result = node(['--preserve-symlinks', '--preserve-symlinks-main', importer,
+      '--source', source, '--label', 'fixture', '--out', out]);
+    assert.equal(result.error, undefined); assert.equal(result.signal, null);
+    assert.equal(result.status, candidate ? 1 : 0, result.stderr);
+    assert.equal(result.stdout, '');
+    if (candidate) { assert.equal(JSON.parse(result.stderr).code, 'EIO'); assert.ok(!result.stderr.includes(dir)); }
+    else assert.equal(result.stderr, '');
+    assert.equal(fs.existsSync(out), false);
+    assert.equal(fs.readFileSync(source, 'utf8'), 'approved evidence\n');
+  });
+}
+
+test('artifact native-byte sibling import cannot create evidence', { skip: process.platform === 'win32' }, t => {
+  const { dir, source } = fixture(t);
+  const root = fs.realpathSync.native(dir), replacement = join(root, '\ufffd');
+  fs.mkdirSync(replacement);
+  const raw = Buffer.concat([Buffer.from(root + '/'), Buffer.from([0xff])]);
+  try { fs.mkdirSync(raw); }
+  catch (error) {
+    if (error.code !== 'EILSEQ') throw error;
+    t.skip('filesystem rejects invalid UTF-8 fixture names'); return;
+  }
+  const imported = join(replacement, 'artifact-input.mjs');
+  fs.copyFileSync(script, imported);
+  const alias = join(root, 'alias'); fs.symlinkSync(raw, alias, 'dir');
+  const entry = join(alias, 'artifact-input.mjs');
+  assert.notDeepEqual(fs.realpathSync.native(alias, { encoding: 'buffer' }),
+    fs.realpathSync.native(replacement, { encoding: 'buffer' }));
+  for (const [index, flags] of [['--preserve-symlinks-main'], ['--preserve-symlinks', '--preserve-symlinks-main']].entries()) {
+    const out = join(dir, `must-not-create-${index}.json`);
+    fs.writeFileSync(Buffer.concat([raw, Buffer.from('/artifact-input.mjs')]),
+      `import fs from 'node:fs'; import assert from 'node:assert/strict';
+      const stat = fs.lstatSync, previousExit = process.exitCode; let reads = 0;
+      fs.lstatSync = (path, ...args) => {
+        if (path === ${JSON.stringify(source)}) reads++;
+        return stat(path, ...args);
+      };
+      await import(${JSON.stringify(pathToFileURL(imported).href)});
+      assert.equal(reads, 0, 'import must not inspect source');
+      assert.equal(process.exitCode, previousExit);
+      assert.equal(process[Symbol.for('webgpt.artifact-input.cli-executed')], undefined);
+      assert.equal(fs.existsSync(${JSON.stringify(out)}), false);`);
+    const result = node([...flags, entry, '--source', source, '--label', 'fixture', '--out', out]);
+    assert.equal(result.error, undefined); assert.equal(result.signal, null);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, ''); assert.equal(result.stderr, '');
+    assert.equal(fs.existsSync(out), false);
+  }
+  const literal = node([imported, '--help']);
+  assert.equal(literal.status, 0, literal.stderr); assert.match(literal.stdout, /Parent-only/);
+  assert.equal(literal.stderr, '');
+  assert.equal(fs.readFileSync(source, 'utf8'), 'approved evidence\n');
+});
+
+for (const code of ['ENOENT', 'ENOTDIR', 'EACCES', 'EIO']) {
+  test(`artifact failed native lookups ${code} do not fall back to JS realpath`, t => {
+    const { dir, source } = fixture(t), out = join(dir, 'must-not-create.json');
+    const preload = join(dir, 'lookup-preload.mjs'), missing = ['ENOENT', 'ENOTDIR'].includes(code);
+    fs.writeFileSync(preload, `import fs from 'node:fs'; import assert from 'node:assert/strict';
+      const calls = [], previousExit = process.exitCode;
+      fs.realpathSync = () => assert.fail('native failure must not use JS fallback');
+      fs.realpathSync.native = (path, options) => {
+        calls.push(path); assert.equal(options.encoding, 'buffer');
+        throw Object.assign(Error(${JSON.stringify(dir)}), { code: ${JSON.stringify(code)} });
+      };
+      await import(${JSON.stringify(pathToFileURL(script).href)});
+      assert.deepEqual(calls, [${JSON.stringify(script)}, ${JSON.stringify(script)}]);
+      assert.equal(process.exitCode, ${missing ? 'previousExit' : '1'});
+      assert.equal(process[Symbol.for('webgpt.artifact-input.cli-executed')], ${missing ? 'undefined' : 'true'});`);
+    const result = node(['--preserve-symlinks', '--preserve-symlinks-main', '--import', pathToFileURL(preload).href,
+      script, '--source', source, '--label', 'fixture', '--out', out]);
+    assert.equal(result.error, undefined); assert.equal(result.signal, null);
+    assert.equal(result.status, missing ? 0 : 1, result.stderr); assert.equal(result.stdout, '');
+    if (missing) assert.equal(result.stderr, '');
+    else { assert.equal(JSON.parse(result.stderr).code, code); assert.ok(!result.stderr.includes(dir)); }
+    assert.equal(fs.existsSync(out), false);
+    assert.equal(fs.readFileSync(source, 'utf8'), 'approved evidence\n');
+  });
+}
+
 for (const code of ['EACCES', 'EIO']) {
   test(`artifact unrelated importer remains quiet on ${code} lookup failures`, t => {
     const { dir, source } = fixture(t), out = join(dir, 'must-not-create.json');
     const importer = join(dir, 'importer.mjs');
     for (const failingPath of [importer, script]) {
       fs.writeFileSync(importer, `import fs from 'node:fs'; import assert from 'node:assert/strict';
-        const original = fs.realpathSync, stat = fs.lstatSync;
-        fs.realpathSync = (path, ...args) => {
+        const original = fs.realpathSync.native, stat = fs.lstatSync;
+        fs.realpathSync.native = (path, ...args) => {
           if (path === ${JSON.stringify(failingPath)})
             throw Object.assign(Error(${JSON.stringify(dir)}), { code: ${JSON.stringify(code)} });
           return original(path, ...args);
@@ -102,7 +247,7 @@ for (const code of ['EACCES', 'EIO']) {
         assert.equal(process.exitCode, previousExit);
         assert.equal(reads, 0);
         assert.equal(fs.existsSync(${JSON.stringify(out)}), false);
-        fs.realpathSync = original; fs.lstatSync = stat;
+        fs.realpathSync.native = original; fs.lstatSync = stat;
         assert.equal(m.buildArtifactInput({ source: ${JSON.stringify(source)}, label: 'fixture' }).source.sha256,
           ${JSON.stringify(hash('approved evidence\n'))});`);
       const result = node(['--preserve-symlinks', '--preserve-symlinks-main', importer,
@@ -279,13 +424,17 @@ for (const route of ['default', 'flags', 'NODE_OPTIONS', 'NODE_PRESERVE_SYMLINKS
 
 for (const code of ['EACCES', 'EIO']) {
   test(`artifact failed preload lookup ${code} prevents later linked main execution`, t => {
+    // A successful alias lookup must identify the other spelling for this fault
+    // to belong to the CLI. Windows installed tests can arrive through an 8.3
+    // path; native lookup returns its long spelling, unlike the old JS lookup.
+    const target = fs.realpathSync.native(script);
     const { dir, source } = fixture(t), out = join(dir, 'must-not-create.json');
     const alias = join(dir, 'scripts'), preload = join(dir, 'failed-preload.mjs');
-    fs.symlinkSync(dirname(script), alias, process.platform === 'win32' ? 'junction' : 'dir');
+    fs.symlinkSync(dirname(target), alias, process.platform === 'win32' ? 'junction' : 'dir');
     fs.writeFileSync(preload, `import fs from 'node:fs';
-      const original = fs.realpathSync, stat = fs.lstatSync;
-      fs.realpathSync = (path, ...args) => {
-        if (path === ${JSON.stringify(script)})
+      const original = fs.realpathSync.native, stat = fs.lstatSync;
+      fs.realpathSync.native = (path, ...args) => {
+        if (path === ${JSON.stringify(target)})
           throw Object.assign(Error(${JSON.stringify(dir)}), { code: ${JSON.stringify(code)} });
         return original(path, ...args);
       };
@@ -293,7 +442,7 @@ for (const code of ['EACCES', 'EIO']) {
         if (path === ${JSON.stringify(source)}) throw Error('failed entry inspected source');
         return stat(path, ...args);
       };
-      await import(${JSON.stringify(pathToFileURL(script).href)});`);
+      await import(${JSON.stringify(pathToFileURL(target).href)});`);
     const result = node(['--preserve-symlinks', '--preserve-symlinks-main', '--import', pathToFileURL(preload).href,
       join(alias, 'artifact-input.mjs'), '--source', source, '--label', 'fixture', '--out', out]);
     assert.equal(result.error, undefined); assert.equal(result.signal, null);
@@ -307,8 +456,8 @@ for (const code of ['EACCES', 'EIO']) {
     const { dir, source } = fixture(t), out = join(dir, 'evidence.json');
     const preload = join(dir, 'entry-failure.mjs');
     fs.writeFileSync(preload, `import fs from 'node:fs';
-      const original = fs.realpathSync;
-      fs.realpathSync = (path, ...args) => {
+      const original = fs.realpathSync.native;
+      fs.realpathSync.native = (path, ...args) => {
         if (path === ${JSON.stringify(script)})
           throw Object.assign(Error(${JSON.stringify(dir)}), { code: ${JSON.stringify(code)} });
         return original(path, ...args);
