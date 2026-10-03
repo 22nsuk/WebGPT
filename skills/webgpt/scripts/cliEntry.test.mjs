@@ -111,23 +111,29 @@ for (const code of ['ENOENT', 'ENOTDIR', 'EACCES', 'EIO']) {
 // The aliases are valid strings; only their native targets differ from U+FFFD.
 test('fallback distinguishes native-byte siblings instead of running an imported module',
   { skip: process.platform === 'win32' }, t => {
-    const { dir, real } = fixture(t);
+    const { dir: temporary, real } = fixture(t);
+    // macOS exposes tmpdir through /var -> /private/var. Use one root identity
+    // so this regression isolates the undecodable target, not loader aliases.
+    const dir = fs.realpathSync.native(temporary);
     const replacement = join(dir, '\ufffd'); fs.renameSync(real, replacement);
     const raw = Buffer.concat([Buffer.from(dir + '/'), Buffer.from([0xff])]);
     fs.mkdirSync(raw);
     const imported = join(replacement, 'main.mjs');
+    const helper = new URL('./cli-entry.mjs', import.meta.url).href;
+    fs.writeFileSync(imported, `import fs from 'node:fs'; import {fileURLToPath} from 'node:url';\n` +
+      `import {isCliEntry} from ${JSON.stringify(helper)};\n` +
+      `if (isCliEntry({url:import.meta.url})) { console.log('CLI');\n` +
+      `  if (process.argv[2] === 'import-probe') console.error(JSON.stringify({argv:process.argv[1],url:import.meta.url,` +
+      `entry:fs.realpathSync.native(process.argv[1],{encoding:'buffer'}).toString('hex'),` +
+      `module:fs.realpathSync.native(fileURLToPath(import.meta.url),{encoding:'buffer'}).toString('hex')})); }\n`);
     fs.writeFileSync(Buffer.concat([raw, Buffer.from('/main.mjs')]),
       `await import(${JSON.stringify(pathToFileURL(imported).href)});`);
     const alias = join(dir, 'alias'); fs.symlinkSync(raw, alias, 'dir');
-    const paths = [Buffer.concat([raw, Buffer.from('/main.mjs')]), join(alias, 'main.mjs'), imported];
-    const identities = paths.map(path => ({
-      native: fs.realpathSync.native(path, { encoding: 'buffer' }).toString('hex'),
-      ino: fs.statSync(path, { bigint: true }).ino.toString(),
-      content: fs.readFileSync(path, 'utf8'),
-    }));
+    assert.notDeepEqual(fs.realpathSync.native(join(alias, 'main.mjs'), { encoding: 'buffer' }),
+      fs.realpathSync.native(imported, { encoding: 'buffer' }));
     for (const flags of [['--preserve-symlinks-main'], ['--preserve-symlinks', '--preserve-symlinks-main']]) {
-      const result = run([...flags, join(alias, 'main.mjs')]);
-      if (result.stdout !== '') t.diagnostic(JSON.stringify({ flags, identities }));
+      const result = run([...flags, join(alias, 'main.mjs'), 'import-probe']);
+      if (result.stdout !== '') t.diagnostic(result.stderr);
       output(result);
     }
     output(run([imported]), 'CLI\n'); // A literal replacement character remains valid.
