@@ -17,14 +17,17 @@ export function isCliEntry(meta) {
   const entryPath = resolve(entry), modulePath = fileURLToPath(url);
   let realEntry, realModule;
   const errors = [];
-  try { realEntry = realpathSync(entryPath); } catch (error) { errors.push(error); }
-  try { realModule = realpathSync(modulePath); } catch (error) { errors.push(error); }
+  // JS realpath can decode link targets before producing even a Buffer result.
+  // Native bytes distinguish invalid UTF-8 names from literal U+FFFD siblings.
+  try { realEntry = realpathSync.native(entryPath, { encoding: 'buffer' }); } catch (error) { errors.push(error); }
+  try { realModule = realpathSync.native(modulePath, { encoding: 'buffer' }); } catch (error) { errors.push(error); }
   if (errors.length) {
     // Only a known entry candidate owns a CLI diagnostic; ordinary imports stay quiet.
-    const candidate = entryPath === modulePath || realEntry === modulePath || realModule === entryPath;
+    const candidate = entryPath === modulePath || realEntry?.equals(Buffer.from(modulePath))
+      || realModule?.equals(Buffer.from(entryPath));
     const failure = errors.find(error => error.code !== 'ENOENT' && error.code !== 'ENOTDIR');
     if (candidate && failure) throw failure;
     return false;
   }
-  return realEntry === realModule;
+  return realEntry.equals(realModule);
 }
