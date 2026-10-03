@@ -13,6 +13,7 @@ import { protocolVersions, validateMessage, negotiateProtocol, validateArguments
 import { auditFromEnvironment, createAuditWriter } from './audit.mjs';
 import { validatedEntryPath } from './installation.mjs';
 import { windowProperties, readWindowOptions, textWindow } from './text-window.mjs';
+import { createJsonBodyReader } from './json-body.mjs';
 
 const schema = properties => ({type:'object',properties,required:Object.keys(properties),additionalProperties:false});
 const str = {type:'string'};
@@ -283,15 +284,8 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
       storage:storageFailure?{ok:false,...storageFailure}:{ok:!stateFailure},automaticRestartRecommended:false};
   };
   const json=(res,status,value)=>{if(res.destroyed||res.writableEnded)return;res.writeHead(status,{'content-type':'application/json','cache-control':'no-store'});res.end(JSON.stringify(value));};
-  const body=async(req,limit=2*1024*1024)=>{
-    // Refuse a declared overflow before buffering it. Chunked/undeclared bodies
-    // still need the actual byte counter; the header is not a validation shortcut.
-    if(Number(req.headers['content-length'])>limit)throw Object.assign(Error('request too large'),{statusCode:413});
-    const chunks=[];let bytes=0;
-    for await(const c of req){bytes+=c.length;if(bytes>limit)throw Object.assign(Error('request too large'),{statusCode:413});chunks.push(c);}
-    // Reject invalid wire bytes rather than silently substituting replacement characters.
-    return JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(Buffer.concat(chunks)));
-  };
+  // See ../references/http-body-limits.md for structure and admission budgets.
+  const body=createJsonBodyReader(),mcpBody=createJsonBodyReader(128*1024*1024);
   const call=(name,args)=>{
     if(stopping)throw fault('SHUTTING_DOWN','worker is stopping');
     verifyState();
@@ -390,7 +384,9 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
     // A valid exact edit can carry 10 MiB each of oldText and text. JSON escaping
     // can expand those to 120 MiB plus the envelope. Results retain their decoded
     // 1 MiB limit, and controller bodies retain their separate 2 MiB allowance.
-    let m;try{m=await body(req,128*1024*1024);}catch(e){
+    let m;try{m=await mcpBody(req);}catch(e){
+      if(!req.complete)res.setHeader('connection','close');
+      if(e.code==='HTTP_BODY_BUSY')return error(503,null,-32000,'server busy');
       return error(e.statusCode??400,null,e.statusCode===413?-32600:-32700,e.statusCode===413?'request too large':'invalid JSON or UTF-8');
     }
     if(stopping)return json(res,503,{error:'worker is stopping',code:'SHUTTING_DOWN'});
@@ -541,8 +537,11 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
       }
       else return json(res,404,{});
       persist(tasks.map(task=>task===t?next:task));wake();json(res,200,{ok:true});
-    }catch(e){json(res,e.statusCode??400,{error:e.message,...(e.code?{code:e.code}:{}),
-      ...(e.code==='COLLECTION_RECOVERY_REQUIRED'?{attention:e.attention,reconciliation:e.reconciliation}:{}),retryable:false});}
+    }catch(e){
+      if(!req.complete)res.setHeader('connection','close');
+      json(res,e.statusCode??400,{error:e.message,...(e.code?{code:e.code}:{}),
+        ...(e.code==='COLLECTION_RECOVERY_REQUIRED'?{attention:e.attention,reconciliation:e.reconciliation}:{}),retryable:e.code==='HTTP_BODY_BUSY'});
+    }
   });
   for(const server of [mcp,control])server.requestTimeout=15000;
   const listen=(s,p)=>new Promise((yes,no)=>{s.once('error',no);s.listen(p,'127.0.0.1',yes);});
