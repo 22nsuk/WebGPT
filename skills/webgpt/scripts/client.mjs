@@ -426,9 +426,13 @@ if (executeCli) {
       result = await request(action, action === 'shutdown' ? {} : undefined);
     } else if (action === 'wait' && args.length) {
       if (args[0] === '--file' && args.length !== 2) throw Error('usage: client.mjs wait --file <json-file>');
-      const saved = args[0] === '--file' ? readJsonFile(args[1])
-        : args.length === 1 && !isTaskId(args[0]) ? readJsonFile(args[0]) : null;
-      result = await waitForTasks(saved ? saved.ids ?? [saved.id] : args);
+      const file = args[0] === '--file' ? args[1]
+        : args.length === 1 && !isTaskId(args[0]) ? args[0] : null;
+      const saved = file === null ? null : readJsonFile(file);
+      // File mode is selected by arguments, never by the parsed JSON's truthiness.
+      if (file !== null && (!saved || typeof saved !== 'object' || Array.isArray(saved)))
+        throw Error('wait input must be an object with ids or id');
+      result = await waitForTasks(file === null ? args : saved.ids ?? [saved.id]);
     } else if (action === 'review') {
       const options = {}, flags = { '--offset': 'offset', '--limit': 'limit', '--max-chars': 'maxChars', '--expected-sha256': 'expectedSha256' };
       if (!isTaskId(args[0]) || args.length % 2 !== 1)
