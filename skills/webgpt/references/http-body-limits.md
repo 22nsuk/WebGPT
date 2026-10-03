@@ -49,6 +49,15 @@ budget. MCP and controller pools are independent, preserving administrative
 admission when MCP clients hold incomplete bodies. Health/readiness GET requests
 do not enter either body pool.
 
+The controller client's `request()` preserves `retryable:true` only for an HTTP
+503 with code `HTTP_BODY_BUSY` or `SHUTTING_DOWN` and a literal JSON boolean
+`retryable:true`. A bare 503, malformed response, unknown code or storage/state
+failure is not a retry authorization. This classification does not schedule a
+retry: mutations remain single-attempt. An explicit capacity refusal from
+`collectTask()` (including resume) is returned without a post-refusal reconciliation
+probe, automatic write replay or fallback to `/ack`; the caller may explicitly
+try again after capacity becomes available.
+
 Input chunks are coalesced into at most 64 KiB pages, so tiny network fragments do
 not create an unbounded list of retained Buffer wrappers. The aggregate budget
 covers allocated staging pages, **not total process RSS**: final concatenation,

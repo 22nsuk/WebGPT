@@ -100,7 +100,9 @@ export async function request(action, payload, config = configuration(), { signa
   }
   if (!response.ok) throw Object.assign(Error(result?.error ?? 'controller request failed: ' + response.status), {
     statusCode: response.status, code: result?.code, details: result,
-    retryable: response.status === 503 && result?.code === 'SHUTTING_DOWN' && result?.retryable === true,
+    // Only explicit known transient refusals are retryable; this does not replay
+    // mutations or turn an ambiguous transport failure into capacity evidence.
+    retryable: response.status === 503 && ['SHUTTING_DOWN', 'HTTP_BODY_BUSY'].includes(result?.code) && result?.retryable === true,
   });
   if (ids && action === 'wait') {
     if (!result || !Array.isArray(result.events) || !Array.isArray(result.backupDue) || typeof result.settled !== 'boolean'
