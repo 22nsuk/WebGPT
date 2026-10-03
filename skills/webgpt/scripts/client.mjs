@@ -100,7 +100,9 @@ export async function request(action, payload, config = configuration(), { signa
   }
   if (!response.ok) throw Object.assign(Error(result?.error ?? 'controller request failed: ' + response.status), {
     statusCode: response.status, code: result?.code, details: result,
-    retryable: response.status === 503 && result?.code === 'SHUTTING_DOWN' && result?.retryable === true,
+    // Only explicit known transient refusals are retryable; this does not replay
+    // mutations or turn an ambiguous transport failure into capacity evidence.
+    retryable: response.status === 503 && ['SHUTTING_DOWN', 'HTTP_BODY_BUSY'].includes(result?.code) && result?.retryable === true,
   });
   if (ids && action === 'wait') {
     if (!result || !Array.isArray(result.events) || !Array.isArray(result.backupDue) || typeof result.settled !== 'boolean'
@@ -418,7 +420,7 @@ if (isCliEntry(import.meta)) {
       if (args[0] === '--file' ? args.length !== 2 : args.length !== 1)
         throw Error(`usage: client.mjs ${action} <task-id|json-file> or --file <json-file>`);
       // Never let an unrelated same-named file redirect a task action to another task.
-      const payload = args[0] === '--file' ? readJsonFile(args[1])
+      const payload = args[0] === '--file' ? readJsonFile(args[0])
         : isTaskId(args[0]) ? { id: args[0] } : readJsonFile(args[0]);
       result = await request(action, payload);
     } else {
