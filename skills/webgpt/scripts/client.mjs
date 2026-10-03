@@ -420,7 +420,7 @@ if (isCliEntry(import.meta)) {
       if (args[0] === '--file' ? args.length !== 2 : args.length !== 1)
         throw Error(`usage: client.mjs ${action} <task-id|json-file> or --file <json-file>`);
       // Never let an unrelated same-named file redirect a task action to another task.
-      const payload = args[0] === '--file' ? readJsonFile(args[0])
+      const payload = args[0] === '--file' ? readJsonFile(args[1])
         : isTaskId(args[0]) ? { id: args[0] } : readJsonFile(args[0]);
       result = await request(action, payload);
     } else {
