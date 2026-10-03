@@ -7,7 +7,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
 
-const script = fileURLToPath(new URL('./client.mjs', import.meta.url));
+// A canonical preload must not inherit an aliased checkout/test-module spelling.
+const script = fs.realpathSync.native(fileURLToPath(new URL('./client.mjs', import.meta.url)));
 const moduleUrl = pathToFileURL(script).href;
 const layouts = [[], ['--preserve-symlinks-main'], ['--preserve-symlinks', '--preserve-symlinks-main']];
 async function fixture(t, rejected = false) {

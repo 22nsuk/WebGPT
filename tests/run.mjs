@@ -17,7 +17,7 @@ const phases = [
 ];
 for (const [name, tests] of phases) {
   console.log('WebGPT test phase: ' + name);
-  const child = spawn(process.execPath, ['--test', '--test-concurrency=2', '--test-reporter=dot',
+  const child = spawn(process.execPath, ['--test', '--test-concurrency=2', '--test-reporter=tap',
     `--test-reporter=${feedback}`, '--test-reporter-destination=stdout', '--test-reporter-destination=stderr', ...tests], {
     cwd: root, stdio: 'inherit', windowsHide: true,
   });
