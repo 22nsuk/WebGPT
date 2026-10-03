@@ -100,6 +100,7 @@ export function buildHandoff(spec) {
     const missingEvidence = check.evidenceLabels.filter(name => files.find(file => file.label === name).status !== 'observed');
     const { status, ...details } = check;
     return { ...details, reportedStatus: status,
+      testedFiles: check.testedFiles.map(file => ({ ...file })), evidenceLabels: [...check.evidenceLabels],
       applicability: stale.length ? 'stale' : unknown.length || missingEvidence.length || !check.testedFiles.length ? 'unknown' : 'current',
       staleFiles: stale, unknownFiles: unknown, missingEvidence };
   });

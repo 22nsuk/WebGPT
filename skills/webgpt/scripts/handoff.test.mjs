@@ -90,6 +90,17 @@ test('missing log or tested source makes applicability unknown without inventing
   assert.equal(result.reportedStatus, 'FAIL'); assert.deepEqual(result.unknownFiles, ['code']);
 });
 
+test('editing the next attempt specification cannot rewrite an already built feedback packet', t => {
+  const { spec, check } = fixture(t);
+  spec.checks.push(check);
+  const packet = buildHandoff(spec), saved = JSON.stringify(packet);
+  check.testedFiles[0].sha256 = hash('next attempt');
+  check.testedFiles.push({ label: 'brief', sha256: hash('next brief') });
+  check.evidenceLabels.push('next-log');
+  spec.files[0].requiredFor.push('validation'); spec.assignment.revision = 'rev3';
+  assert.equal(JSON.stringify(packet), saved);
+});
+
 test('NOT_RUN survives independently of authored tests, package hashes and successful checks', t => {
   const { spec, check, file } = fixture(t);
   spec.files.push(file('archive', 'package', 'opaque package bytes'));
