@@ -12,6 +12,7 @@ key. Task tokens remain mandatory for tools, not for connection-level `ping`.
 | Concurrent body readers per listener | 4 | 4 |
 | JSON container nesting depth | 64 | 64 |
 | Structural characters plus string starts per request | 65,536 | 65,536 |
+| Decoded JSON-RPC string request ID (UTF-8 bytes) | 1,024 | Not applicable |
 
 The incremental scanner counts `{`, `}`, `[`, `]`, `,`, `:` outside strings and
 each opening string quote. Counting separators and keys also bounds shallow scalar
@@ -23,7 +24,21 @@ The 128 MiB allowance is retained because an exact edit can contain 10 MiB each 
 `oldText` and `text`, expanded to 120 MiB by JSON escaping. Decoded file limits,
 revision checks, task authorization and the 1 MiB result limit are unchanged.
 
-A request exceeding its byte/structure budget receives HTTP 413; malformed JSON or
+The string request-ID limit is a fork-specific resource policy, not a universal
+MCP limit. It is checked after bounded JSON parsing and before method dispatch.
+IDs longer than 1,024 UTF-8 bytes receive HTTP 400 / JSON-RPC -32600 with `id:null`;
+they are never truncated, hashed or reflected in the refusal. Accepted IDs are
+echoed unchanged, including empty strings and the existing safe-integer range.
+The limit measures the decoded ID, not its JSON escape spelling or the size of
+file-edit arguments. Clients using longer IDs must choose shorter correlation IDs.
+
+This prevents large tokenless `ping` IDs (or IDs of requests that return errors)
+from turning the edit-body allowance into equally large queued responses. Body
+staging admission ends after parsing, whereas a slow receiver can retain an
+outgoing response longer. This ID bound is not an aggregate response-memory cap;
+large authorized tool results and transport buffers remain separate costs.
+
+A request exceeding its wire-byte or structure budget receives HTTP 413; malformed JSON or
 UTF-8 receives HTTP 400. Capacity exhaustion returns HTTP 503 (MCP JSON-RPC -32000;
 controller `HTTP_BODY_BUSY`, retryable). No tool mutation has begun at this point.
 Incomplete rejected bodies are closed after the response rather than drained or
