@@ -384,6 +384,9 @@ if (isCliEntry(import.meta)) {
     if (action === 'dispatch') {
       const { dispatchCli } = await import('./dispatch.mjs');
       result = await dispatchCli(args);
+    } else if (action === 'handoff') {
+      const { handoffCli } = await import('./handoff.mjs');
+      result = handoffCli(args);
     } else if (action === 'reconcile') {
       result = await reconcileTasks(configuration(), args.length ? { ids: args } : {});
     } else if (action === 'ready' || action === 'shutdown') {
@@ -428,6 +431,10 @@ if (isCliEntry(import.meta)) {
     if (action === 'dispatch') {
       const { dispatchDiagnostic } = await import('./dispatch.mjs');
       console.error('WebGPT: ' + JSON.stringify(dispatchDiagnostic(error)));
+    } else if (action === 'handoff') {
+      // Native filesystem/parser errors can contain private paths or file contents.
+      console.error('WebGPT: ' + JSON.stringify({ code: 'HANDOFF_FAILED',
+        message: 'Handoff preparation failed; inspect private inputs and references/worker-handoff.md.' }));
     } else if (action === 'review') {
       // Do not echo a controller body, native path, result content or credentials.
       const code = ['REVIEW_USAGE', 'REVIEW_RANGE', 'REVIEW_REVISION_CONFLICT', 'REVIEW_UNCONFIRMED', 'RESULT_INVALID', 'STATE_INVALID', 'ENOENT'].includes(error.code) ? error.code : 'REVIEW_FAILED';
