@@ -17,7 +17,12 @@ function object(value, keys) {
   requireValue(value !== null && typeof value === 'object' && !Array.isArray(value)
     && Object.keys(value).every(key => keys.includes(key)));
 }
-function list(value, max) { requireValue(Array.isArray(value) && value.length <= max); }
+function list(value, max) {
+  requireValue(Array.isArray(value) && value.length <= max);
+  // every/map/filter skip holes; inherited slots are not supplied inputs either.
+  // Check every bounded index before validating or reading any selected source.
+  for (let index = 0; index < value.length; index++) requireValue(Object.hasOwn(value, index));
+}
 function unique(values) { requireValue(new Set(values).size === values.length); }
 
 /** Reads only explicitly selected files. No dependency discovery, copying, command

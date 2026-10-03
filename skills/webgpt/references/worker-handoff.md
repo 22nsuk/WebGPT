@@ -97,6 +97,9 @@ nonempty `delivery` description. Use either `source` or `unavailableReason`, nev
 both. An optional lowercase `expectedSha256` detects changed inputs; a mismatch
 remains visible as an input gap, and a missing/mismatched brief rejects the packet.
 Unknown fields and duplicate labels reject rather than silently losing information.
+Every list must have an explicitly supplied own entry at each index. Sparse arrays
+and inherited entries reject before selected source reads; JSON `null` is not a
+placeholder for a missing list entry.
 
 Limits: specification 64 KiB; 64 selected files; 256 MiB per regular, single-link
 source using the existing [artifact reader](artifact-inputs.md); 512 MiB aggregate
