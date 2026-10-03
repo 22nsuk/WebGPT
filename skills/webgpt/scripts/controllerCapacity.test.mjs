@@ -5,9 +5,7 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'n
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { PassThrough } from 'node:stream';
 import { request, retryableControllerError, collectTask } from './client.mjs';
-import { createJsonBodyReader } from './json-body.mjs';
 
 const busy = { error: 'request body capacity exhausted', code: 'HTTP_BODY_BUSY', retryable: true };
 const send = (res, status, value) => {
@@ -102,36 +100,8 @@ test('successful controller JSON is not reclassified as a capacity refusal', asy
   assert.deepEqual(await request('register', { id: 'capacity' }, config), busy);
 });
 
-test('real body-reader admission refusal survives the client and permits an explicit later request', async t => {
-  const read = createJsonBodyReader();
-  // Hold four real readers deterministically without socket-arrival races. The
-  // HTTP fixture uses the production reader and the controller's error envelope,
-  // not a full worker. Draining here ensures the client receives that envelope.
-  const held = Array.from({ length: 4 }, () => Object.assign(new PassThrough(), { headers: {} }));
-  const pending = held.map(stream => read(stream));
-  const settled = Promise.allSettled(pending);
-  t.after(async () => { for (const stream of held) stream.end(); await settled; });
-  let calls = 0, dispatched = 0;
-  const config = await fixture(t, async (req, res) => {
-    calls++;
-    let value;
-    try { value = await read(req); }
-    catch (error) {
-      await drain(req);
-      send(res, error.statusCode ?? 400, { error: error.message, code: error.code, retryable: error.code === 'HTTP_BODY_BUSY' });
-      return;
-    }
-    dispatched++; send(res, 200, { accepted: value.id });
-  });
-  await assert.rejects(request('register', { id: 'capacity' }, config), rejection(503, 'HTTP_BODY_BUSY', true));
-  assert.equal(calls, 1);
-  assert.equal(dispatched, 0, 'a capacity refusal must precede dispatch');
-  for (const stream of held) stream.end('{}');
-  assert.deepEqual(await settled, Array.from({ length: 4 }, () => ({ status: 'fulfilled', value: {} })));
-  assert.deepEqual(await request('register', { id: 'capacity' }, config), { accepted: 'capacity' });
-  assert.equal(calls, 2, 'only the explicit second request may be sent');
-  assert.equal(dispatched, 1);
-});
+// Real admission, server envelope and later recovery are covered together in
+// jsonBody.test.mjs against the worker, not a second implementation of its catch.
 
 for (const resume of [false, true]) test(`collection${resume ? ' resume' : ''} propagates capacity refusal without replay, probe or ack fallback`, async t => {
   const calls = [];

@@ -4,10 +4,11 @@ import {Readable,PassThrough} from 'node:stream';
 import {setImmediate as tick} from 'node:timers/promises';
 import {createJsonBodyReader} from './json-body.mjs';
 import {createServer,request} from 'node:http';
-import {mkdtempSync,mkdirSync,readFileSync,writeFileSync,rmSync} from 'node:fs';
+import {mkdtempSync,mkdirSync,readFileSync,readdirSync,writeFileSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createHash} from 'node:crypto';
+import {request as controllerRequest,retryableControllerError} from './client.mjs';
 
 const MiB=1024*1024, page=64*1024;
 function input(chunks,headers={}){
@@ -213,6 +214,60 @@ test('worker body keeps controller admission available while MCP body slots are 
   assert.equal(overloaded,true);
   assert.equal((await admin('/ready')).ok,true);
   assert.equal((await admin('/register',{id:'controller-still-works',instructions:'ok',inputs:{}})).id,'controller-still-works');
+});
+test('worker controller capacity refusal reaches the client without mutation or automatic replay',async t=>{
+  const {service,dir,url,admin}=await workerFixture(t);
+  const config={dataDir:dir,controlPort:service.controlPort};
+  const retained=await admin('/register',{id:'retained',instructions:'keep working',inputs:{}});
+  const state=readFileSync(join(dir,'state.json')),files=readdirSync(dir).sort(),clients=[];
+  // Hold the real authenticated controller's four slots. Incomplete requests
+  // cannot dispatch; after release their empty objects remain invalid tasks.
+  const completed=Promise.allSettled(Array.from({length:4},()=>new Promise((resolve,reject)=>{
+    const req=request({hostname:'127.0.0.1',port:service.controlPort,path:'/register',method:'POST',agent:false,
+      headers:{authorization:'Bearer '+service.key}},res=>{
+      res.on('error',reject);res.on('end',()=>resolve(res.statusCode));res.resume();
+    });
+    clients.push(req);req.on('error',reject);
+    req.setTimeout(10000,()=>req.destroy(Error('controller slot fixture timed out')));req.write('{');
+  })));
+  t.after(async()=>{for(const client of clients)client.destroy();await completed;});
+  // An invalid, non-mutating probe observes admission; a write callback or fixed
+  // sleep does not prove that all four prefixes have reached the body reader.
+  let overloaded=false;
+  const deadline=performance.now()+10000;
+  while(performance.now()<deadline){
+    try{await controllerRequest('register',{},config);assert.fail('empty registration succeeded');}
+    catch(error){
+      if(error.statusCode===503){assert.equal(error.code,'HTTP_BODY_BUSY');overloaded=true;break;}
+      assert.equal(error.statusCode,400);
+    }
+    await tick();
+  }
+  assert.equal(overloaded,true);
+  // Spy only on transport calls; responses and error classification remain real.
+  const calls=t.mock.method(globalThis,'fetch');
+  const assignment={id:'after-capacity',instructions:'explicit later request',inputs:{}};
+  await assert.rejects(controllerRequest('register',assignment,config),error=>{
+    assert.equal(error.statusCode,503);assert.equal(error.code,'HTTP_BODY_BUSY');
+    assert.equal(error.details.retryable,true);assert.equal(error.retryable,true);
+    assert.equal(retryableControllerError(error),true);return true;
+  });
+  assert.equal(calls.mock.callCount(),1,'a refused registration must not be replayed');
+  assert.deepEqual(readFileSync(join(dir,'state.json')),state);
+  assert.deepEqual(readdirSync(dir).sort(),files);
+  assert.equal((await admin('/ready')).ok,true);
+  const result=await fetch(url,{method:'POST',body:JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/call',
+    params:{name:'get_task',arguments:{token:retained.token}}})});
+  assert.equal(result.status,200);
+  assert.equal((await result.json()).result.structuredContent.instructions,'keep working');
+  for(const client of clients)client.end('}');
+  assert.deepEqual(await completed,Array.from({length:4},()=>({status:'fulfilled',value:400})));
+  assert.deepEqual(readFileSync(join(dir,'state.json')),state);
+  calls.mock.resetCalls();
+  const registered=await controllerRequest('register',assignment,config);
+  assert.equal(registered.id,assignment.id);assert.equal(registered.duplicate,undefined);
+  assert.equal(calls.mock.callCount(),1,'recovery must use only the explicit new request');
+  assert.deepEqual(JSON.parse(readFileSync(join(dir,'state.json'))).map(task=>task.id),['retained',assignment.id]);
 });
 test('worker body preserves a fully escaped maximum-size exact file edit',async t=>{
   const {project,url,admin}=await workerFixture(t),file=join(project,'large.txt');
