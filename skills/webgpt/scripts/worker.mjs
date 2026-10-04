@@ -1,6 +1,6 @@
 import { createServer, validateHeaderValue } from 'node:http';
 import { randomUUID, randomBytes, createHash, timingSafeEqual } from 'node:crypto';
-import { mkdirSync, writeFileSync, readFileSync, existsSync, renameSync, unlinkSync, readdirSync, realpathSync, lstatSync } from 'node:fs';
+import { mkdirSync, writeFileSync, existsSync, renameSync, unlinkSync, readdirSync, realpathSync, lstatSync } from 'node:fs';
 import { resolve, relative, isAbsolute, sep, dirname, basename } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { fileURLToPath } from 'node:url';
@@ -14,6 +14,7 @@ import { auditFromEnvironment, createAuditWriter } from './audit.mjs';
 import { validatedEntryPath } from './installation.mjs';
 import { windowProperties, readWindowOptions, textWindow } from './text-window.mjs';
 import { createJsonBodyReader } from './json-body.mjs';
+import { readBoundedFile } from './bounded-read.mjs';
 
 const schema = properties => ({type:'object',properties,required:Object.keys(properties),additionalProperties:false});
 const str = {type:'string'};
@@ -37,21 +38,25 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
   const ownership=acquireRuntimeLock(dir), release=()=>{auditClosed=true;ownership.release();};
   try{
   const statePath=resolve(dir,'state.json'), keyPath=resolve(dir,'controller.key');
-  const key=existsSync(keyPath)?readFileSync(keyPath,'utf8'):randomUUID();
+  // Bound I/O before decoding; only initial absence may create a key.
+  // See ../references/startup-keys.md for allowances and repair policy.
+  const savedKey=readBoundedFile(keyPath,4096,()=>fault('CONFIG_INVALID','invalid controller.key'));
+  const key=savedKey===null?randomUUID():savedKey.bytes.toString('utf8');
   // Validate before opening either listener; HTTP removes trailing header whitespace.
   try{
     if(!key||/[ \t]$/.test(key))throw Error();
     validateHeaderValue('authorization','Bearer '+key);
   }catch{throw fault('CONFIG_INVALID','invalid controller.key');}
-  if(!existsSync(keyPath))writeFileSync(keyPath,key,{mode:0o600,flag:'wx'});
+  if(savedKey===null)writeFileSync(keyPath,key,{mode:0o600,flag:'wx'});
   // URL capability authenticates the remote MCP connection; task tokens separately grant work.
   // Keep the URL out of stdout, task prompts and HTTP error responses.
   let mcpPath='/mcp';
   if(publicMcp){
     const pathKey=resolve(dir,'mcp-path.key');
-    if(!existsSync(pathKey))writeFileSync(pathKey,randomBytes(32).toString('hex'),{mode:0o600,flag:'wx'});
-    const secret=readFileSync(pathKey,'utf8');
+    const savedSecret=readBoundedFile(pathKey,64,()=>fault('CONFIG_INVALID','invalid mcp-path.key'));
+    const secret=savedSecret===null?randomBytes(32).toString('hex'):savedSecret.bytes.toString('utf8');
     if(!/^[a-f0-9]{64}$/.test(secret))throw fault('CONFIG_INVALID','invalid mcp-path.key');
+    if(savedSecret===null)writeFileSync(pathKey,secret,{mode:0o600,flag:'wx'});
     mcpPath+='/'+secret;
   }
   const markerPath=resolve(dir,'state.initialized');
