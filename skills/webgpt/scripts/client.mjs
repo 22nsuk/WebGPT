@@ -2,17 +2,20 @@ import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, isAbsolute } from 'node:path';
 import { isCliEntry } from './cli-entry.mjs';
+import { readBoundedFile } from './bounded-read.mjs';
+import { fault } from './runtime.mjs';
 import { readVerifiedResult, verifySavedResult } from './results.mjs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { readWindowOptions, textWindow } from './text-window.mjs';
 
 // Decode user-authored local JSON without silently replacing invalid wire bytes.
 // TextDecoder accepts one leading UTF-8 BOM; BOMs inside strings stay unchanged.
-function readJsonFile(file) {
-  const bytes = readFileSync(file); // Keep filesystem failures and their error codes.
+function parseJsonBytes(bytes) {
   try { return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)); }
   catch { throw Error('invalid JSON or UTF-8 input file'); }
 }
+// Task JSON retains its existing input contract, not the configuration quota.
+function readJsonFile(file) { return parseJsonBytes(readFileSync(file)); }
 
 // Shared by the worker and controller client; never store configuration in the skill.
 export function configurationFile(env = process.env) {
@@ -23,13 +26,13 @@ export function configurationFile(env = process.env) {
 
 export function configuration(env = process.env, { requireExplicitDataDir = false } = {}) {
   const file = configurationFile(env);
-  let saved;
-  try { saved = readJsonFile(file); }
-  catch (error) {
-    if (error.code !== 'ENOENT') throw error;
-    if (env.WEBGPT_CONFIG) throw Error('WEBGPT_CONFIG file does not exist');
-    saved = {}; // Only an absent implicit configuration may use defaults.
-  }
+  // Configuration is user-selected: preserve link compatibility, but bound the
+  // regular target before decoding. Later ENOENT must not select defaults.
+  const stored = readBoundedFile(file, 64 * 1024,
+    () => fault('CONFIG_INVALID', 'invalid WebGPT configuration file; expected a regular file <=64 KiB'),
+    { allowLinks: true });
+  if (stored === null && env.WEBGPT_CONFIG) throw Error('WEBGPT_CONFIG file does not exist');
+  const saved = stored === null ? {} : parseJsonBytes(stored.bytes);
   if (!saved || typeof saved !== 'object' || Array.isArray(saved)) throw Error('invalid WebGPT configuration');
   if (requireExplicitDataDir && !(env.WEBGPT_DATA_DIR ?? saved.dataDir)) throw Error('explicit dataDir required');
   const config = {
@@ -74,7 +77,12 @@ export async function request(action, payload, config = configuration(), { signa
   // for the wire query and exact reconciliation scope confirmation.
   const scope = ids ? new Set(ids) : null;
   signal?.throwIfAborted();
-  const key = readFileSync(join(config.dataDir, 'controller.key'), 'utf8');
+  // Match the worker's stored-key allowance and private-file policy. Never
+  // generate, trim or rotate a key here; native read errors remain non-retryable.
+  const storedKey = readBoundedFile(join(config.dataDir, 'controller.key'), 4096,
+    () => fault('CONFIG_INVALID', 'invalid controller.key'));
+  if (storedKey === null) throw fault('ENOENT', 'controller.key does not exist');
+  const key = storedKey.bytes.toString('utf8');
   const query = ids ? '?' + new URLSearchParams(ids.map(id => ['id', id])) : '';
   const timeout = AbortSignal.timeout(timeoutMs);
   const response = await fetch('http://127.0.0.1:' + config.controlPort + '/' + action + query, {

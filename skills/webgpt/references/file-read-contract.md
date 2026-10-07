@@ -26,6 +26,13 @@ The public bounded API still rejects omitted, null, infinite or invalid limits;
 only the private shared implementation uses a null limit for the uncapped path.
 Both wrappers return the same `{ bytes, stat }` or initial-absence result.
 
+The optional fourth argument `{ allowLinks: true }` is reserved for callers whose
+input contract follows links, currently common configuration. It uses `stat`
+and a following open, permits hard links, and compares the observed target's
+full-width identity to the opened regular file. Size, sentinel and descriptor
+cleanup checks are unchanged. Omitting the option keeps the strict single-link
+policy; committed-state reads do not opt in.
+
 Both named and opened metadata use `bigint: true`: distinct 64-bit device/inode
 values can alias after conversion to `Number`. Keep identity comparisons exact;
 do not reject legitimate large identities merely because they exceed the safe
@@ -44,6 +51,8 @@ collection policy and evidence disposition do not move into the byte reader.
 
 | Adapter / data | Read allowance | Policy retained by the adapter |
 | --- | --- | --- |
+| Common configuration | 64 KiB | User-selected regular target, existing symlink/hardlink compatibility, strict UTF-8/JSON with one leading BOM, explicit overrides and initial-absence defaults |
+| Parent controller key | 4096 bytes | Same strict file policy and byte allowance as worker startup; unchanged UTF-8 decoding, no key creation/rotation or trimming |
 | Runtime committed state | No new fixed quota | Existing task parsing, initialization evidence and pre-publication byte comparison; the adapter returns only bytes, never BigInt metadata |
 | Runtime initialization marker | 28 bytes | Exact existing marker; absence differs from corrupt state |
 | Runtime worker/service lock owner | 4096 bytes | Lock directory, owner identity, host/PID and uncertain ownership |
@@ -60,6 +69,29 @@ not an atomic snapshot: an in-place writer can still change bytes or append
 within the allowance during the read. In particular, the diagnostic reader must
 not treat the original file size as a frozen log length. Domain hashes and late
 mutation/collection guards are still required.
+
+## Configuration and parent key reads
+
+The configuration allowance covers stored UTF-8 bytes, including a BOM and JSON
+whitespace. 64 KiB leaves room for the small settings object and long paths,
+without materializing arbitrarily padded input. Larger configurations are now
+rejected, not truncated. Task JSON supplied to the client CLI keeps its existing
+input contract and does not inherit this configuration quota.
+
+Only an initial missing configuration target may select defaults for the implicit
+path. An explicitly selected missing target still fails. Because configuration
+retains link-following compatibility, an initially dangling config symlink has
+that same absence behavior. An `ENOENT` after observing a target is instead
+propagated, never converted to defaults. The parent key retains the strict
+single-link policy: even an initially dangling key symlink is invalid, and a
+missing key is `ENOENT`, never permission for the client to create one.
+
+Metadata, identity or allowance failures use `CONFIG_INVALID`. Native open/read
+errors keep their original codes; JSON/UTF-8 and settings validation keep their
+existing diagnostics. Key decoding is unchanged and header-compatible non-UUID
+keys are not normalized. Refusals occur before HTTP and do not authorize retries,
+key rotation or file repair. HTTP timeouts cannot interrupt synchronous reads;
+these byte/type checks are not a general deadline for a stalled filesystem.
 
 ## Workspace path text
 
@@ -140,10 +172,9 @@ remain separate and continue to revalidate their own observations.
   256 MiB while retaining only selected windows and enforcing initial-size plus
   sentinel and post-read checks. Routing it through a materializing helper would
   retain unnecessary source bytes and lose its stronger source-change checks.
-- User-selected configuration/JSON input and private key loading are not silently
-  converted to the single-link bounded-file policy. Their existing path, decoding
-  and compatibility contracts remain separate; this change is not a claim that
-  every repository read or total runtime resource use is now bounded.
+- User-selected task JSON retains its existing path and decoding contract,
+  separate from the configuration allowance and private-key policy above. This
+  is not a claim that every repository read or total runtime resource use is bounded.
 
 `O_NOFOLLOW` is not available on every supported platform. The named-file checks
 remain necessary, but neither those checks nor an inode comparison create an OS
@@ -157,6 +188,7 @@ Keep one owner per assertion family, not one copy per historical fix:
 | Test owner | Responsibility |
 | --- | --- |
 | `boundedFile.test.mjs` | Shared file-opening mechanism: opaque bytes, absence/empty input, full-width identity, metadata, FIFO substitution without a writer for bounded and committed-state reads, native failures and descriptor closure; the I/O observer's hook timing, accounting and scoped restoration |
+| `configurationReads.test.mjs` | Real common-configuration and parent-request adapters: limits, link-policy distinction, initial versus late absence, preserved decoding/errors/evidence, FIFO child watchdogs and a real CLI/loopback exchange with larger task JSON |
 | `fileReadContract.test.mjs` | Real adapter matrix: short reads, growth/oversize rejection, error classification and identity swaps; candidate-length state retries |
 | `recoveryInspection.test.mjs` | Recovery traversal work budgets, complete receipt sets, ordered/suppressed staged diagnostics, fresh backup checks and per-record failure isolation with preserved sibling receipts/evidence |
 | `runtimeMetadata.test.mjs` | Marker format/absence, metadata path types, uncapped committed state, late state replacements, descriptor-bound reads and error cleanup, and worker/service ownership lifecycle |
