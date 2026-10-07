@@ -13,6 +13,7 @@ import { configuration, configurationFile, request } from './client.mjs';
 import { runService, requestServiceStop } from './service.mjs';
 import { start } from './worker.mjs';
 import { observeChild, untilFixture } from './test-fixtures/worker-process.mjs';
+import { observeFileRead } from './test-fixtures/file-read.mjs';
 
 const execute = promisify(execFile);
 const bom = Buffer.from([0xef, 0xbb, 0xbf]);
@@ -86,13 +87,11 @@ for (const source of ['saved dataDir', 'environment dataDir', 'configuration pat
     assert.equal(fs.existsSync(f.dir), false);
   });
 
-test('an explicit configuration disappearing before the read never becomes implicit defaults', t => {
-  const f = fixture(t), read = fs.readFileSync, exists = fs.existsSync;
-  let probes = 0;
-  t.mock.method(fs, 'existsSync', path => path === f.file ? ++probes === 1 : exists(path));
-  t.mock.method(fs, 'readFileSync', (path, ...args) => {
+test('an explicit configuration missing at initial observation never becomes implicit defaults', t => {
+  const f = fixture(t), stat = fs.statSync;
+  t.mock.method(fs, 'statSync', (path, ...args) => {
     if (path === f.file) throw Object.assign(Error('fixture missing config'), { code: 'ENOENT' });
-    return read(path, ...args);
+    return stat(path, ...args);
   });
   syncBuiltinESMExports();
   try { assert.throws(() => configuration(f.env), { message: 'WEBGPT_CONFIG file does not exist' }); }
@@ -102,13 +101,13 @@ test('an explicit configuration disappearing before the read never becomes impli
 
 for (const code of ['ENOENT', 'EACCES', 'EIO']) test(`implicit configuration handles ${code} without hiding nonabsence errors`, t => {
   const f = fixture(t), env = { WEBGPT_DATA_DIR: f.dir }, implicit = configurationFile(env);
-  const read = fs.readFileSync, exists = fs.existsSync;
+  const stat = fs.statSync;
   const failure = Object.assign(Error('fixture local read failure'), { code });
-  // Never read or write the account-profile config; model its filesystem outcome.
-  t.mock.method(fs, 'existsSync', path => path === implicit ? false : exists(path));
-  t.mock.method(fs, 'readFileSync', (path, ...args) => {
+  // Never inspect, read or write the account-profile config; model the initial
+  // metadata outcome. Later open/read failures belong to configurationReads.
+  t.mock.method(fs, 'statSync', (path, ...args) => {
     if (path === implicit) throw failure;
-    return read(path, ...args);
+    return stat(path, ...args);
   });
   syncBuiltinESMExports();
   try {
@@ -121,13 +120,13 @@ for (const code of ['ENOENT', 'EACCES', 'EIO']) test(`implicit configuration han
 });
 
 test('a service configuration is decoded and checked for explicit dataDir from one read', async t => {
-  const f = fixture(t), read = fs.readFileSync, mkdir = fs.mkdirSync;
+  const f = fixture(t), mkdir = fs.mkdirSync;
+  const original = fs.readFileSync(f.file);
   let reads = 0, launched = 0;
-  t.mock.method(fs, 'readFileSync', (file, ...args) => {
-    if (file === f.file && ++reads > 1) return args[0] === 'utf8' ? '{}' : Buffer.from('{}');
-    return read(file, ...args);
+  const observed = observeFileRead(t, f.file, {
+    beforeOpen: () => assert.equal(++reads, 1, 'configuration must be read once'),
   });
-  // Baseline's second read would select the account-profile default. Never create it.
+  // A fallback runtime must never be created, even on a failed configuration read.
   t.mock.method(fs, 'mkdirSync', (path, ...args) => {
     assert.ok(path === f.dir || path.startsWith(f.dir + sep), 'must not create a fallback runtime');
     return mkdir(path, ...args);
@@ -137,8 +136,11 @@ test('a service configuration is decoded and checked for explicit dataDir from o
     assert.equal(await runService(f.env, { record: () => {}, spawnWorker: (_exe, _args, options) => {
       launched++; assert.equal(options.cwd, f.dir); return exited();
     } }), 0);
-  } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+  } finally { t.mock.reset(); observed.restore(); }
   assert.equal(reads, 1); assert.equal(launched, 1);
+  assert.equal(observed.evidence.opens, 1); assert.equal(observed.evidence.closes, 1);
+  assert.equal(observed.evidence.bytes, original.length);
+  assert.deepEqual(fs.readFileSync(f.file), original);
   assert.equal(fs.existsSync(join(f.dir, 'service.lock')), false);
 });
 
