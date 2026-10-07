@@ -98,8 +98,7 @@ one-line `uses` mappings and its safety controls. It catches accidental regressi
 it is not a general YAML security scanner, a tamper-proof policy, or a pre-execution
 gate. The referenced actions execute before the tests. Adding an action or changing
 the workflow structure requires reviewing and updating the checks as well. A
-repository/organization SHA-pinning policy is a separate administrator setting,
-not something this PR changes.
+repository/organization SHA-pinning policy is a separate administrator setting.
 
 References:
 - [GitHub Actions secure use](https://docs.github.com/en/actions/reference/security/secure-use)
