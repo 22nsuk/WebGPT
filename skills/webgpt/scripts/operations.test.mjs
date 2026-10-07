@@ -10,7 +10,6 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { createServer, Server, ServerResponse } from 'node:http';
 import { connect } from 'node:net';
-import { setTimeout as delay } from 'node:timers/promises';
 import { randomUUID } from 'node:crypto';
 import { start, tools } from './worker.mjs';
 import { request, waitForTasks, collectTask, reconcileTasks, retryableControllerError } from './client.mjs';
