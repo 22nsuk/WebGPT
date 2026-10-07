@@ -13,6 +13,7 @@ import { syncBuiltinESMExports } from 'node:module';
 import timers from 'node:timers/promises';
 import { reviewTask, waitForTasks, retryableControllerError, verifyResult, collectTask, request } from './client.mjs';
 import { readVerifiedResult } from './results.mjs';
+import { observeFileRead } from './test-fixtures/file-read.mjs';
 
 const text = '\uFEFF한국어 🧪\r\n\u0000literal "quotes" \\ path\n';
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -168,16 +169,19 @@ test('review display uses the bytes it verified rather than reopening after veri
 });
 
 test('review bounds growth after stat and closes the failed read', async t => {
-  const f = await fixture(t); const stat = fs.fstatSync;
-  const mock = t.mock.method(fs, 'fstatSync', (fd, ...args) => {
-    const info = stat(fd, ...args);
-    fs.writeFileSync(f.artifact, Buffer.alloc(1024 * 1024 + 10)); return info;
+  const f = await fixture(t), grown = Buffer.alloc(1024 * 1024 + 10);
+  // Trigger only after the result descriptor's observation, not an earlier
+  // controller-key fstat. The shared observer excludes its own injection I/O.
+  const observed = observeFileRead(t, f.artifact, {
+    afterStat: () => fs.writeFileSync(f.artifact, grown),
   });
-  syncBuiltinESMExports();
-  try {
-    const reads = await observeResultReads(t, f, () => assert.rejects(reviewTask('owned', f.config), { code: 'RESULT_INVALID' }));
-    assert.deepEqual(reads, { opens: 1, bytes: 1024 * 1024 + 1 });
-  } finally { mock.mock.restore(); syncBuiltinESMExports(); }
+  try { await assert.rejects(reviewTask('owned', f.config), { code: 'RESULT_INVALID' }); }
+  finally { observed.restore(); }
+  assert.equal(observed.evidence.opens, 1); assert.equal(observed.evidence.closes, 1);
+  assert.equal(observed.evidence.bytes, 1024 * 1024 + 1);
+  assert.deepEqual(fs.readFileSync(f.artifact), grown);
+  assert.equal(fs.readFileSync(join(f.dir, 'controller.key'), 'utf8'), 'fixture-only-key');
+  assert.equal(fs.readFileSync(join(f.dir, 'state.json'), 'utf8'), 'owned-evidence');
 });
 
 test('review propagates explicit cancellation without another request or a task mutation', async t => {
