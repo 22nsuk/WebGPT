@@ -230,7 +230,8 @@ export async function reviewTask(id, config = configuration(), options = {}) {
     signal?.throwIfAborted();
     let saved;
     try { saved = saveReviewedResult({ ...event, content, integrity: 'verified' }, saveResult); }
-    catch (cause) { throw Object.assign(Error('result export failed; preserve partial files and inspect'), { code: 'REVIEW_EXPORT', cause }); }
+    // API callers may log/serialize the error too; do not retain native causes with private paths.
+    catch { throw Object.assign(Error('result export failed; preserve partial files and inspect'), { code: 'REVIEW_EXPORT' }); }
     return { ...snapshot, review: { ...event, integrity: 'verified', saved }, browserChecked: false };
   }
   if (range) {

@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
+import { promisify, inspect } from 'node:util';
 import { syncBuiltinESMExports } from 'node:module';
 import timers from 'node:timers/promises';
 import { reviewTask, waitForTasks, retryableControllerError, verifyResult, collectTask, request } from './client.mjs';
@@ -96,6 +96,13 @@ test('export reads source once and refuses window combinations before controller
   assert.equal(f.calls.length, 0);
   const reads = await observeResultReads(t, f, () => reviewTask('owned', f.config, { saveResult: destination }));
   assert.equal(reads.opens, 1); assert.equal(reads.bytes, Buffer.byteLength(text));
+  await assert.rejects(reviewTask('owned', f.config, { saveResult: destination }), error => {
+    assert.equal(error.code, 'REVIEW_EXPORT'); assert.equal(error.cause, undefined);
+    for (const diagnostic of [error.message, JSON.stringify(error), inspect(error)]) {
+      assert.ok(!diagnostic.includes(destination)); assert.ok(!diagnostic.includes('mkdir'));
+    }
+    return true;
+  });
   await assert.rejects(f.runCli(['review', 'owned', '--save-result', destination]), error => {
     assert.equal(error.stdout, ''); assert.match(error.stderr, /REVIEW_EXPORT/);
     assert.ok(!error.stderr.includes(f.dir)); return true;
