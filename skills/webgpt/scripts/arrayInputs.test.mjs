@@ -79,7 +79,9 @@ for (const action of ['wait', 'reconcile']) test(`${action} preserves ordered de
   let result;
   try { result = await request(action, { ids }, f.config); }
   finally { observed.restore(); }
-  assert.equal(observed.evidence.reads, 1, 'valid scope still uses the real credential reader');
+  assert.equal(observed.evidence.opens, 1, 'valid scope opens its credential snapshot once');
+  assert.equal(observed.evidence.closes, 1);
+  assert.equal(observed.evidence.bytes, Buffer.byteLength('array-input-fixture-key'));
   assert.deepEqual(f.calls, [{ method: 'GET', url: `/${action}?id=B-2&id=a_1&id=last`,
     ids: ['B-2', 'a_1', 'last'], authorization: 'Bearer array-input-fixture-key' }]);
   if (action === 'reconcile') assert.deepEqual(result.scope, ['B-2', 'a_1', 'last']);
