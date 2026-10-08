@@ -195,6 +195,9 @@ backup checks active. Close the exact terminal task-owned tabs after collection 
 chat-answer completion, not the browser or unrelated/repurposed tabs. An explicitly cancelled or
 interrupted chat keeps that disposition instead of being reported as a completed answer.
 Read [chat-lifecycle.md](references/chat-lifecycle.md) before closure/deletion.
+Use [review-evidence.md](references/review-evidence.md) to record report review and final-chat
+generation/text coverage separately. A completed turn with truncated text remains incomplete;
+`reportedReviewComplete` describes parent-reported review, not task success or closure permission.
 Delete a chat only when the user explicitly requests deletion of that chat or identified set.
 Never open deletion controls on the default retention path. Preserve results; verify exact requested
 deletion and tab absence, or report cleanup `BLOCKED` without erasing successful work.

@@ -14,6 +14,11 @@ uses `PENDING → CHAT_DELETED → DONE`. Either path can be `BLOCKED` with a re
 Retaining a chat is successful cleanup, not a blocker. Track final chat-answer status separately
 from controller work/collection in the existing private ledger: pending, complete, interrupted or
 unobserved, with the actual evidence. This is parent bookkeeping, not a new worker state or schema.
+For code-checked recording, use [review-evidence.md](review-evidence.md): it verifies the
+saved report and appends distinct review, generation, text-coverage and comparison observations
+to a confirmed dispatch's existing private ledger. Reported review completion never grants
+collection, success or tab closure. Manual workflows retain the same distinctions without
+inventing a confirmed dispatch record.
 Successful `submit_result` closes project-file access and ends controller backup deadlines;
 collection/acknowledgment retires the token. Neither proves final chat-answer completion.
 After saving output and recording its accepted/rejected/partial disposition, including failures:
