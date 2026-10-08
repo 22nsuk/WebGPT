@@ -5,7 +5,7 @@ import { basename, dirname, isAbsolute, parse, resolve, sep } from 'node:path';
 import { homedir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { readBoundedFile } from './bounded-read.mjs';
+import { readBoundedFile, scanBoundedFile } from './bounded-read.mjs';
 import { readWindowOptions, textWindow } from './text-window.mjs';
 import { windowsReplacementFailure } from './windows-replacement-diagnostics.mjs';
 
@@ -99,6 +99,20 @@ function snapshot(path,limit=MAX_BYTES) {
   if(text.includes('\0'))throw Error('UTF-8 text file required');
   return {exists:true,text,sha256:hash(bytes),mode:Number(stat.mode & 0o777n)};
 }
+// Recheck every original on each inspection, but do not materialize its body.
+// The decoder carries split UTF-8 sequences across chunks and rejects a truncated
+// final sequence. Hash raw bytes, including BOMs; no text normalization or cache.
+function originalMatches(path, expectedSha256) {
+  const digest=createHash('sha256'), decoder=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true});
+  const saved=scanBoundedFile(path,MAX_BYTES,()=>Error('invalid original backup'),chunk=>{
+    if(chunk.includes(0))throw Error('UTF-8 text file required');
+    decoder.decode(chunk,{stream:true});
+    digest.update(chunk);
+  });
+  if(saved===null)return false;
+  decoder.decode();
+  return digest.digest('hex')===expectedSha256;
+}
 // Optional bounded reads keep the original whole-file snapshot/revision contract.
 // Return complete lines (including their original endings); never silently drop a long-line tail.
 export function readWorkspace(grant,path,options={}) {
@@ -191,7 +205,7 @@ export function inspectRecovery(dir, taskId) {
           ||(action==='delete'?afterSha256!==null:!digest(afterSha256)))throw Error('invalid receipt');
       // The path recorded in a receipt is not proof that its original bytes
       // still exist. Reject link-backed originals and verify the actual bytes.
-      if(backup!==null && snapshot(backup).sha256!==beforeSha256)throw Error('missing or invalid original backup');
+      if(backup!==null && !originalMatches(backup,beforeSha256))throw Error('missing or invalid original backup');
       receipts.push({operation,path,action,beforeSha256,afterSha256,backup});
     } catch {unresolved.add(journal);}
   }
