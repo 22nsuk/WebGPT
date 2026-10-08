@@ -46,6 +46,10 @@ CI·리뷰 후속 처리까지 워커에게 맡긴다. 게시 승인이 없는 �
 [개정별 인계와 검증 피드백](worker-handoff.md)을 사용한다. 실제 환경과 가능한 도구를
 먼저 구분하고, `client.mjs handoff`로 선택한 입력의 해시·누락 영향과 검사 당시 해시를
 묶을 수 있다. 이 명령은 파일 전달·명령 실행·자동 배정·인수를 수행하지 않는다.
+긴 인계 패킷은 `handoff <absolute-spec.json> --save <new-absolute-private-file>`로 저장하고,
+반환된 `saved.sha256`을 고정해 `read-handoff <absolute-file> --expected-sha256 <saved.sha256>`로
+조회한다. 전체 응답이 20,000자 이내이며 `nextOffset`으로 이어 읽는다. 기존 기본 출력은
+전문 그대로이므로 조회 한도가 있는 도구에는 저장 경로를 사용한다.
 모델 배정은 작업 계약과 분리하며, 역할 분리는 단독 작업보다 실익이 있을 때만 한다.
 
 등록 `instructions`에 목표, 실제 입력과 접근 경로, 출력 형식/위치, 수용 기준, 담당 범위와

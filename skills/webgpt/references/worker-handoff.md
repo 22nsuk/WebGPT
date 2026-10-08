@@ -62,9 +62,10 @@ Create a private UTF-8 JSON specification, then use ordinary Node:
 node "<skill>/scripts/client.mjs" handoff "<absolute-private-spec.json>"
 ```
 
-The command prints one JSON packet to stdout. Preserve it in the existing private
-task evidence using your host's UTF-8 file tools, then review before sharing.
-It never writes files, reads service configuration, contacts a controller, executes
+By default the command prints one JSON packet to stdout, preserving existing callers.
+For long packets, use the explicit save mode below instead of routing that stdout
+through a tool with a shorter response limit. Review the packet before sharing.
+The default mode never writes files. Neither mode reads service configuration, contacts a controller, executes
 commands, uploads, registers tasks or changes acceptance. Source paths must be
 absolute native paths on the executing host; changing a WSL/Windows/cloud path string
 does not transfer bytes. Invalid input produces a generic path-redacted diagnostic.
@@ -115,6 +116,57 @@ Assignee, delivery text and check logs do not change that input identity. This i
 not the packet's byte hash, archive hash, signature or remote delivery proof. It
 does not detect omitted dependencies or verify the truth of the brief. Keep versions
 and results private; free-text labels/descriptions/commands are not auto-redacted.
+
+### Save and page a long handoff
+
+```text
+node "<skill>/scripts/client.mjs" handoff "<absolute-private-spec.json>" --save "<new-absolute-private-packet.json>"
+node "<skill>/scripts/client.mjs" read-handoff "<absolute-private-packet.json>" --expected-sha256 <saved.sha256>
+node "<skill>/scripts/client.mjs" read-handoff "<absolute-private-packet.json>" --expected-sha256 <saved.sha256> --offset <nextOffset>
+```
+
+Save mode builds the same packet once and stores its compact UTF-8 JSON, without
+a trailing newline, in a **new file only**. The parent directory must already exist
+and be private. It returns a small receipt with `saved.path`, `saved.bytes` and
+`saved.sha256`, not the packet body. The SHA covers every stored packet byte,
+including assignee, check feedback and delivery descriptions. It is distinct from
+`assignment.inputIdentitySha256`; keep the receipt's SHA for later reads rather
+than deriving a fresh expected hash from the file being checked. The original
+64 KiB specification and 128 KiB packet limits stay unchanged.
+
+The file is created exclusively with mode 0600, flushed and read back with identity
+and byte checks before success. Windows permissions inherit from the private parent;
+no ACL is changed. Existing destinations (including links) are never overwritten.
+Windows alternate-stream paths are rejected. Native absolute file paths must be
+well-formed, at most 4,096 UTF-16 units and contain no control characters or trailing
+separator. The receipt reports the canonical parent location. A failure preserves
+any created partial file; inspect it and choose a new destination for an intentional
+retry. An interrupted write may leave a file without a successful receipt; its
+existence alone does not prove successful saving. There is no automatic deletion,
+atomic replacement, directory creation or crash-durability guarantee for the directory.
+
+`read-handoff` verifies the **whole** saved regular, single-link file against that
+SHA on every call, with bounded reads, strict UTF-8 and handoff kind/version checks.
+It does not reopen the specification or original project inputs. Source files can
+have changed or disappeared: this command verifies retained packet bytes, not their
+current applicability or the truth of reported checks. It neither revalidates every
+packet field nor turns a caller-provided hash into independent provenance. Its fixed
+metadata says `sourceFilesChecked: false`, `deliveryVerified: false` and
+`grantsExecution: false`. No controller configuration or live worker is needed.
+
+Each compact JSON response, including escapes, metadata and line ending allowance,
+fits **20,000 UTF-16 units**. `content` is a slice of the saved JSON text; concatenate
+the slices in offset order before parsing the entire packet. Slices need not be
+independently valid JSON. Offsets start at zero and count UTF-16 units, not bytes,
+lines or file indices. Continue with the returned `nextOffset`, keeping the original
+SHA; surrogate pairs and CRLF boundaries are not split. A final `nextOffset: null`
+does not prove earlier pages were read. No cursor, cache, acknowledgment or acceptance
+state is stored, and checks do not provide an atomic snapshot against external writers.
+
+The legacy `handoff` stdout remains up to 128 KiB and is not automatically truncated
+or saved. Use save mode when that output would exceed the consuming tool's limit.
+This path saves inventory/feedback metadata, not the input files themselves; it is
+neither a result export for `read-export` nor a file transfer to a web worker.
 
 ## Return only the relevant local failures
 

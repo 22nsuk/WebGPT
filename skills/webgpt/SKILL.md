@@ -46,6 +46,9 @@ User-facing examples remain in [usage.md](references/usage.md); tradeoffs are in
 For revised/manual assignments and parent-only validation gaps, the optional
 [handoff guide](references/worker-handoff.md) binds the brief and selected inputs
 to narrow check feedback; it does not execute, dispatch or accept work.
+For long packets, `handoff <absolute-spec.json> --save <new-absolute-private-file>`
+returns a small receipt; `read-handoff <absolute-file> --expected-sha256 <saved.sha256>`
+pages that saved packet within a 20,000-character complete-response limit.
 
 <a id="give-the-worker-a-useful-part-of-the-task"></a>
 
