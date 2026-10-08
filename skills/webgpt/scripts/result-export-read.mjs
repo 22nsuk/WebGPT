@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { readBoundedFile } from './bounded-read.mjs';
 import { resultMessages, validExportPath, MESSAGE_MAX_CHARS } from './result-export.mjs';
+import { boundedTextPage } from './bounded-text-page.mjs';
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const messages = {
@@ -16,9 +17,6 @@ const messages = {
 const failure = (code = 'EXPORT_READ_INVALID') => Object.assign(Error(messages[code]), { code });
 const invalid = () => failure();
 const sameFile = (a, b) => a.dev === b.dev && a.ino === b.ino;
-const boundary = (text, offset) => !(offset > 0 && offset < text.length
-  && ((text.charCodeAt(offset - 1) >= 0xd800 && text.charCodeAt(offset - 1) <= 0xdbff)
-    || (text[offset - 1] === '\r' && text[offset] === '\n')));
 
 function verifyExport(directory, taskId, expectedSha256) {
   const owner = fs.lstatSync(directory, { bigint: true });
@@ -83,23 +81,10 @@ export function readSavedResult(directory, options) {
     throw failure(error.code === 'EXPORT_READ_CONFLICT' ? error.code : 'EXPORT_READ_INVALID');
   }
   const { content, messageCount } = verified;
-  if ((content.length ? offset >= content.length : offset !== 0) || !boundary(content, offset))
-    throw failure('EXPORT_READ_RANGE');
-  const page = end => ({ source: 'local-export', taskId, sha256: expectedSha256, integrity: 'verified',
-    liveTaskChecked: false, chatDelivery: 'NOT_OBSERVED', messageCount,
-    charUnit: 'UTF-16', startOffset: offset, endOffset: end, totalChars: content.length,
-    nextOffset: end < content.length ? end : null, partial: offset !== 0 || end < content.length,
-    content: content.slice(offset, end) });
-  // Bound the entire compact JSON plus line ending, including escaped control characters.
-  // Binary search is bounded by the source size and never returns an unbounded fallback.
-  let low = offset, high = Math.min(content.length, offset + MESSAGE_MAX_CHARS);
-  while (low < high) {
-    const end = Math.ceil((low + high) / 2);
-    if (JSON.stringify(page(end)).length + 2 <= MESSAGE_MAX_CHARS) low = end;
-    else high = end - 1;
-  }
-  while (!boundary(content, low)) low--;
-  return page(low);
+  try {
+    return boundedTextPage(content, offset, { source: 'local-export', taskId, sha256: expectedSha256,
+      integrity: 'verified', liveTaskChecked: false, chatDelivery: 'NOT_OBSERVED', messageCount });
+  } catch { throw failure('EXPORT_READ_RANGE'); }
 }
 
 export function exportReadCli(args) {

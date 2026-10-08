@@ -439,6 +439,9 @@ if (executeCli) {
     } else if (action === 'handoff') {
       const { handoffCli } = await import('./handoff.mjs');
       result = handoffCli(args);
+    } else if (action === 'read-handoff') {
+      const { handoffReadCli } = await import('./handoff-file.mjs');
+      result = handoffReadCli(args);
     } else if (action === 'read-export') {
       const { exportReadCli } = await import('./result-export-read.mjs');
       result = exportReadCli(args);
@@ -487,7 +490,10 @@ if (executeCli) {
     }
     console.log(JSON.stringify(result));
   } catch (error) {
-    if (action === 'read-export') {
+    if (action === 'read-handoff') {
+      const { handoffFileDiagnostic } = await import('./handoff-file.mjs');
+      console.error('WebGPT: ' + JSON.stringify(handoffFileDiagnostic(error)));
+    } else if (action === 'read-export') {
       const { exportReadDiagnostic } = await import('./result-export-read.mjs');
       console.error('WebGPT: ' + JSON.stringify(exportReadDiagnostic(error)));
     } else if (action === 'dispatch') {

@@ -4,6 +4,7 @@ import { isAbsolute } from 'node:path';
 import { lstatSync } from 'node:fs';
 import { buildArtifactInput } from './artifact-input.mjs';
 import { readBoundedFile } from './bounded-read.mjs';
+import { HANDOFF_MAX_BYTES, validHandoffPath, saveHandoffPacket } from './handoff-file.mjs';
 
 const stages = ['design', 'implementation', 'validation'];
 const roles = ['brief', 'source', 'reference', 'acceptance', 'evidence', 'package'];
@@ -117,16 +118,18 @@ export function buildHandoff(spec) {
     inputGaps: Object.fromEntries(stages.map(stage => [stage, files.filter(file =>
       file.requiredFor.includes(stage) && file.status !== 'observed').map(file => file.label)])),
     checkEvidence: 'caller_reported', checks, acceptance: 'not_assessed', grantsExecution: false };
-  requireValue(Buffer.byteLength(JSON.stringify(output)) <= 128 * 1024);
+  requireValue(Buffer.byteLength(JSON.stringify(output)) <= HANDOFF_MAX_BYTES);
   return output;
 }
 
 export function handoffCli(args) {
-  requireValue(args.length === 1 && text(args[0]) && isAbsolute(args[0]));
+  requireValue((args.length === 1 || args.length === 3 && args[1] === '--save' && validHandoffPath(args[2]))
+    && text(args[0]) && isAbsolute(args[0]));
   const input = readBoundedFile(args[0], 64 * 1024, invalid);
   requireValue(input !== null);
   let spec;
   try { spec = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(input.bytes)); }
   catch { throw invalid(); }
-  return buildHandoff(spec);
+  const packet = buildHandoff(spec);
+  return args.length === 3 ? saveHandoffPacket(packet, args[2]) : packet;
 }
