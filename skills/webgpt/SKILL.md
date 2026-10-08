@@ -122,6 +122,10 @@ Do independent authorized parent work while the worker runs; do not race its fil
    to save the exact verified full text and numbered message files of at most 20,000 UTF-16 units
    including headers. This returns `review.saved` instead of `review.content`; inspect the saved
    content before acceptance. These are local copies, not separately posted ChatGPT messages.
+   Reopen an export offline with `read-export <absolute-directory> --task-id <owned-task-id>
+   --expected-sha256 <sha-from-review>` and follow `--offset <nextOffset>` until null. It verifies
+   the full package and bounds each serialized JSON response, including escaping, to 20,000 units.
+   Keep the original trusted ID/SHA; manifest claims alone are not an independent identity check.
    If a chat read is truncated, do not repeatedly raise its limit or treat `hasMore: false` as
    full-message coverage. Use the verified result for the submitted deliverable and record any
    unobserved final-chat remainder separately. Use `waitForTasks` or

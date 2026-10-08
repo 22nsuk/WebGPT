@@ -206,6 +206,67 @@ Do not regenerate, resend or summarize away a requested full report merely to
 fit a tool limit. Local message files solve bounded local reading; posting those
 files as new ChatGPT turns is a separate, explicitly requested workflow.
 
+## Reopen and page a saved export offline
+
+After saving, including after collection, read the local package without a live
+controller, configuration file, token or network request:
+
+```text
+node <skill>/scripts/client.mjs read-export <absolute-directory> --task-id <owned-task-id> --expected-sha256 <sha256-from-original-review>
+node <skill>/scripts/client.mjs read-export <absolute-directory> --task-id <owned-task-id> --expected-sha256 <same-sha256> --offset <nextOffset>
+```
+
+The API is `readSavedResult(directory, { taskId, expectedSha256, offset: 0 })`
+from `scripts/result-export-read.mjs`. Both identity pins are required. Keep them
+from the original trusted review/receipt; copying both from the package being
+checked makes them self-reported, not independent evidence of the intended result.
+There is no implicit fallback to a live review, collection or unbounded output.
+
+Each call bounds and reads the manifest, full result and every numbered message
+file, checks their regular single-link identities, strictly decodes UTF-8, compares
+the full result with the supplied SHA and verifies the exact canonical message
+headers, order, offsets, sizes and hashes. Missing or altered later chunks fail
+even on the first page. Only fixed/generated filenames are opened; manifest paths
+cannot select other files. The package directory itself cannot be a link; existing
+linked ancestors remain supported with identity checks. Nothing is rewritten.
+
+The returned `content` comes from the verified full bytes. `startOffset`,
+`endOffset` and `nextOffset` are **zero-based UTF-16 positions**, not byte offsets
+or the one-based line numbers of `review`. Follow the returned next offset without
+incrementing it. Pages preserve BOM, emoji, NUL and CRLF and do not split surrogate
+pairs or CRLF. Even a single line larger than a page can be read to its end.
+Concatenating `content` from offset 0 through `nextOffset: null` reconstructs the
+exact full text. A last page beginning after zero remains `partial: true`; null
+means no later text, not proof that the parent read the preceding pages.
+
+Unlike `review --max-chars`, this command bounds the **entire compact serialized
+JSON plus line ending** to 20,000 UTF-16 units, including metadata and JSON
+escaping. Escaped control characters therefore produce smaller content pages.
+UTF-8 byte length can exceed that character count. An outer tool may add its own
+envelope, duplicate fields or impose a smaller limit; check its truncation signals
+and retain the parsed response instead of repeatedly printing whole envelopes.
+
+`integrity: verified` certifies the observed package bytes and structure against
+the supplied pins. It is not a signed provenance receipt or an atomic filesystem
+snapshot. Manifest terminal status is only stored metadata and is not returned
+as verified task state. `liveTaskChecked: false` and `chatDelivery: NOT_OBSERVED`
+remain explicit. Offline reads do not establish acceptance, execution, success,
+collection, recovery clearance or final-chat completion. Preserve the original
+review/collection evidence; live collection keeps its own fresh safety checks.
+
+Every page reverifies the package, including all chunks; there is no hash cache
+or progress ledger. This trades repeated local I/O for bounded output. Keep the
+package private and quiescent; verification observes bytes during each read and
+cannot prevent another process changing them later. Extra unrelated directory
+files are ignored and never certify completion.
+
+Invalid/missing pins, unknown/duplicate flags and invalid integers fail with
+`EXPORT_READ_USAGE` before filesystem access. A different task/body revision uses
+`EXPORT_READ_CONFLICT`; an incomplete/malformed/oversized package or unsafe file
+uses `EXPORT_READ_INVALID`. Out-of-range offsets or offsets inside a surrogate
+pair/CRLF use `EXPORT_READ_RANGE`. Both API and CLI diagnostics omit raw native
+causes, private paths and parser input. Preserve files for inspection after errors.
+
 ## Optional bounded result windows
 
 For a long result, request the relevant complete lines instead of sending the
