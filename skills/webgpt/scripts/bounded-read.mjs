@@ -4,10 +4,9 @@
 import { constants } from 'node:buffer';
 import { closeSync, constants as flags, fstatSync, lstatSync, openSync, readFileSync, readSync, statSync } from 'node:fs';
 
-export function readBytesUpTo(fd, ceiling) {
+function* readChunksUpTo(fd, ceiling) {
   if (!Number.isSafeInteger(ceiling) || ceiling < 1 || ceiling > constants.MAX_LENGTH)
     throw RangeError('invalid byte read ceiling');
-  const chunks = [];
   let total = 0, capacity = 4096, ended = false;
   while (total < ceiling && !ended) {
     // Grow small allocations gradually; do not reserve a whole 32 MiB diagnostic
@@ -19,32 +18,50 @@ export function readBytesUpTo(fd, ceiling) {
       if (count === 0) { ended = true; break; }
       used += count;
     }
-    if (used) { chunks.push(buffer.subarray(0, used)); total += used; }
+    if (used) { total += used; yield buffer.subarray(0, used); }
     capacity = Math.min(capacity * 2, 64 * 1024);
   }
+}
+
+export function readBytesUpTo(fd, ceiling) {
+  const chunks = [...readChunksUpTo(fd, ceiling)];
+  const total = chunks.reduce((size, chunk) => size + chunk.length, 0);
   // Expose only initialized bytes, including after short reads or concurrent shrink.
   return chunks.length === 1 ? chunks[0] : Buffer.concat(chunks, total);
 }
 
 // Keep explicit allowances mandatory for bounded callers. The uncapped state
 // inventory shares file validation, not a marker/result/diagnostic byte quota.
-export function readBoundedFile(file, limit, invalid, { allowLinks = false } = {}) {
-  if (typeof allowLinks !== 'boolean') throw TypeError('invalid file link policy');
+function validateLimit(limit) {
   if (!Number.isSafeInteger(limit) || limit < 0 || limit >= constants.MAX_LENGTH)
     throw RangeError('invalid file read limit');
+}
+export function readBoundedFile(file, limit, invalid, { allowLinks = false } = {}) {
+  if (typeof allowLinks !== 'boolean') throw TypeError('invalid file link policy');
+  validateLimit(limit);
   return readRegularFile(file, limit, invalid, allowLinks);
+}
+
+// Integrity-only consumers need all bytes, not a retained whole-file Buffer.
+// Chunks are <=64 KiB. Consume synchronously without retaining them, and publish
+// no verdict until this call succeeds: a later read/overflow can still fail.
+// Use the strict private-file policy; this is not a cross-request hash cache.
+export function scanBoundedFile(file, limit, invalid, consume) {
+  validateLimit(limit);
+  if (typeof consume !== 'function') throw TypeError('file chunk consumer required');
+  return readRegularFile(file, limit, invalid, false, consume);
 }
 
 export function readUnboundedFile(file, invalid) {
   return readRegularFile(file, null, invalid);
 }
 
-// One owner for regular-file materialization. null limit is private to the
+// One owner for checked regular-file reads. null limit is private to the
 // explicitly unbounded wrapper; public bounded reads still reject null limits.
 // Domain callers own authorization, decoding, hashes and error policy. Only
 // initial ENOENT means absence. BigIntStats keeps full-width identity exact;
 // descriptor validation does not provide an atomic filesystem snapshot.
-function readRegularFile(file, limit, invalid, allowLinks = false) {
+function readRegularFile(file, limit, invalid, allowLinks = false, consume) {
   if (typeof invalid !== 'function') throw TypeError('file rejection factory required');
   const regular = info => {
     if (!info.isFile() || (!allowLinks && (info.isSymbolicLink() || info.nlink !== 1n))
@@ -64,6 +81,15 @@ function readRegularFile(file, limit, invalid, allowLinks = false) {
     const stat = fstatSync(fd, { bigint: true });
     regular(stat);
     if (stat.dev !== before.dev || stat.ino !== before.ino) throw invalid('identity');
+    if (consume) {
+      let bytesRead = 0;
+      for (const chunk of readChunksUpTo(fd, limit + 1)) {
+        bytesRead += chunk.length;
+        if (bytesRead > limit) throw invalid('overflow');
+        consume(chunk);
+      }
+      return { bytesRead, stat };
+    }
     const bytes = limit === null ? readFileSync(fd) : readBytesUpTo(fd, limit + 1);
     if (limit !== null && bytes.length > limit) throw invalid('overflow');
     return { bytes, stat };

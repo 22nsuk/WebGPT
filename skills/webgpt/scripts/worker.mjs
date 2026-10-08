@@ -9,7 +9,7 @@ import { grantWorkspace, listWorkspace, probeWorkspace, readWorkspace, changeWor
 import { configuration, configurationFile } from './client.mjs';
 import { hasPendingResults, inspectPendingResults, storeResult, verifySavedResult } from './results.mjs';
 import { acquireRuntimeLock, readStateBytes, readStateMarker, createStateMarker, assertNoStateStage, writeStateBytes, parseState, fault, startupExitCode } from './runtime.mjs';
-import { protocolVersions, validateMessage, negotiateProtocol, validateArguments } from './protocol.mjs';
+import { protocolVersions, validateMessage, negotiateProtocol, validateArguments, toolSuccess } from './protocol.mjs';
 import { auditFromEnvironment, createAuditWriter } from './audit.mjs';
 import { validatedEntryPath } from './installation.mjs';
 import { windowProperties, readWindowOptions, textWindow } from './text-window.mjs';
@@ -18,13 +18,15 @@ import { readBoundedFile } from './bounded-read.mjs';
 
 const schema = properties => ({type:'object',properties,required:Object.keys(properties),additionalProperties:false});
 const str = {type:'string'};
+// See ../references/read-efficiency.md for opt-in response and integrity costs.
+const responseFormat = {type:'string',enum:['dual','text']};
 export const tools = [
   {name:'list_files',description:'List a local project directory, up to 500 entries per page. Use path . for the root. Pass nextCursor as cursor for the next page; restart without a cursor if the directory changes.',inputSchema:{...schema({token:str,path:str}),properties:{token:str,path:str,cursor:str,limit:{type:'integer',minimum:1,maximum:500}}},annotations:{readOnlyHint:true,openWorldHint:false}},
-  {name:'read_file',description:'Read a project text file up to 10 MiB of UTF-8 and its whole-file SHA256 revision. Optional offset (1-based), limit (lines) or maxChars returns a bounded window; expectedSha256 pins it to a whole-file revision. Prefer windows for large files. Missing unpinned file returns exists:false. Read the whole file before full replacement; exact oldText edits need relevant context.',inputSchema:{...schema({token:str,path:str}),properties:{token:str,path:str,...windowProperties,expectedSha256:str}},annotations:{readOnlyHint:true,openWorldHint:false}},
+  {name:'read_file',description:'Read a project text file up to 10 MiB of UTF-8 and its whole-file SHA256 revision. Optional offset (1-based), limit (lines) or maxChars returns a bounded window; expectedSha256 pins it to a whole-file revision. Prefer windows for large files. Missing unpinned file returns exists:false. Read the whole file before full replacement; exact oldText edits need relevant context. Set responseFormat:text for the same complete JSON once in content; default dual also includes structuredContent.',inputSchema:{...schema({token:str,path:str}),properties:{token:str,path:str,...windowProperties,expectedSha256:str,responseFormat}},annotations:{readOnlyHint:true,openWorldHint:false}},
   {name:'write_file',description:'Create or replace a project text file after reading; resulting UTF-8 file must fit 10 MiB. Optional oldText replaces exactly one literal span with text in an existing file; no fuzzy matching. Prefer small exact edits for large files. expectedSha256 must match the whole-file revision (null only for create without oldText). Original is backed up. No Git or shell.',inputSchema:{...schema({token:str,path:str,text:str,expectedSha256:{type:['string','null']}}),properties:{token:str,path:str,text:str,expectedSha256:{type:['string','null']},oldText:str}},annotations:{readOnlyHint:false,destructiveHint:true,openWorldHint:false}},
   {name:'delete_file',description:'Directly delete an existing local project file after reading it. Requires matching expectedSha256; original and path are saved for recovery. No directory or recursive deletion.',inputSchema:schema({token:str,path:str,expectedSha256:str}),annotations:{readOnlyHint:false,destructiveHint:true,openWorldHint:false}},
   {name:'get_task',description:'Read the assigned task and input names using its private task token. No repository or Git setup needed.',inputSchema:schema({token:str}),annotations:{readOnlyHint:true,openWorldHint:false}},
-  {name:'read_input',description:'Read one explicitly supplied input by name; no filesystem access. Optional offset (1-based), limit (lines) or maxChars returns complete lines with partial/range/nextOffset and the whole-input SHA256. Without options returns the original full text. Follow nextOffset for required context; an excerpt is not the full input.',inputSchema:{...schema({token:str,name:str}),properties:{token:str,name:str,...windowProperties}},annotations:{readOnlyHint:true,openWorldHint:false}},
+  {name:'read_input',description:'Read one explicitly supplied input by name; no filesystem access. Optional offset (1-based), limit (lines) or maxChars returns complete lines with partial/range/nextOffset and the whole-input SHA256. Without options returns the original full text. Follow nextOffset for required context; an excerpt is not the full input. Set responseFormat:text for the same complete JSON once in content; default dual also includes structuredContent.',inputSchema:{...schema({token:str,name:str}),properties:{token:str,name:str,...windowProperties,responseFormat}},annotations:{readOnlyHint:true,openWorldHint:false}},
   {name:'submit_result',description:'Save the finished task deliverable, evidence, real artifact references and limitations after feasible in-scope work and checks. Text submission does not transfer binary files. No file changes required. Terminal: stops backup checks; stop assigned changes and finish the final chat answer. Retry identical submission safely. Do not delete the chat.',inputSchema:schema({token:str,status:{type:'string',enum:['completed','failed','cancelled']},summary:str,result:str}),annotations:{readOnlyHint:false,destructiveHint:false,idempotentHint:true,openWorldHint:false}}
 ];
 export async function start({dir,port=43137,controlPort=43139,publicMcp=false,backupMs=900000,waitMs=55000,closeGraceMs=5000,now=Date.now,configFile=configurationFile(),audit=false,entryPath}={}) {
@@ -423,7 +425,7 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
           taskId:typeof token==='string'?(tasks.find(t=>t.token&&t.token===token)?.id??null):null};
         started=performance.now();writeAudit({...record,phase:'tool_received'});
       }
-      try{const out=call(m.params?.name,m.params?.arguments);result={content:[{type:'text',text:JSON.stringify(out)}],structuredContent:out,isError:false};}
+      try{const out=call(m.params?.name,m.params?.arguments);result=toolSuccess(out,m.params?.arguments?.responseFormat);}
       catch(e){result={content:[{type:'text',text:e.message}],isError:true};}
       if(record)writeAudit({...record,phase:'tool_completed',isError:result.isError,durationMs:Math.max(0,Math.round(performance.now()-started))});
     }

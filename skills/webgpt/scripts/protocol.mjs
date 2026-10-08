@@ -29,6 +29,15 @@ export function negotiateProtocol(requested) {
   return protocolVersions.includes(requested) ? requested : protocolVersions.at(-1);
 }
 
+// Text mode is an explicit read-tool opt-in, not protocol-version inference.
+// The same complete JSON remains available to text-only MCP consumers; existing
+// calls keep both fields. Error envelopes are handled separately by the worker.
+export function toolSuccess(value, responseFormat = 'dual') {
+  if (!['dual', 'text'].includes(responseFormat)) throw Error('invalid response format');
+  return { content: [{ type: 'text', text: JSON.stringify(value) }],
+    ...(responseFormat === 'dual' ? { structuredContent: value } : {}), isError: false };
+}
+
 export function validateArguments(tool, args) {
   if (!record(args)) throw Error('tool arguments must be an object');
   const { properties, required } = tool.inputSchema;
