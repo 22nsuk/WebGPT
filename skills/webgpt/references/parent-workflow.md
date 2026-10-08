@@ -156,6 +156,12 @@ node <skill>/scripts/client.mjs review <owned-task-id>
 저장 위치의 전문 또는 필요한 모든 조각을 읽고 인수한다. 원본·조각의 SHA와 순서·범위는
 manifest에 남으며, 기존 디렉터리는 덮어쓰지 않는다. Windows–WSL 간에는 실제 결과를
 소유한 환경의 Node·설정으로 저장하고 소비 환경에서 바이트를 확인한다.
+저장 후에는 `read-export <absolute-directory> --task-id <owned-task-id>
+--expected-sha256 <기존-review의-SHA>`로 controller 없이 다시 검증·조회한다.
+매번 전체 패키지를 검증하고 JSON 이스케이프·메타데이터·줄바꿈까지 20,000자 이내로 반환한다.
+`--offset <nextOffset>`을 이어 읽되, 이 값은 0부터 시작하는 UTF-16 위치이며 `review`의 행 번호와 다르다.
+원래 review의 ID·SHA를 유지하고 마지막 `nextOffset: null`만으로 앞부분도 읽었다고 판단하지 않는다.
+이 검증은 저장본의 바이트·구조 검사이며 현재 작업 상태나 최종 채팅 답변을 확인한 것은 아니다.
 채팅 조회의 `truncated`는 전문 미확보다. `hasMore: false`만으로 전체 열람으로 처리하거나
 같은 제한 조회를 반복하지 않는다. 저장된 제출 보고서와 최종 채팅 답변을 구분하며,
 로컬 메시지 파일 생성이 실제 ChatGPT의 여러 메시지 게시를 의미하지는 않는다.
