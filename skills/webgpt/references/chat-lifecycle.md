@@ -28,6 +28,11 @@ After saving output and recording its accepted/rejected/partial disposition, inc
    tool result, absent Stop button alone, or "stopped" message is insufficient. Preserve the final
    answer and compare material claims with the saved result. A disagreement or new caveat needs
    a recorded disposition, not silent replacement of the collected artifact.
+   If a chat read reports truncation, record partial content coverage even when the
+   turn is completed and has no older-page cursor. A verified local result export
+   proves the submitted deliverable, not the missing final-chat text. Its numbered
+   message files are local copies, not observed assistant messages. Use an authorized
+   full-chat read if available; otherwise retain the missing-coverage limitation.
    Stop generation only for an explicit user cancellation or a concrete safety reason. Record an
    interruption as such, retain partial output and do not claim the final answer was received.
    If access is lost, preserve the pending chat and report the missing observation; no new task or
