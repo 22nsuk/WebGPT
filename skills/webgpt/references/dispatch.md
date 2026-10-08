@@ -10,8 +10,11 @@ retirement. Existing wait/collect behavior and default chat retention are unchan
 
 Choose **one canonical private JSON ledger per task** in an existing private directory outside the
 project/skill. All cooperating parents, CLI calls and resumed sessions must use that same file.
-The helper extends its `dispatch` property and preserves other objective, ownership, output,
-work/cleanup and handoff fields. Do not point it at controller `state.json`, configuration, or a
+Dispatch commands extend its `dispatch` property and preserve other objective, ownership, output,
+work/cleanup and handoff fields. Optional `record-review` appends separate `reviewEvidence`
+observations after confirmed dispatch; `inspect-review` reports their latest summary without
+changing dispatch or controller state. See [review-evidence.md](review-evidence.md).
+Do not point the ledger helper at controller `state.json`, configuration, or a
 multi-task ledger. Migrate the relevant task record explicitly first; never initialize a new ledger
 for an already-dispatched task merely because its old record lacks this schema. Keep the original
 record/evidence and reconcile the retained chat/controller before adopting the new flow.

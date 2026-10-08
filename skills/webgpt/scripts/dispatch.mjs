@@ -6,6 +6,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync, writeFileSync, renameSync, unlinkSync, realpathSync } from 'node:fs';
 import { dirname, basename, isAbsolute, join } from 'node:path';
 import { readBoundedFile } from './bounded-read.mjs';
+import { buildReviewEvidence, appendReviewEvidence, reviewEvidenceSummary } from './review-evidence.mjs';
 
 const MAX_BYTES = 2 * 1024 * 1024;
 const phases = ['registered', 'prepared', 'sending', 'uncertain', 'submitted'];
@@ -31,7 +32,7 @@ const defaults = {
 };
 const storageStages = ['payload_read', 'ledger_path', 'lock_acquire', 'ledger_read', 'ledger_write',
   'ledger_publish'];
-const cliActions = ['preflight', 'inspect', 'recover', 'register', 'prepare', 'begin', 'confirm'];
+const cliActions = ['preflight', 'inspect', 'recover', 'register', 'prepare', 'begin', 'confirm', 'record-review', 'inspect-review'];
 const cliReasons = ['arguments_invalid', 'ledger_path_invalid', 'payload_path_invalid', 'payload_missing',
   'payload_file_invalid', 'payload_utf8_invalid', 'payload_json_invalid', 'input_shape_invalid', 'input_invalid'];
 const diagnosticStages = new Set([...Object.values(defaults).map(([stage]) => stage), ...storageStages,
@@ -379,6 +380,44 @@ export async function inspectDispatch(file) {
   return withLedger(file, ledger => safeSummary(getDispatch(ledger)));
 }
 
+function reviewTarget(d, receipt) {
+  if (d.state !== 'submitted' || receipt.taskId !== d.taskId
+      || receipt.chat.url !== d.confirmation.target.chatUrl
+      || receipt.chat.replyToUserMessageId !== d.confirmation.userMessage.id) fail('INPUT');
+}
+function retainedReviews(ledger) {
+  if (!Object.hasOwn(ledger, 'reviewEvidence')) return [];
+  const entries = ledger.reviewEvidence;
+  try {
+    if (!Array.isArray(entries) || entries.length === 0) fail('LEDGER');
+    appendReviewEvidence(entries, entries.at(-1));
+    for (const entry of entries) reviewTarget(getDispatch(ledger), entry);
+  } catch { fail('LEDGER'); }
+  return entries;
+}
+const reviewSummary = (entries, appended = false) => ({ observationCount: entries.length, appended,
+  review: entries.length ? reviewEvidenceSummary(entries.at(-1)) : null,
+  controllerChanged: false, browserChecked: false });
+
+// Same private ledger and lock; this operation never mutates dispatch or controller state.
+export async function recordDispatchReview(file, spec) {
+  return withLedger(file, (ledger, save) => {
+    const d = getDispatch(ledger), entries = retainedReviews(ledger);
+    // Reject another task/chat before opening its export. Null initial chat URLs
+    // are bound by the actual confirmed user message, not the original new tab.
+    if (!record(spec) || !record(spec.chat)) fail('INPUT');
+    reviewTarget(d, spec);
+    let receipt, update;
+    try { receipt = buildReviewEvidence(spec); update = appendReviewEvidence(entries, receipt); }
+    catch { fail('INPUT'); }
+    if (update.appended) { ledger.reviewEvidence = update.entries; save(); }
+    return reviewSummary(update.entries, update.appended);
+  });
+}
+export async function inspectDispatchReview(file) {
+  return withLedger(file, ledger => { getDispatch(ledger); return reviewSummary(retainedReviews(ledger)); });
+}
+
 // Task-bound, allowlisted evidence for the parent verification workflow. This
 // validates recorded observations, not the current browser or result quality.
 export async function inspectDispatchEvidence(file, taskId) {
@@ -431,8 +470,9 @@ export async function dispatchCli(args) {
     if (!cliActions.includes(action)) throw new DispatchError('INPUT', 'cli_arguments', 'unknown_action');
     // Only a fixed, validated action can enter a public reason. No supplied values are copied.
     const inputError = (reason, stage) => new DispatchError('INPUT', stage, action + '_' + reason);
-    const noPayload = { inspect: inspectDispatch, recover: recoverDispatch };
-    const withPayload = { register: registerDispatch, prepare: prepareDispatch, begin: beginDispatch, confirm: confirmDispatch };
+    const noPayload = { inspect: inspectDispatch, recover: recoverDispatch, 'inspect-review': inspectDispatchReview };
+    const withPayload = { register: registerDispatch, prepare: prepareDispatch, begin: beginDispatch, confirm: confirmDispatch,
+      'record-review': recordDispatchReview };
     const count = action === 'preflight' ? 1 : Object.hasOwn(noPayload, action) ? 2 : 3;
     if (args.length !== count) throw inputError('arguments_invalid', 'cli_arguments');
     if (action === 'preflight') return preflightDispatchRuntime();

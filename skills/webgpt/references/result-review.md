@@ -269,6 +269,10 @@ causes, private paths and parser input. Preserve files for inspection after erro
 
 ## Optional bounded result windows
 
+After reading the required report content and observing the final chat, use
+[review-evidence.md](review-evidence.md) to retain those separate assessments.
+Export integrity alone does not establish either semantic review or chat coverage.
+
 For a long result, request the relevant complete lines instead of sending the
 entire body through the parent's output channel again:
 
