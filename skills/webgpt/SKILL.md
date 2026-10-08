@@ -117,7 +117,14 @@ Do independent authorized parent work while the worker runs; do not race its fil
    Keep legacy evidence and independent attachment review; no silent record upgrade/reset.
 4. **Wait and read for review.** For one owned task, use `reviewTask` or
    `client.mjs review <owned-task-id>`: it waits and returns the verified full result as `review.content`
-   without collecting. See [result-review.md](references/result-review.md). Use `waitForTasks` or
+   without collecting. See [result-review.md](references/result-review.md).
+   For a long result, use `review <owned-task-id> --save-result <new-absolute-private-directory>`
+   to save the exact verified full text and numbered message files of at most 20,000 UTF-16 units
+   including headers. This returns `review.saved` instead of `review.content`; inspect the saved
+   content before acceptance. These are local copies, not separately posted ChatGPT messages.
+   If a chat read is truncated, do not repeatedly raise its limit or treat `hasMore: false` as
+   full-message coverage. Use the verified result for the submitted deliverable and record any
+   unobserved final-chat remainder separately. Use `waitForTasks` or
    `client.mjs wait <owned-task-id> ...` for metadata-only or multiple-task waits. Empty renewals stay
    in the client. A null `review` is not success: handle the returned recovery/interruption/due-backup
    or settled-without-event notice. Every **15 minutes**, inspect each due unfinished chat once;

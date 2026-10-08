@@ -143,12 +143,22 @@ node <skill>/scripts/client.mjs register <private-task.json>
 node <skill>/scripts/client.mjs review <owned-task-id>
 ```
 
-`review`는 기존 작업별 대기와 SHA 검증·전체 본문 읽기를 한 호출로 묶는 **읽기 전용**
+기본 `review`는 기존 작업별 대기와 SHA 검증·전체 본문 읽기를 한 호출로 묶는 **읽기 전용**
 부모 명령이다. 반환된 `review.content`는 검증한 동일 바이트를 해석한 텍스트이며,
 내용을 표시하려고 파일을 다시 열 필요가 없다. 수용·수집·토큰 회수는 하지 않는다.
 `review: null`이면 복구/중단/백업 확인/이벤트 없는 종료 상태를 살펴야 하며 성공으로
 취급하지 않는다. 여러 작업의 메타데이터만 기다릴 때는 기존 `wait <id> ...`를 유지한다.
 전체 반환 계약·비공개 출력·크기 제한은 [result-review.md](result-review.md)에 있다.
+
+긴 결과는 `review <owned-task-id> --save-result <new-absolute-private-directory>`로
+검증한 전문과 헤더 포함 20,000자(UTF-16 단위) 이하의 번호별 메시지 파일을 함께 저장한다.
+이 명시적 옵션은 로컬 파일을 쓰며 `review.content` 대신 `review.saved`를 반환한다.
+저장 위치의 전문 또는 필요한 모든 조각을 읽고 인수한다. 원본·조각의 SHA와 순서·범위는
+manifest에 남으며, 기존 디렉터리는 덮어쓰지 않는다. Windows–WSL 간에는 실제 결과를
+소유한 환경의 Node·설정으로 저장하고 소비 환경에서 바이트를 확인한다.
+채팅 조회의 `truncated`는 전문 미확보다. `hasMore: false`만으로 전체 열람으로 처리하거나
+같은 제한 조회를 반복하지 않는다. 저장된 제출 보고서와 최종 채팅 답변을 구분하며,
+로컬 메시지 파일 생성이 실제 ChatGPT의 여러 메시지 게시를 의미하지는 않는다.
 
 비어 있는 HTTP 갱신은 클라이언트 내부에 남긴다. 이벤트/복구 신호/15분 백업 확인 시점에만
 해당 미완료 채팅을 확인하고, 계속 진행 중이라는 이유로 재전송하지 않는다. 부모 실행이 끝난

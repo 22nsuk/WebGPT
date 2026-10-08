@@ -7,6 +7,7 @@ import { fault } from './runtime.mjs';
 import { readVerifiedResult, verifySavedResult } from './results.mjs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { readWindowOptions, textWindow } from './text-window.mjs';
+import { saveReviewedResult, validExportPath } from './result-export.mjs';
 
 // Decode user-authored local JSON without silently replacing invalid wire bytes.
 // TextDecoder accepts one leading UTF-8 BOM; BOMs inside strings stay unchanged.
@@ -179,24 +180,27 @@ export function verifyResult(event, config) {
   return verifySavedResult(event, config.dataDir);
 }
 
-const reviewUsage = 'usage: client.mjs review <task-id> [--offset N] [--limit N] [--max-chars N] [--expected-sha256 SHA]';
+const reviewUsage = 'usage: client.mjs review <task-id> [--offset N] [--limit N] [--max-chars N] [--expected-sha256 SHA] [--save-result <new-absolute-directory>]';
 function reviewReadOptions(options) {
   if (!options || typeof options !== 'object' || Array.isArray(options)
-      || Object.keys(options).some(key => !['offset', 'limit', 'maxChars', 'expectedSha256', 'signal', 'retryDelays'].includes(key)))
+      || Object.keys(options).some(key => !['offset', 'limit', 'maxChars', 'expectedSha256', 'saveResult', 'signal', 'retryDelays'].includes(key)))
     throw Object.assign(Error(reviewUsage), { code: 'REVIEW_USAGE' });
-  const { offset, limit, maxChars, expectedSha256, signal, retryDelays } = options;
+  const { offset, limit, maxChars, expectedSha256, saveResult, signal, retryDelays } = options;
+  if (saveResult !== undefined && (!validExportPath(saveResult)
+      || [offset, limit, maxChars].some(value => value !== undefined)))
+    throw Object.assign(Error(reviewUsage), { code: 'REVIEW_USAGE' });
   if (expectedSha256 !== undefined && (typeof expectedSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(expectedSha256)))
     throw Object.assign(Error(reviewUsage), { code: 'REVIEW_USAGE' });
-  try { return { range: readWindowOptions({ offset, limit, maxChars }), expectedSha256, signal, retryDelays }; }
+  try { return { range: readWindowOptions({ offset, limit, maxChars }), expectedSha256, saveResult, signal, retryDelays }; }
   catch (cause) { throw Object.assign(Error(reviewUsage, { cause }), { code: 'REVIEW_USAGE' }); }
 }
 
-// One parent call waits and reads the verified result, but never accepts work,
-// collects, cancels, clears a backup deadline, or hides a recovery notice.
+// One parent call waits and reads the verified result, optionally exporting it locally,
+// but never accepts, collects, cancels, clears a backup deadline or hides recovery.
 export async function reviewTask(id, config = configuration(), options = {}) {
   // Reject unknown names rather than silently dropping a bound/pin. Capture this
   // invocation's values before waiting; the caller may reuse its options object.
-  const { range, expectedSha256, signal, retryDelays } = reviewReadOptions(options);
+  const { range, expectedSha256, saveResult, signal, retryDelays } = reviewReadOptions(options);
   const snapshot = await waitForTasks([id], config, { signal, retryDelays });
   signal?.throwIfAborted();
   if (snapshot.events.length > 1 || snapshot.events.some(event => !['completed', 'failed', 'cancelled'].includes(event.status)))
@@ -222,6 +226,13 @@ export async function reviewTask(id, config = configuration(), options = {}) {
   // Slice only the same full-file bytes that passed the path/link/size/SHA/UTF-8
   // checks. This bounds returned text, not disk reads, and never caches a verdict.
   let content = readVerifiedResult(event, config.dataDir), window = {};
+  if (saveResult !== undefined) {
+    signal?.throwIfAborted();
+    let saved;
+    try { saved = saveReviewedResult({ ...event, content, integrity: 'verified' }, saveResult); }
+    catch (cause) { throw Object.assign(Error('result export failed; preserve partial files and inspect'), { code: 'REVIEW_EXPORT', cause }); }
+    return { ...snapshot, review: { ...event, integrity: 'verified', saved }, browserChecked: false };
+  }
   if (range) {
     let selected;
     try { selected = textWindow(content, range, 'result'); }
@@ -442,15 +453,15 @@ if (executeCli) {
         throw Error('wait input must be an object with ids or id');
       result = await waitForTasks(file === null ? args : saved.ids ?? [saved.id]);
     } else if (action === 'review') {
-      const options = {}, flags = { '--offset': 'offset', '--limit': 'limit', '--max-chars': 'maxChars', '--expected-sha256': 'expectedSha256' };
+      const options = {}, flags = { '--offset': 'offset', '--limit': 'limit', '--max-chars': 'maxChars', '--expected-sha256': 'expectedSha256', '--save-result': 'saveResult' };
       if (!isTaskId(args[0]) || args.length % 2 !== 1)
         throw Object.assign(Error(reviewUsage), { code: 'REVIEW_USAGE' });
       for (let i = 1; i < args.length; i += 2) {
         const key = flags[args[i]], value = args[i + 1];
         if (!Object.hasOwn(flags, args[i]) || Object.hasOwn(options, key)
-            || (key !== 'expectedSha256' && !/^[1-9][0-9]*$/.test(value)))
+            || (!['expectedSha256', 'saveResult'].includes(key) && !/^[1-9][0-9]*$/.test(value)))
           throw Object.assign(Error(reviewUsage), { code: 'REVIEW_USAGE' });
-        options[key] = key === 'expectedSha256' ? value : Number(value);
+        options[key] = ['expectedSha256', 'saveResult'].includes(key) ? value : Number(value);
       }
       reviewReadOptions(options); // CLI usage failures must not touch configuration or the controller.
       result = await reviewTask(args[0], configuration(), options);
@@ -481,10 +492,11 @@ if (executeCli) {
         message: 'Handoff preparation failed; inspect private inputs and references/worker-handoff.md.' }));
     } else if (action === 'review') {
       // Do not echo a controller body, native path, result content or credentials.
-      const code = ['REVIEW_USAGE', 'REVIEW_RANGE', 'REVIEW_REVISION_CONFLICT', 'REVIEW_UNCONFIRMED', 'RESULT_INVALID', 'STATE_INVALID', 'ENOENT'].includes(error.code) ? error.code : 'REVIEW_FAILED';
+      const code = ['REVIEW_USAGE', 'REVIEW_RANGE', 'REVIEW_REVISION_CONFLICT', 'REVIEW_UNCONFIRMED', 'REVIEW_EXPORT', 'RESULT_INVALID', 'STATE_INVALID', 'ENOENT'].includes(error.code) ? error.code : 'REVIEW_FAILED';
       const message = code === 'REVIEW_USAGE' ? reviewUsage
         : code === 'REVIEW_RANGE' ? 'result range is unavailable; adjust bounds or review the whole result'
         : code === 'REVIEW_REVISION_CONFLICT' ? 'saved result revision differs; inspect before starting a new review'
+        : code === 'REVIEW_EXPORT' ? 'result export failed; preserve partial files and inspect the private destination'
         : 'result review failed; preserve evidence and inspect the owned task';
       console.error('WebGPT: ' + JSON.stringify({ code, message }));
     } else if (action === 'collect'

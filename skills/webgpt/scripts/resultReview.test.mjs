@@ -74,6 +74,47 @@ async function observeResultReads(t, f, run) {
   return { opens, bytes };
 }
 
+test('review CLI export returns small metadata and exact full/chunk files without collection', async t => {
+  const content = '\ufeff한국어 🧪\r\n'.repeat(4000), f = await fixture(t, { content });
+  const destination = join(f.dir, 'export');
+  const { stdout, stderr } = await f.runCli(['review', 'owned', '--save-result', destination, '--expected-sha256', f.event.sha256]);
+  const result = JSON.parse(stdout);
+  assert.equal(stderr, ''); assert.ok(stdout.length < 3000);
+  assert.equal(result.review.content, undefined); assert.equal(result.review.integrity, 'verified');
+  assert.equal(result.browserChecked, false);
+  assert.deepEqual(fs.readFileSync(result.review.saved.full.path), Buffer.from(content));
+  assert.ok(result.review.saved.messageCount > 1);
+  assert.deepEqual(f.calls, [{ method: 'GET', path: '/wait?id=owned' }, { method: 'GET', path: '/reconcile?id=owned' }]);
+  assert.equal(fs.readFileSync(join(f.dir, 'state.json'), 'utf8'), 'owned-evidence');
+});
+
+test('export reads source once and refuses window combinations before controller access', async t => {
+  const f = await fixture(t), destination = join(f.dir, 'export');
+  for (const options of [{ saveResult: 'relative' }, { saveResult: null },
+    { saveResult: destination, offset: 1 }, { saveResult: destination, maxChars: 8000 }, { saveResult: destination, limit: 1 }])
+    await assert.rejects(reviewTask('owned', f.config, options), { code: 'REVIEW_USAGE' });
+  assert.equal(f.calls.length, 0);
+  const reads = await observeResultReads(t, f, () => reviewTask('owned', f.config, { saveResult: destination }));
+  assert.equal(reads.opens, 1); assert.equal(reads.bytes, Buffer.byteLength(text));
+  await assert.rejects(f.runCli(['review', 'owned', '--save-result', destination]), error => {
+    assert.equal(error.stdout, ''); assert.match(error.stderr, /REVIEW_EXPORT/);
+    assert.ok(!error.stderr.includes(f.dir)); return true;
+  });
+});
+
+test('export creates nothing on SHA mismatch, source damage or recovery notice', async t => {
+  const f = await fixture(t), destination = join(f.dir, 'export');
+  await assert.rejects(reviewTask('owned', f.config, { saveResult: destination, expectedSha256: '0'.repeat(64) }),
+    { code: 'REVIEW_REVISION_CONFLICT' });
+  assert.equal(fs.existsSync(destination), false);
+  fs.writeFileSync(f.artifact, 'damaged');
+  await assert.rejects(reviewTask('owned', f.config, { saveResult: destination }), { code: 'RESULT_INVALID' });
+  assert.equal(fs.existsSync(destination), false);
+  f.reconcile(value => { value.tasks[0].pendingResults = ['inspect']; return value; });
+  assert.equal((await reviewTask('owned', f.config, { saveResult: destination })).review, null);
+  assert.equal(fs.existsSync(destination), false);
+});
+
 for (const status of ['completed', 'failed', 'cancelled']) test(`review preserves ${status}, exact text and one-read cost without retirement`, async t => {
   const f = await fixture(t, { status });
   const reads = await observeResultReads(t, f, async () => {
