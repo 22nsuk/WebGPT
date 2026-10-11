@@ -48,7 +48,8 @@ For revised/manual assignments and parent-only validation gaps, the optional
 to narrow check feedback; it does not execute, dispatch or accept work.
 For long packets, `handoff <absolute-spec.json> --save <new-absolute-private-file>`
 returns a small receipt; `read-handoff <absolute-file> --expected-sha256 <saved.sha256>`
-pages that saved packet within 20,000 UTF-16 units, including escaping.
+pages that saved packet with each complete serialized JSON response limited to
+20,000 UTF-16 code units, including escaping and the output newline.
 
 <a id="give-the-worker-a-useful-part-of-the-task"></a>
 
