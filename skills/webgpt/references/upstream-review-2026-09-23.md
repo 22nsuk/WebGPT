@@ -62,5 +62,5 @@ This integration's tests run with disposable directories and local loopback traf
 source Git blob hashes were checked before execution. The local environment is Linux
 with Node 22.16.0. The full existing repository suite, Windows/macOS and live ChatGPT,
 tunnel and installed service workflows require separate validation. Exact local test
-counts and hosted CI observations are recorded in the integration PR, not inferred
-from upstream test counts. No main-branch merge or production deployment is included.
+counts and hosted CI observations are not inferred from upstream test counts.
+No main-branch merge or production deployment is included.
