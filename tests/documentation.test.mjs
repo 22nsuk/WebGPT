@@ -8,8 +8,12 @@ import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const refs = 'skills/webgpt/references/';
-const documents = ['README.md', 'README.ko.md', refs + 'install-manual.md',
-  refs + 'install-manual.ko.md', refs + 'upstream-review-2026-09-28.md', refs + 'worker-handoff.md'];
+// Parent guides now route to canonical contracts instead of repeating them.
+// Check those links in both repository and standalone installed-skill layouts.
+const documents = ['README.md', 'README.ko.md', 'skills/webgpt/SKILL.md', refs + 'install-manual.md',
+  refs + 'install-manual.ko.md', refs + 'upstream-review-2026-09-28.md', refs + 'worker-handoff.md',
+  refs + 'parent-workflow.md', refs + 'usage.md', refs + 'collection-details.md',
+  refs + 'browser-use-comparison.md', refs + 'upstream-review-2026-09-23.md'];
 const normalizeNewlines = text => text.replace(/\r\n/g, '\n');
 const read = path => normalizeNewlines(readFileSync(join(root, path), 'utf8'));
 // A deliberately small checker for these authored Markdown files, not a general renderer.
@@ -58,7 +62,7 @@ test('documentation links resolve to real files and anchors', () => {
 
 test('installed guides do not require the surrounding repository', () => {
   const skill = join(root, 'skills/webgpt');
-  for (const file of documents.filter(file => file.startsWith(refs))) {
+  for (const file of documents.filter(file => file.startsWith('skills/webgpt/'))) {
     for (const link of localLinks(read(file))) checkLink(skill, relative(skill, join(root, file)), link);
   }
 });
