@@ -94,6 +94,20 @@ The comparison resolves both roots through the native filesystem, including Wind
 saved grants are checked again on file calls. Ordinary short-path project grants and registration
 retries remain supported when they refer to the same directory identity and access mode.
 
+New grants store `device` and `inode` as canonical unsigned decimal strings read from
+native BigInt metadata. Keep these fields as strings in task/reconciliation output;
+converting them to JavaScript Numbers can make different folders compare equal.
+Retained numeric identities are not rewritten. Nonnegative safe integers remain
+compatible through exact representation normalization, including duplicate registration
+and parent verification. Unsafe or fractional legacy numbers remain inspectable, but
+file access and duplicate registration are refused and readiness marks the workspace
+unavailable. Supplied inputs, unrelated tasks, recovery evidence and explicit cancellation
+remain available. Inspect and retire the original task before explicitly authorizing a
+new grant; never reconstruct lost identifier bits from the current path or use this
+repair as permission to resend a browser message. Update worker and client together.
+Older workers cannot load new string identities; rollback must preserve the matching
+runtime backup, not convert identities back to Numbers.
+
 
 ### Worker tool reference
 

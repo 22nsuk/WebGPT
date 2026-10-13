@@ -61,8 +61,8 @@ test('workspace probe rejects invalid or stale grants before opening a directory
 
 test('workspace probe retains named and native Git-root boundaries', async t => {
   const f = project(t), git = join(f.base, '.git'); fs.mkdirSync(git);
-  const stat = fs.lstatSync(git);
-  assert.throws(() => probeWorkspace({ root: git, device: stat.dev, inode: stat.ino, mode: 'read' }), /Git metadata/);
+  const stat = fs.lstatSync(git, { bigint: true });
+  assert.throws(() => probeWorkspace({ root: git, device: stat.dev.toString(), inode: stat.ino.toString(), mode: 'read' }), /Git metadata/);
   // Keep the same underlying project inode but redirect an ancestor into .git.
   fs.renameSync(f.root, join(git, 'project'));
   const alias = join(f.base, 'alias');

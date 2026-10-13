@@ -4,6 +4,7 @@ import { hostname } from 'node:os';
 import { isAbsolute, resolve } from 'node:path';
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, renameSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { readBoundedFile, readBytesUpTo, readUnboundedFile } from './bounded-read.mjs';
+import { validStoredWorkspaceIdentity } from './workspace-identity.mjs';
 
 export const fault = (code, message) => Object.assign(Error(message), { code, retryable: false });
 const record = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -208,8 +209,8 @@ export function parseState(bytes, dir) {
         && (task.artifact !== resolve(dir, task.id + '.result.txt') || !/^[a-f0-9]{64}$/.test(task.sha256 ?? '')
           || typeof task.summary !== 'string')) invalid();
     if (task.workspace != null && (!record(task.workspace) || typeof task.workspace.root !== 'string' || !isAbsolute(task.workspace.root)
-        || !['read', 'edit'].includes(task.workspace.mode) || !Number.isFinite(task.workspace.device)
-        || !Number.isFinite(task.workspace.inode))) invalid();
+        || !['read', 'edit'].includes(task.workspace.mode) || !validStoredWorkspaceIdentity(task.workspace.device)
+        || !validStoredWorkspaceIdentity(task.workspace.inode))) invalid();
   }
   return tasks;
 }

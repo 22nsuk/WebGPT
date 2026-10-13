@@ -19,8 +19,8 @@ function fixture(t, name = '.git', nested = false, beforeCleanup = () => {}) {
   const root = nested ? join(metadata, 'hooks') : metadata, dir = join(base, 'runtime');
   fs.mkdirSync(root, { recursive: true });
   fs.writeFileSync(join(root, 'config'), original);
-  const info = fs.lstatSync(root);
-  const retained = mode => ({ root, mode, device: info.dev, inode: info.ino });
+  const info = fs.lstatSync(root, { bigint: true });
+  const retained = mode => ({ root, mode, device: info.dev.toString(), inode: info.ino.toString() });
   return { base, project, metadata, root, dir, retained };
 }
 function alias(t, target, path) {
@@ -90,8 +90,8 @@ test('every access rechecks canonical ancestors even when the retained root iden
   const grant = grantWorkspace({ root, mode: 'edit' });
   const moved = join(f.metadata, 'moved'); fs.renameSync(container, moved);
   if (!alias(t, moved, container)) return;
-  const current = fs.lstatSync(grant.root);
-  assert.equal(current.dev, grant.device); assert.equal(current.ino, grant.inode);
+  const current = fs.lstatSync(grant.root, { bigint: true });
+  assert.equal(current.dev.toString(), grant.device); assert.equal(current.ino.toString(), grant.inode);
   rejectFileTools(f, grant);
 });
 
