@@ -139,7 +139,11 @@ and byte checks before success. Windows permissions inherit from the private par
 no ACL is changed. Existing destinations (including links) are never overwritten.
 Windows alternate-stream paths are rejected. Native absolute file paths must be
 well-formed, at most 4,096 UTF-16 units and contain no control characters or trailing
-separator. The receipt reports the canonical parent location. A failure preserves
+separator. Before creating the packet file, saving checks that the native canonical
+parent path is valid UTF-8, including the target of an ordinary parent alias.
+Non-UTF-8 native names are refused, never replaced with a different `U+FFFD` spelling.
+Normal Unicode, literal U+FFFD and parent aliases remain supported without name
+normalization or renaming. The receipt reports the canonical parent location. A failure preserves
 any created partial file; inspect it and choose a new destination for an intentional
 retry. An interrupted write may leave a file without a successful receipt; its
 existence alone does not prove successful saving. There is no automatic deletion,

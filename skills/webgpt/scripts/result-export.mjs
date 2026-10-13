@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import { createHash } from 'node:crypto';
 import { dirname, basename, isAbsolute, join } from 'node:path';
 import { readBoundedFile } from './bounded-read.mjs';
+import { nativeUtf8Path } from './native-path.mjs';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
 const fail = () => { throw Object.assign(Error('result export unavailable; preserve files and inspect'), { code: 'REVIEW_EXPORT' }); };
@@ -48,7 +49,7 @@ export function saveReviewedResult(review, destination) {
       || review.integrity !== 'verified' || review.partial !== undefined
       || !['completed', 'failed', 'cancelled'].includes(review.status)) fail();
   const parts = resultMessages(review.id, review.content, review.sha256);
-  const parent = fs.realpathSync.native(dirname(destination));
+  const parent = nativeUtf8Path(dirname(destination), fail);
   const directory = join(parent, basename(destination));
   fs.mkdirSync(directory, { mode: 0o700 }); // No recursive create, no existing directory reuse.
   const owner = fs.lstatSync(directory, { bigint: true });

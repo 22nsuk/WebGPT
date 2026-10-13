@@ -4,6 +4,7 @@ import { basename, dirname, isAbsolute, join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { readBoundedFile } from './bounded-read.mjs';
 import { boundedTextPage } from './bounded-text-page.mjs';
+import { nativeUtf8Path } from './native-path.mjs';
 
 export const HANDOFF_MAX_BYTES = 128 * 1024;
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -33,7 +34,7 @@ export function saveHandoffPacket(packet, destination) {
     const bytes = Buffer.from(JSON.stringify(packet));
     if (bytes.length > HANDOFF_MAX_BYTES) throw failure();
     packetText(bytes);
-    const parent = fs.realpathSync.native(dirname(destination));
+    const parent = nativeUtf8Path(dirname(destination), failure);
     const file = join(parent, basename(destination));
     // Bound receipt paths too; validate before creating anything.
     if (!validHandoffPath(file)) throw failure();
