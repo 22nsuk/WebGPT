@@ -13,7 +13,7 @@ const refs = 'skills/webgpt/references/';
 const documents = ['README.md', 'README.ko.md', 'skills/webgpt/SKILL.md', refs + 'install-manual.md',
   refs + 'install-manual.ko.md', refs + 'upstream-review-2026-09-28.md', refs + 'worker-handoff.md',
   refs + 'parent-workflow.md', refs + 'usage.md', refs + 'collection-details.md',
-  refs + 'browser-use-comparison.md', refs + 'upstream-review-2026-09-23.md'];
+  refs + 'browser-use-comparison.md', refs + 'upstream-review-2026-09-23.md', refs + 'workspace.md'];
 const normalizeNewlines = text => text.replace(/\r\n/g, '\n');
 const read = path => normalizeNewlines(readFileSync(join(root, path), 'utf8'));
 // A deliberately small checker for these authored Markdown files, not a general renderer.
@@ -64,6 +64,22 @@ test('installed guides do not require the surrounding repository', () => {
   const skill = join(root, 'skills/webgpt');
   for (const file of documents.filter(file => file.startsWith('skills/webgpt/'))) {
     for (const link of localLinks(read(file))) checkLink(skill, relative(skill, join(root, file)), link);
+  }
+});
+
+test('English, Korean and installed guides expose the literal task-ID command forms', () => {
+  const commands = [
+    ['wait', '--', '--file', '--resume'],
+    ['cancel', '--', '--file'],
+    ['collect', '--', '--resume'],
+    ['collect', '--resume', '--', '--resume'],
+  ];
+  for (const file of ['README.md', 'README.ko.md', refs + 'workspace.md']) {
+    const examples = new Set([...read(file).matchAll(/^node <skill>\/scripts\/client\.mjs (.+)$/gm)]
+      .map(([, args]) => JSON.stringify(args.trim().split(/\s+/))));
+    for (const command of commands) {
+      assert.ok(examples.has(JSON.stringify(command)), file + ' is missing the example: ' + command.join(' '));
+    }
   }
 });
 

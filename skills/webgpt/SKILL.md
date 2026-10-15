@@ -133,8 +133,10 @@ Do independent authorized parent work while the worker runs; do not race its fil
    If a chat read is truncated, do not repeatedly raise its limit or treat `hasMore: false` as
    full-message coverage. Use the verified result for the submitted deliverable and record any
    unobserved final-chat remainder separately. Use `waitForTasks` or
-   `client.mjs wait <owned-task-id> ...` for metadata-only or multiple-task waits. Empty renewals stay
-   in the client. A null `review` is not success: handle the returned recovery/interruption/due-backup
+   `client.mjs wait <owned-task-id> ...` for metadata-only or multiple-task waits.
+   For IDs resembling options, use the [literal task-ID syntax](references/workspace.md#literal-task-ids)
+   for `wait`, `ack`, `checked`, `cancel`, and `collect`. Empty renewals stay in the client.
+   A null `review` is not success: handle the returned recovery/interruption/due-backup
    or settled-without-event notice. Every **15 minutes**, inspect each due unfinished chat once;
    this is not a task timeout. No repeated full snapshots, idle narration or resend because work
    continues. An empty event queue is not an idle worker; use `tasks` when inventory is needed.
