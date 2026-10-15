@@ -15,6 +15,7 @@ import { validatedEntryPath } from './installation.mjs';
 import { windowProperties, readWindowOptions, textWindow } from './text-window.mjs';
 import { createJsonBodyReader } from './json-body.mjs';
 import { readBoundedFile } from './bounded-read.mjs';
+import { normalizeWorkspaceIdentity } from './workspace-identity.mjs';
 
 const schema = properties => ({type:'object',properties,required:Object.keys(properties),additionalProperties:false});
 const str = {type:'string'};
@@ -526,7 +527,7 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
         if(existing) {
           if(existing.status==='running'&&!existing.collected&&existing.token&&existing.instructions===a.instructions
               &&isDeepStrictEqual(existing.inputs,a.inputs)
-              &&isDeepStrictEqual(existing.workspace?{...existing.workspace,root:realpathSync.native(existing.workspace.root)}:null,workspace))
+              &&isDeepStrictEqual(normalizeWorkspaceIdentity(existing.workspace?{...existing.workspace,root:realpathSync.native(existing.workspace.root)}:null),workspace))
             return json(res,200,{id:existing.id,token:existing.token,duplicate:true});
           throw Error('task ID already exists with different inputs, grant or terminal state');
         }

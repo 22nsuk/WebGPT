@@ -12,6 +12,7 @@ import { readVerifiedResult } from './results.mjs';
 import { readDiagnosticBytes } from './audit.mjs';
 import { inspectDispatchEvidence } from './dispatch.mjs';
 import { grantWorkspace } from './workspace.mjs';
+import { normalizeWorkspaceIdentity } from './workspace-identity.mjs';
 
 export const verificationScenarios = Object.freeze(['text', 'read', 'edit', 'resume', 'connection']);
 const metricNames = ['browserToolCalls', 'returnedBytes', 'parentInterventions', 'sendAttempts',
@@ -107,7 +108,7 @@ function workspaceCheck(dir, scenario, task) {
   try {
     const mode = projectMode(scenario);
     const expected = mode ? grantWorkspace({ root: directory(join(dir, 'project')), mode }) : null;
-    return isDeepStrictEqual(task.workspace, expected) ? 'PASS' : 'FAIL';
+    return isDeepStrictEqual(normalizeWorkspaceIdentity(task.workspace), expected) ? 'PASS' : 'FAIL';
   } catch { return 'FAIL'; }
 }
 

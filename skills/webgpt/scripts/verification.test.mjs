@@ -517,13 +517,48 @@ test('scoped reconciliation exposes recorded grant identity without credentials'
   const f = await fixture(t, 'read'), before = f.state();
   const snapshot = await request('reconcile', { ids: [f.task.id] }, f.config);
   assert.equal(snapshot.health.stateVerified, true);
-  const info = fs.lstatSync(join(f.run, 'project'));
+  const info = fs.lstatSync(join(f.run, 'project'), { bigint: true });
   assert.deepEqual(snapshot.tasks[0].workspace, {
-    root: fs.realpathSync.native(join(f.run, 'project')), mode: 'read', device: info.dev, inode: info.ino,
+    root: fs.realpathSync.native(join(f.run, 'project')), mode: 'read', device: info.dev.toString(), inode: info.ino.toString(),
   });
   const serialized = JSON.stringify(snapshot);
   for (const secret of [f.task.token, f.registration.instructions, 'controller.key']) assert.equal(serialized.includes(secret), false);
   assert.deepEqual(f.state(), before);
+});
+
+for (const [kind, alter, expected] of [
+  ['safe legacy numbers', grant => Object.assign(grant, { device: 17, inode: 42 }), 'PASS'],
+  ['unsafe legacy number', grant => { grant.inode = Number(2n ** 60n); }, 'FAIL'],
+  ['fractional legacy number', grant => { grant.inode = 42.5; }, 'FAIL'],
+  ['noncanonical string', grant => { grant.inode = '042'; }, 'FAIL'],
+  ['different exact identity', grant => { grant.inode = '43'; }, 'FAIL'],
+  ['unexpected grant property', grant => { grant.extra = true; }, 'FAIL'],
+]) test(`workspace acceptance handles ${kind} without changing retained state`, async t => {
+  let named;
+  t.after(() => { named?.mock.restore(); syncBuiltinESMExports(); });
+  const f = await fixture(t, 'read', registration => {
+    const root = fs.realpathSync.native(registration.workspace.root), native = fs.lstatSync;
+    named = t.mock.method(fs, 'lstatSync', (path, options) => {
+      const info = native(path, options);
+      if (path === root) {
+        info.dev = options?.bigint ? 17n : 17;
+        info.ino = options?.bigint ? 42n : 42;
+      }
+      return info;
+    });
+    syncBuiltinESMExports();
+  });
+  await f.submit(resultFor('read'));
+  const before = f.state();
+  const proxy = await controllerProxy(f.config, ({ phase, data, res }) => {
+    if (phase !== 'after') return false;
+    alter(data.tasks[0].workspace); replyJson(res, data); return true;
+  });
+  t.after(() => proxy.close());
+  const report = await checkVerification(f.run, { ...f.config, controlPort: proxy.port });
+  assert.equal(report.checks.workspaceGrant, expected);
+  assert.deepEqual(f.state(), before);
+  assert.deepEqual(proxy.failures, []);
 });
 
 test('missing owner proof remains BLOCKED instead of inferring no grant or healthy state', async t => {

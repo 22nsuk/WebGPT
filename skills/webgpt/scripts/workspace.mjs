@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { readBoundedFile, scanBoundedFile } from './bounded-read.mjs';
 import { readWindowOptions, textWindow } from './text-window.mjs';
 import { windowsReplacementFailure } from './windows-replacement-diagnostics.mjs';
+import { normalizeWorkspaceIdentity } from './workspace-identity.mjs';
 
 const MAX_BYTES = 10 * 1024 * 1024;
 const JOURNAL_MAX_BYTES = 1024 * 1024;
@@ -60,16 +61,16 @@ export function grantWorkspace(input) {
   if (!input || typeof input.root !== 'string' || !isAbsolute(input.root)
       || !['read','edit'].includes(input.mode) || 'read' in input || 'write' in input) throw Error('use workspace root and mode only');
   if (!input.root.isWellFormed()) throw Error('workspace root must be well-formed Unicode');
-  const root = gitSafeRoot(input.root), stat = lstatSync(root);
+  const root = gitSafeRoot(input.root), stat = lstatSync(root,{bigint:true});
   if (!stat.isDirectory() || root === parse(root).root || root === realpathSync.native(homedir())) throw Error('project root required');
-  return {root, device:stat.dev, inode:stat.ino, mode:input.mode};
+  return {root, device:stat.dev.toString(), inode:stat.ino.toString(), mode:input.mode};
 }
 function target(grant,path,writing=false,createParents=false,directory=false) {
   if (!(directory && path === '.')) relativeFile(path);
   if (!grant || !['read','edit'].includes(grant.mode) || writing && grant.mode!=='edit') throw Error('workspace absent or read-only');
   if ('read' in grant || 'write' in grant) throw Error('legacy file grant; register a project workspace');
-  const rootStat = lstatSync(grant.root);
-  if (rootStat.isSymbolicLink() || rootStat.dev!==grant.device || rootStat.ino!==grant.inode) throw Error('workspace root changed');
+  const rootStat = lstatSync(grant.root,{bigint:true}), identity = normalizeWorkspaceIdentity(grant);
+  if (rootStat.isSymbolicLink() || rootStat.dev.toString()!==identity.device || rootStat.ino.toString()!==identity.inode) throw Error('workspace root changed');
   gitSafeRoot(grant.root); // Recheck retained grants and redirected ancestors before any file access.
   if(directory && path === '.') return grant.root;
   let cursor=grant.root;
