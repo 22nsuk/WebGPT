@@ -123,6 +123,33 @@ test('direct wait IDs do not read a same-named file or become JSON file mode', a
   ]);
 });
 
+test('wait terminator selects literal option-shaped IDs and preserves duplicate normalization', async t => {
+  const f = await fixture(t), ids = ['--file', '--resume', '--', '-', '--offset', 'plain_ID-9', 'x'.repeat(80)];
+  for (const id of ids) {
+    writeFileSync(join(f.dir, id), JSON.stringify({ id: 'wrong-task' }));
+    const result = await f.run('--', id);
+    assert.equal(result.code, 0); assert.equal(result.stderr, '');
+    assert.deepEqual(JSON.parse(result.stdout), { events: [], backupDue: [], settled: true });
+    assert.deepEqual(f.requests.at(-1), { method: 'GET', path: '/wait', ids: [id] });
+  }
+  const result = await f.run('--', '--file', '--', '--resume', '--file');
+  assert.equal(result.code, 0); assert.equal(result.stderr, '');
+  assert.deepEqual(f.requests.at(-1), { method: 'GET', path: '/wait', ids: ['--file', '--', '--resume'] });
+  assert.equal(f.requests.length, ids.length + 1);
+});
+
+test('wait terminator rejects missing IDs and paths instead of selecting a file or unscoped wait', async t => {
+  const f = await fixture(t), file = join(f.dir, 'payload'), bytes = '{"id":"wrong-task"}';
+  writeFileSync(file, bytes);
+  for (const ids of [[], ['./payload'], ['--file', './payload'], ['x'.repeat(81)]]) {
+    const result = await f.run('--', ...ids);
+    assert.equal(result.code, 1); assert.equal(result.stdout, '');
+    assert.match(result.stderr, /nonempty task IDs required/);
+  }
+  assert.deepEqual(f.requests, []);
+  assert.equal(readFileSync(file, 'utf8'), bytes);
+});
+
 for (const preload of [false, true]) test(`integration: wait file scope uses the real worker with ${preload ? 'preloaded alias' : 'ordinary entry'}`, async t => {
   const f = await fixture(t, { live: true, preload }), { request } = await import('./client.mjs');
   // These decoys make the old fallback a real successful wait, not just an
@@ -143,5 +170,12 @@ for (const preload of [false, true]) test(`integration: wait file scope uses the
   assert.equal(accepted.code, 0); assert.equal(accepted.stderr, '');
   assert.deepEqual(JSON.parse(accepted.stdout), { events: [], backupDue: [], settled: true });
   assert.deepEqual(f.requests, [{ method: 'GET', path: '/wait', ids: ['chosen'] }]);
+  const literal = await f.run('--', '--file');
+  assert.equal(literal.code, 0); assert.equal(literal.stderr, '');
+  assert.deepEqual(JSON.parse(literal.stdout), { events: [], backupDue: [], settled: true });
+  assert.deepEqual(f.requests, [
+    { method: 'GET', path: '/wait', ids: ['chosen'] },
+    { method: 'GET', path: '/wait', ids: ['--file'] },
+  ]);
   for (const [file, before] of retained) assert.deepEqual(readFileSync(file), before);
 });

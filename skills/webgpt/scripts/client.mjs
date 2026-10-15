@@ -433,6 +433,7 @@ if (executeCli) {
   try {
     let result;
     const isTaskId = value => typeof value === 'string' && /^[a-zA-Z0-9_-]{1,80}$/.test(value);
+    const literalIds = args[0] === '--' ? args.slice(1) : null;
     if (action === 'dispatch') {
       const { dispatchCli } = await import('./dispatch.mjs');
       result = await dispatchCli(args);
@@ -452,13 +453,13 @@ if (executeCli) {
       result = await request(action, action === 'shutdown' ? {} : undefined);
     } else if (action === 'wait' && args.length) {
       if (args[0] === '--file' && args.length !== 2) throw Error('usage: client.mjs wait --file <json-file>');
-      const file = args[0] === '--file' ? args[1]
+      const file = literalIds !== null ? null : args[0] === '--file' ? args[1]
         : args.length === 1 && !isTaskId(args[0]) ? args[0] : null;
       const saved = file === null ? null : readJsonFile(file);
       // File mode is selected by arguments, never by the parsed JSON's truthiness.
       if (file !== null && (!saved || typeof saved !== 'object' || Array.isArray(saved)))
         throw Error('wait input must be an object with ids or id');
-      result = await waitForTasks(file === null ? args : saved.ids ?? [saved.id]);
+      result = await waitForTasks(file === null ? literalIds ?? args : saved.ids ?? [saved.id]);
     } else if (action === 'review') {
       const options = {}, flags = { '--offset': 'offset', '--limit': 'limit', '--max-chars': 'maxChars', '--expected-sha256': 'expectedSha256', '--save-result': 'saveResult' };
       if (!isTaskId(args[0]) || args.length % 2 !== 1)
@@ -474,13 +475,16 @@ if (executeCli) {
       result = await reviewTask(args[0], configuration(), options);
     } else if (action === 'collect') {
       const resume = args[0] === '--resume';
-      if (args.length !== (resume ? 2 : 1)) throw Error('usage: client.mjs collect [--resume] <task-id>');
-      result = await collectTask(args[resume ? 1 : 0], configuration(), { resume });
+      const ids = args.slice(resume ? 1 : 0);
+      if (ids[0] === '--') ids.shift();
+      if (ids.length !== 1) throw Error('usage: client.mjs collect [--resume] [--] <task-id>');
+      result = await collectTask(ids[0], configuration(), { resume });
     } else if (['ack', 'checked', 'cancel'].includes(action)) {
-      if (args[0] === '--file' ? args.length !== 2 : args.length !== 1)
-        throw Error(`usage: client.mjs ${action} <task-id|json-file> or --file <json-file>`);
+      const ids = literalIds ?? args, fileMode = literalIds === null && args[0] === '--file';
+      if (ids.length !== (fileMode ? 2 : 1))
+        throw Error(`usage: client.mjs ${action} [--] <task-id> or [--file] <json-file>`);
       // Never let an unrelated same-named file redirect a task action to another task.
-      const payload = args[0] === '--file' ? readJsonFile(args[1])
+      const payload = literalIds !== null ? { id: taskIds(literalIds)[0] } : fileMode ? readJsonFile(args[1])
         : isTaskId(args[0]) ? { id: args[0] } : readJsonFile(args[0]);
       result = await request(action, payload);
     } else {
