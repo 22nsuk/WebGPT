@@ -158,7 +158,7 @@ Do independent authorized parent work while the worker runs; do not race its fil
 
 Never bypass action-time confirmations, copy cookies, use private browser APIs or touch unrelated tabs.
 Return only bounded owned-target evidence; keep prompts/tokens, IDs, URLs, full transcripts and raw
-browser errors private. Read before changing files, follow `nextCursor`/`nextOffset`, compare whole-file
+browser errors private. Read before changing files, follow `nextCursor`/`nextOffset`/`nextCharOffset`, compare whole-file
 SHA across read windows (pin `read_file.expectedSha256` when supported), and read the full file before
 full replacement. For a local correction, `write_file.oldText` may select one exact span from relevant
 context with the same whole-file SHA; preserve others' edits and backups. Never drop `oldText` as a

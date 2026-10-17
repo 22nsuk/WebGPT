@@ -177,12 +177,20 @@ A failed/uncertain response is not authorization to repeat a write.
 ### Pin subsequent read windows
 
 After the first `read_file`, pass its whole-file `sha256` as optional
-`expectedSha256` along with the same path and the next offset. A changed or deleted
-file rejects instead of returning a page from a different revision. No cache or
+`expectedSha256` along with the same path and the returned continuation: `nextOffset`
+as `offset` for line windows, or `nextCharOffset` as `charOffset` for character pages.
+A changed or deleted file rejects instead of returning a page from a different revision. No cache or
 snapshot session is retained; each call still checks the whole bounded file.
-`expectedSha256` alone preserves a full-file response. `read_input` and directory
-cursors keep their existing contracts. A mismatch means inspect/restart reading,
-not retry a write with a newly substituted hash.
+`expectedSha256` alone preserves a full-file response. A mismatch means inspect/restart
+reading, not retry a write with a newly substituted hash.
+
+For long single lines, start `read_file` or `read_input` with `charOffset:0` and follow
+`nextCharOffset` until `null`; keep the same input/file identity and whole-source SHA.
+This mode uses 0-based UTF-16 offsets. Each successful character page's complete
+serialized JSON-RPC response fits 20,000 UTF-16 code units. Page lengths vary with escaping, format and
+metadata. Do not mix it with the existing `offset`/`limit`/`maxChars` line arguments
+or fall back automatically to a full read. See [read-efficiency.md](read-efficiency.md#character-pages)
+for the response fields and an example. Full-file checks and hashing still run on every page.
 
 Use these arguments only when the actual installed connector advertises them.
 Update matching scripts through the existing stopped-worker process and refresh
