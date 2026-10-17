@@ -299,6 +299,33 @@ CLI equivalents are `node <skill>/scripts/client.mjs wait <task-id> [task-id ...
 `node <skill>/scripts/client.mjs collect <task-id>`. Wait also accepts a private JSON file with
 `{"ids":["task-a","task-b"]}` or `{"id":"task-a"}`. Invalid or unknown IDs fail, not widen the scope.
 
+### Literal task IDs
+
+For `wait`, `ack`, `checked`, `cancel`, and `collect`, put `--` before task IDs that
+could otherwise be interpreted as options. Replace `<skill>` with the installed
+skill directory:
+
+```text
+node <skill>/scripts/client.mjs wait -- --file --resume
+node <skill>/scripts/client.mjs cancel -- --file
+node <skill>/scripts/client.mjs collect -- --resume
+node <skill>/scripts/client.mjs collect --resume -- --resume
+```
+
+The first command waits only for the tasks named `--file` and `--resume`; the
+second cancels only `--file`. The last two commands collect the task named
+`--resume` in ordinary and explicit resume mode, respectively. Put the optional
+resume flag **before** the separator; flags after it are literal IDs.
+To select a task whose ID is exactly `--`, use `-- --`, for example `cancel -- --`.
+Missing IDs or paths after the separator fail instead of selecting a JSON file
+or widening a wait. Single-task commands still require exactly one ID.
+
+Without the separator, ordinary task IDs and the existing explicit `--file` and
+legacy JSON-path forms remain available where already supported. `review` and
+`reconcile` already accept option-shaped task IDs directly; do not add a separator
+to those commands. The separator changes argument selection, not review,
+collection, cancellation, or recovery requirements.
+
 ### Resume verification and collection
 
 `request('reconcile')` is the raw controller snapshot. It does **not** perform local result-file

@@ -166,6 +166,22 @@ verifies integrity and retires task inputs/token; **integrity is not correctness
 or proof that reported tests ran. Observe final chat-answer completion separately
 before closing the owned tab. Use `read` grants for reviews; do not upgrade them silently.
 
+For `wait`, `ack`, `checked`, `cancel`, and `collect`, use `--` before task IDs
+that could otherwise be interpreted as options:
+
+```text
+node <skill>/scripts/client.mjs wait -- --file --resume
+node <skill>/scripts/client.mjs cancel -- --file
+node <skill>/scripts/client.mjs collect -- --resume
+node <skill>/scripts/client.mjs collect --resume -- --resume
+```
+
+After this separator, every argument is a literal task ID, never a JSON filename
+or an option. Put collection's optional `--resume` **before** the separator.
+To select the task whose ID is exactly `--`, use `-- --`. Existing ordinary IDs
+and explicit/legacy JSON-file inputs remain supported without the separator.
+`review` and `reconcile` already accept option-shaped task IDs directly.
+
 Keep task tokens private to their assigned conversations. Never publish the full
 MCP URL, `mcp-path.key`, `controller.key`, service credentials or recovery copies.
 Forward only the MCP listener, **never** the controller or service-control port.

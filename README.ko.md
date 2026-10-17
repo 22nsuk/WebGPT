@@ -161,6 +161,22 @@ null 결과나 복구 알림을 처리하고, 변경 검토·관련 검사·수�
 탭을 닫기 전에는 최종 채팅 답변의 완료도 별도로 확인합니다.
 검토에는 `read` 권한을 사용하고 임의로 수정 권한으로 올리지 않습니다.
 
+`wait`, `ack`, `checked`, `cancel`, `collect`에서 옵션으로 해석될 수 있는
+작업 ID를 지정할 때는 ID 앞에 `--`를 붙입니다.
+
+```text
+node <skill>/scripts/client.mjs wait -- --file --resume
+node <skill>/scripts/client.mjs cancel -- --file
+node <skill>/scripts/client.mjs collect -- --resume
+node <skill>/scripts/client.mjs collect --resume -- --resume
+```
+
+이 구분자 뒤의 모든 인수는 JSON 파일명이나 옵션이 아닌 작업 ID로만 해석됩니다.
+수집 재개 옵션인 `--resume`은 구분자 **앞에** 둡니다.
+ID가 정확히 `--`인 작업은 `-- --`로 지정합니다. 기존 일반 ID와 명시적·기존 경로형
+JSON 파일 입력은 구분자 없이 계속 사용할 수 있습니다.
+`review`와 `reconcile`은 옵션처럼 생긴 작업 ID도 기존처럼 직접 받습니다.
+
 작업 토큰은 배정된 대화에만 비공개로 전달합니다. 전체 MCP URL, `mcp-path.key`,
 `controller.key`, 서비스 자격 증명, 복구 사본을 공개하지 마세요.
 MCP 리스너만 전달하고 **컨트롤러나 서비스 제어 포트는 절대 전달하지 않습니다**.
