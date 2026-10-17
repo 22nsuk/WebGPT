@@ -8,7 +8,7 @@ import { isCliEntry } from './cli-entry.mjs';
 import { grantWorkspace, listWorkspace, probeWorkspace, readWorkspace, changeWorkspace, inspectRecovery } from './workspace.mjs';
 import { configuration, configurationFile } from './client.mjs';
 import { hasPendingResults, inspectPendingResults, storeResult, verifySavedResult } from './results.mjs';
-import { acquireRuntimeLock, readStateBytes, readStateMarker, createStateMarker, assertNoStateStage, writeStateBytes, parseState, fault, startupExitCode } from './runtime.mjs';
+import { acquireRuntimeLock, readStateBytes, stateBytesEqual, readStateMarker, createStateMarker, assertNoStateStage, writeStateBytes, parseState, fault, startupExitCode } from './runtime.mjs';
 import { protocolVersions, validateMessage, negotiateProtocol, validateArguments, toolSuccess } from './protocol.mjs';
 import { auditFromEnvironment, createAuditWriter } from './audit.mjs';
 import { validatedEntryPath } from './installation.mjs';
@@ -100,8 +100,7 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
     try{
       if(readStateMarker(markerPath)!==stateInitialized)
         throw fault('STATE_INVALID','state initialization marker changed outside this worker; preserve evidence and inspect');
-      const actual=readStateBytes(statePath);
-      if(savedState===null?actual!==null:actual===null||!savedState.equals(actual))
+      if(!stateBytesEqual(statePath,savedState))
         throw fault('STATE_INVALID','state.json changed outside this worker; preserve evidence and inspect');
     }catch(error){throw storageError(error);}
   };

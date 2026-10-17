@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
 import { isAbsolute, resolve } from 'node:path';
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, renameSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs';
-import { readBoundedFile, readBytesUpTo, readUnboundedFile } from './bounded-read.mjs';
+import { readBoundedFile, readBytesUpTo, readUnboundedFile, scanUnboundedFile } from './bounded-read.mjs';
 import { validStoredWorkspaceIdentity } from './workspace-identity.mjs';
 
 export const fault = (code, message) => Object.assign(Error(message), { code, retryable: false });
@@ -98,12 +98,23 @@ export function acquireRuntimeLock(dir, { host = hostname(), probe = processStat
   } };
 }
 
-export function readStateBytes(path) {
-  const saved = readUnboundedFile(path,
-    reason => fault('STATE_INVALID', reason === 'identity'
+const invalidStateFile = reason => fault('STATE_INVALID', reason === 'identity'
       ? 'state.json identity changed while opening; preserve evidence'
-      : 'state.json must be a regular single-link file; preserve evidence'));
+      : 'state.json must be a regular single-link file; preserve evidence');
+
+export function readStateBytes(path) {
+  const saved = readUnboundedFile(path, invalidStateFile);
   return saved?.bytes ?? null;
+}
+
+export function stateBytesEqual(path, expected) {
+  if (expected !== null && !Buffer.isBuffer(expected)) throw TypeError('state bytes must be a Buffer or null');
+  let offset = 0, equal = expected !== null;
+  const saved = scanUnboundedFile(path, invalidStateFile, chunk => {
+    if (equal && !chunk.equals(expected.subarray(offset, offset + chunk.length))) equal = false;
+    offset += chunk.length;
+  });
+  return saved === null ? expected === null : equal && offset === expected.length;
 }
 
 // An interrupted state stage is evidence, not authority to replay a transition.

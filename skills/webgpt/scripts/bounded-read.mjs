@@ -5,13 +5,13 @@ import { constants } from 'node:buffer';
 import { closeSync, constants as flags, fstatSync, lstatSync, openSync, readFileSync, readSync, statSync } from 'node:fs';
 
 function* readChunksUpTo(fd, ceiling) {
-  if (!Number.isSafeInteger(ceiling) || ceiling < 1 || ceiling > constants.MAX_LENGTH)
+  if (ceiling !== null && (!Number.isSafeInteger(ceiling) || ceiling < 1 || ceiling > constants.MAX_LENGTH))
     throw RangeError('invalid byte read ceiling');
   let total = 0, capacity = 4096, ended = false;
-  while (total < ceiling && !ended) {
+  while ((ceiling === null || total < ceiling) && !ended) {
     // Grow small allocations gradually; do not reserve a whole 32 MiB diagnostic
     // allowance for an ordinary small state file. Short reads refill this chunk.
-    const buffer = Buffer.allocUnsafe(Math.min(capacity, ceiling - total));
+    const buffer = Buffer.allocUnsafe(ceiling === null ? capacity : Math.min(capacity, ceiling - total));
     let used = 0;
     while (used < buffer.length) {
       const count = readSync(fd, buffer, used, buffer.length - used, null);
@@ -24,6 +24,7 @@ function* readChunksUpTo(fd, ceiling) {
 }
 
 export function readBytesUpTo(fd, ceiling) {
+  if (ceiling === null) throw RangeError('invalid byte read ceiling');
   const chunks = [...readChunksUpTo(fd, ceiling)];
   const total = chunks.reduce((size, chunk) => size + chunk.length, 0);
   // Expose only initialized bytes, including after short reads or concurrent shrink.
@@ -56,8 +57,13 @@ export function readUnboundedFile(file, invalid) {
   return readRegularFile(file, null, invalid);
 }
 
+export function scanUnboundedFile(file, invalid, consume) {
+  if (typeof consume !== 'function') throw TypeError('file chunk consumer required');
+  return readRegularFile(file, null, invalid, false, consume);
+}
+
 // One owner for checked regular-file reads. null limit is private to the
-// explicitly unbounded wrapper; public bounded reads still reject null limits.
+// explicitly unbounded wrappers; public bounded reads still reject null limits.
 // Domain callers own authorization, decoding, hashes and error policy. Only
 // initial ENOENT means absence. BigIntStats keeps full-width identity exact;
 // descriptor validation does not provide an atomic filesystem snapshot.
@@ -83,9 +89,9 @@ function readRegularFile(file, limit, invalid, allowLinks = false, consume) {
     if (stat.dev !== before.dev || stat.ino !== before.ino) throw invalid('identity');
     if (consume) {
       let bytesRead = 0;
-      for (const chunk of readChunksUpTo(fd, limit + 1)) {
+      for (const chunk of readChunksUpTo(fd, limit === null ? null : limit + 1)) {
         bytesRead += chunk.length;
-        if (bytesRead > limit) throw invalid('overflow');
+        if (limit !== null && bytesRead > limit) throw invalid('overflow');
         consume(chunk);
       }
       return { bytesRead, stat };
