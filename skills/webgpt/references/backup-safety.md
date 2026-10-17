@@ -68,7 +68,23 @@ These checks add synchronous I/O and backup hashing. Each recovery inspection ca
 read all original backups for the selected task(s), and existing receipt comparisons
 can be more expensive as task history grows. Do not poll readiness rapidly or assume
 unchanged large-task throughput. No mtime-only cache hides missing/modified evidence.
-Large-history performance and real power-cut behavior need separate measurement.
+Run `node skills/webgpt/scripts/operating-performance.mjs` for bounded standalone
+synthetic cumulative-operation evidence (no operational data). Defaults target
+under two minutes on Windows and use well under 256 MiB temporary disk; actual
+runtime depends on the machine. `--help` documents validated scale inputs, for
+example `--tasks 100,1000 --journals 1,8 --backup-bytes 4096,262144
+--iterations 3 --warmups 1 --repetitions 2`. Fixtures use unique temporary
+directories and are removed on success or caught failure (forced termination can
+leave a `webgpt-performance-*` directory in the OS temporary folder).
+JSON compares the old whole-state Buffer equality with production streaming
+equality in fresh children, alternating order; separate instrumented children
+assert full-read byte totals and report read API calls, not OS syscall counts.
+Both paths still read state linearly; recovery still reads journals and hashes
+every original. Filesystem cache cannot be controlled here. Memory endpoints
+are not peaks, while maxRSS is a lifetime process high-water mark including setup;
+GC and allocator retention can obscure the materialization difference. There are
+no timing thresholds or claimed throughput guarantees. Real power-cut behavior
+still needs separate measurement.
 
 ## Protect the active configuration, not every project config file
 
