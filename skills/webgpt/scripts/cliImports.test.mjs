@@ -14,6 +14,8 @@ const entries = [
   ['service.mjs', 'runService', [], 78, /"event":"service_failed".*"code":"CONFIG_INVALID"/],
   ['diagnose.mjs', 'diagnoseTask', [], 1, /usage: diagnose\.mjs/],
   ['verification.mjs', 'prepareVerification', [], 1, /WebGPT verification: unavailable or invalid input/],
+  // No library export: a direct run still rejects unknown options before fixtures.
+  ['operating-performance.mjs', null, ['--wat', '1'], 1, /unknown, duplicate or missing option: --wat/],
 ];
 function fixture(t) {
   const dir = fs.mkdtempSync(join(tmpdir(), 'webgpt-cli-import-'));
@@ -41,7 +43,9 @@ function quiet(result) {
 
 for (const [file, exported, args, status, diagnostic] of entries) {
   const script = join(scripts, file), url = pathToFileURL(script).href;
-  const importBody = `const m = await import(${JSON.stringify(url)}); if (typeof m[${JSON.stringify(exported)}] !== 'function') throw Error('missing export');`;
+  const importBody = exported
+    ? `const m = await import(${JSON.stringify(url)}); if (typeof m[${JSON.stringify(exported)}] !== 'function') throw Error('missing export');`
+    : `await import(${JSON.stringify(url)});`;
   test(`${file}: eval arguments do not become filesystem paths or trigger CLI actions`, t => {
     const { dir, run } = fixture(t);
     quiet(run(['--input-type=module', '-e', importBody]));

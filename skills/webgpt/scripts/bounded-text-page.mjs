@@ -1,5 +1,5 @@
 // Bound the complete serialized response, not just its source-text payload.
-export const TEXT_PAGE_MAX_CHARS = 20000;
+const TEXT_PAGE_MAX_CHARS = 20000;
 const boundary = (text, offset) => !(offset > 0 && offset < text.length
   && ((text.charCodeAt(offset - 1) >= 0xd800 && text.charCodeAt(offset - 1) <= 0xdbff)
     || (text[offset - 1] === '\r' && text[offset] === '\n')));
