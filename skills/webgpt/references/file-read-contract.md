@@ -2,7 +2,8 @@
 
 The regular-file opening and bounded materializing read contract lives in `scripts/bounded-read.mjs`, not
 in separate file-open loops in runtime, workspace, result, audit and dispatch
-adapters. Committed state reuses that opening mechanism without a byte quota. This is an implementation boundary; it adds no parent workflow step,
+adapters. Committed state and parent task JSON reuse that opening mechanism
+without a byte quota. This is an implementation boundary; it adds no parent workflow step,
 MCP tool, permission, stored format, migration or automatic recovery action.
 
 ## Shared mechanism, domain-owned policy
@@ -18,7 +19,7 @@ returning a prefix, and closes its descriptor on success or failure. It returns
 `{ bytes, stat }`, where `stat` is the opening `BigIntStats` observation, or
 `null` only for an initial `ENOENT`. Errors after observing the file are not converted to absence.
 
-`readUnboundedFile(file, invalid)` is the explicit committed-state path. It uses
+`readUnboundedFile(file, invalid)` is the explicit uncapped path. It uses
 the same initial/type/link/identity validation and descriptor cleanup, but reads
 all bytes with `readFileSync(fd)` from that checked descriptor, not by reopening
 the path. It does not apply the marker, result or offline-diagnostic allowance.
@@ -26,12 +27,13 @@ The public bounded API still rejects omitted, null, infinite or invalid limits;
 only the private shared implementation uses a null limit for the uncapped path.
 Both wrappers return the same `{ bytes, stat }` or initial-absence result.
 
-The optional fourth argument `{ allowLinks: true }` is reserved for callers whose
-input contract follows links, currently common configuration. It uses `stat`
-and a following open, permits hard links, and compares the observed target's
-full-width identity to the opened regular file. Size, sentinel and descriptor
-cleanup checks are unchanged. Omitting the option keeps the strict single-link
-policy; committed-state reads do not opt in.
+The optional `{ allowLinks: true }` argument (fourth for `readBoundedFile`, third
+for `readUnboundedFile`) is reserved for callers whose input contract follows
+links: common configuration and parent task JSON. It uses `stat` and a following
+open, permits hard links, and compares the observed target's full-width identity
+to the opened regular file. Descriptor cleanup and any caller-selected byte
+allowance are unchanged. Omitting the option keeps the strict single-link policy;
+committed-state reads do not opt in.
 
 Both named and opened metadata use `bigint: true`: distinct 64-bit device/inode
 values can alias after conversion to `Number`. Keep identity comparisons exact;
@@ -53,6 +55,7 @@ collection policy and evidence disposition do not move into the byte reader.
 | --- | --- | --- |
 | Common configuration | 64 KiB | User-selected regular target, existing symlink/hardlink compatibility, strict UTF-8/JSON with one leading BOM, explicit overrides and initial-absence defaults |
 | Parent controller key | 4096 bytes | Same strict file policy and byte allowance as worker startup; unchanged UTF-8 decoding, no key creation/rotation or trimming |
+| Parent task JSON | No new raw-byte quota | User-selected regular target, existing symlink/hardlink compatibility, strict UTF-8/JSON with one leading BOM; rejection before controller requests |
 | Runtime committed state | No new fixed quota | Existing task parsing, initialization evidence and pre-publication byte comparison; the adapter returns only bytes, never BigInt metadata |
 | Runtime initialization marker | 28 bytes | Exact existing marker; absence differs from corrupt state |
 | Runtime worker/service lock owner | 4096 bytes | Lock directory, owner identity, host/PID and uncertain ownership |
@@ -92,6 +95,28 @@ existing diagnostics. Key decoding is unchanged and header-compatible non-UUID
 keys are not normalized. Refusals occur before HTTP and do not authorize retries,
 key rotation or file repair. HTTP timeouts cannot interrupt synchronous reads;
 these byte/type checks are not a general deadline for a stalled filesystem.
+
+## Parent task JSON reads
+
+The `register`, `wait`, `ack`, `checked` and `cancel` CLI file inputs use the
+shared uncapped reader with link following enabled. A symlink or hardlink to a
+regular file remains valid. A known non-regular target is rejected before open;
+a replacement between `stat` and open is rejected by descriptor type or exact
+device/inode comparison. Nonblocking open also lets a replacement FIFO with no
+writer reach that validation instead of waiting indefinitely for a writer.
+
+These refusals use `INPUT_FILE_INVALID` before any controller request. Initial
+absence is `ENOENT`, never an empty/default task, and later native open/read
+errors propagate. The reader closes any opened descriptor without changing the
+input or replacement. Strict UTF-8/JSON decoding, one leading BOM, and the
+existing decoded payload validation remain owned by the client.
+
+There is no new raw-byte quota: JSON whitespace and escapes can make an input
+larger than the reserialized controller payload. Applying the configuration
+allowance or the HTTP payload limit to those source bytes would reject existing
+valid tasks. This read still materializes the complete regular file; it does not
+bound total memory, make regular-file I/O asynchronous, or provide a filesystem
+deadline. Private state and key readers keep their strict link policy.
 
 ## Workspace path text
 
@@ -172,9 +197,6 @@ remain separate and continue to revalidate their own observations.
   256 MiB while retaining only selected windows and enforcing initial-size plus
   sentinel and post-read checks. Routing it through a materializing helper would
   retain unnecessary source bytes and lose its stronger source-change checks.
-- User-selected task JSON retains its existing path and decoding contract,
-  separate from the configuration allowance and private-key policy above. This
-  is not a claim that every repository read or total runtime resource use is bounded.
 
 `O_NOFOLLOW` is not available on every supported platform. The named-file checks
 remain necessary, but neither those checks nor an inode comparison create an OS
@@ -189,6 +211,7 @@ Keep one owner per assertion family, not one copy per historical fix:
 | --- | --- |
 | `boundedFile.test.mjs` | Shared file-opening mechanism: opaque bytes, absence/empty input, full-width identity, metadata, FIFO substitution without a writer for bounded and committed-state reads, native failures and descriptor closure; the I/O observer's hook timing, accounting and scoped restoration |
 | `configurationReads.test.mjs` | Real common-configuration and parent-request adapters: limits, link-policy distinction, initial versus late absence, preserved decoding/errors/evidence, FIFO child watchdogs and a real CLI/loopback exchange with larger task JSON |
+| `taskJsonReads.test.mjs` | Actual parent CLI task JSON paths: FIFO and identity-change refusals before controller requests, native failures and preserved evidence; large escaped input and file-link compatibility |
 | `fileReadContract.test.mjs` | Real adapter matrix: short reads, growth/oversize rejection, error classification and identity swaps; candidate-length state retries |
 | `recoveryInspection.test.mjs` | Recovery traversal work budgets, complete receipt sets, ordered/suppressed staged diagnostics, fresh backup checks and per-record failure isolation with preserved sibling receipts/evidence |
 | `runtimeMetadata.test.mjs` | Marker format/absence, metadata path types, uncapped committed state, late state replacements, descriptor-bound reads and error cleanup, and worker/service ownership lifecycle |

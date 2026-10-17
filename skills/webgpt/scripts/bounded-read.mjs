@@ -53,8 +53,9 @@ export function scanBoundedFile(file, limit, invalid, consume) {
   return readRegularFile(file, limit, invalid, false, consume);
 }
 
-export function readUnboundedFile(file, invalid) {
-  return readRegularFile(file, null, invalid);
+export function readUnboundedFile(file, invalid, { allowLinks = false } = {}) {
+  if (typeof allowLinks !== 'boolean') throw TypeError('invalid file link policy');
+  return readRegularFile(file, null, invalid, allowLinks);
 }
 
 export function scanUnboundedFile(file, invalid, consume) {
@@ -74,7 +75,7 @@ function readRegularFile(file, limit, invalid, allowLinks = false, consume) {
         || (limit !== null && info.size > limit))
       throw invalid('metadata');
   };
-  // User-selected configuration can follow links without weakening the default
+  // User-selected inputs can follow links without weakening the default
   // private-file policy. Compare the resolved target with the opened descriptor.
   let before;
   try { before = (allowLinks ? statSync : lstatSync)(file, { bigint: true }); }
