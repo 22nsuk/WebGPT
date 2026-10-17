@@ -1,8 +1,7 @@
-import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, isAbsolute } from 'node:path';
 import { isCliEntry } from './cli-entry.mjs';
-import { readBoundedFile } from './bounded-read.mjs';
+import { readBoundedFile, readUnboundedFile } from './bounded-read.mjs';
 import { fault } from './runtime.mjs';
 import { readVerifiedResult, verifySavedResult } from './results.mjs';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -15,8 +14,15 @@ function parseJsonBytes(bytes) {
   try { return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)); }
   catch { throw Error('invalid JSON or UTF-8 input file'); }
 }
-// Task JSON retains its existing input contract, not the configuration quota.
-function readJsonFile(file) { return parseJsonBytes(readFileSync(file)); }
+// User-selected task JSON keeps link support and has no new raw-byte quota:
+// whitespace/escapes can make it larger than its serialized controller payload.
+function readJsonFile(file) {
+  const saved = readUnboundedFile(file,
+    () => fault('INPUT_FILE_INVALID', 'JSON input must be a regular file with unchanged identity'),
+    { allowLinks: true });
+  if (saved === null) throw fault('ENOENT', 'JSON input file does not exist');
+  return parseJsonBytes(saved.bytes);
+}
 
 // Shared by the worker and controller client; never store configuration in the skill.
 export function configurationFile(env = process.env) {
