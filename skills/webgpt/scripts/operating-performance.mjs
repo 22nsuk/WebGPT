@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
 import { createHash } from 'node:crypto';
+import { isCliEntry } from './cli-entry.mjs';
 import * as runtime from './runtime.mjs';
 import { inspectRecovery } from './workspace.mjs';
 
@@ -169,9 +170,11 @@ function benchmark(p) {
     }, rows };
 }
 
-try {
-  if (process.argv[2] === '--child' && process.env.WEBGPT_PERFORMANCE_CHILD) {
-    console.log(JSON.stringify(child(JSON.parse(process.env.WEBGPT_PERFORMANCE_CHILD))));
-  } else if (process.argv.length === 3 && process.argv[2] === '--help') console.log(help);
-  else console.log(JSON.stringify(benchmark(parameters(process.argv.slice(2)))));
-} catch (error) { console.error(error.message); process.exitCode = 1; }
+if (isCliEntry(import.meta)) {
+  try {
+    if (process.argv[2] === '--child' && process.env.WEBGPT_PERFORMANCE_CHILD) {
+      console.log(JSON.stringify(child(JSON.parse(process.env.WEBGPT_PERFORMANCE_CHILD))));
+    } else if (process.argv.length === 3 && process.argv[2] === '--help') console.log(help);
+    else console.log(JSON.stringify(benchmark(parameters(process.argv.slice(2)))));
+  } catch (error) { console.error(error.message); process.exitCode = 1; }
+}
