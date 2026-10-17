@@ -13,6 +13,7 @@ import { protocolVersions, validateMessage, negotiateProtocol, validateArguments
 import { auditFromEnvironment, createAuditWriter } from './audit.mjs';
 import { validatedEntryPath } from './installation.mjs';
 import { windowProperties, readWindowOptions, textWindow } from './text-window.mjs';
+import { boundedTextPage, TEXT_PAGE_MAX_CHARS } from './bounded-text-page.mjs';
 import { createJsonBodyReader } from './json-body.mjs';
 import { readBoundedFile } from './bounded-read.mjs';
 import { normalizeWorkspaceIdentity } from './workspace-identity.mjs';
@@ -21,15 +22,34 @@ const schema = properties => ({type:'object',properties,required:Object.keys(pro
 const str = {type:'string'};
 // See ../references/read-efficiency.md for opt-in response and integrity costs.
 const responseFormat = {type:'string',enum:['dual','text']};
+const charOffset = {type:'integer',minimum:0,maximum:Number.MAX_SAFE_INTEGER};
 export const tools = [
   {name:'list_files',description:'List a local project directory, up to 500 entries per page. Use path . for the root. Pass nextCursor as cursor for the next page; restart without a cursor if the directory changes.',inputSchema:{...schema({token:str,path:str}),properties:{token:str,path:str,cursor:str,limit:{type:'integer',minimum:1,maximum:500}}},annotations:{readOnlyHint:true,openWorldHint:false}},
-  {name:'read_file',description:'Read a project text file up to 10 MiB of UTF-8 and its whole-file SHA256 revision. Optional offset (1-based), limit (lines) or maxChars returns a bounded window; expectedSha256 pins it to a whole-file revision. Prefer windows for large files. Missing unpinned file returns exists:false. Read the whole file before full replacement; exact oldText edits need relevant context. Set responseFormat:text for the same complete JSON once in content; default dual also includes structuredContent.',inputSchema:{...schema({token:str,path:str}),properties:{token:str,path:str,...windowProperties,expectedSha256:str,responseFormat}},annotations:{readOnlyHint:true,openWorldHint:false}},
+  {name:'read_file',description:'Read a project text file up to 10 MiB of UTF-8 and its whole-file SHA256 revision. Optional offset (1-based line), limit or maxChars returns complete lines. For long lines use charOffset (0-based UTF-16) without line options; follow nextCharOffset for pages capped at 20,000 UTF-16 units of JSON-RPC output. expectedSha256 pins the whole-file revision. Missing unpinned file returns exists:false. Read the whole file before full replacement; exact oldText edits need relevant context. responseFormat:text omits the structuredContent copy; default dual returns both.',inputSchema:{...schema({token:str,path:str}),properties:{token:str,path:str,...windowProperties,charOffset,expectedSha256:str,responseFormat}},annotations:{readOnlyHint:true,openWorldHint:false}},
   {name:'write_file',description:'Create or replace a project text file after reading; resulting UTF-8 file must fit 10 MiB. Optional oldText replaces exactly one literal span with text in an existing file; no fuzzy matching. Prefer small exact edits for large files. expectedSha256 must match the whole-file revision (null only for create without oldText). Original is backed up. No Git or shell.',inputSchema:{...schema({token:str,path:str,text:str,expectedSha256:{type:['string','null']}}),properties:{token:str,path:str,text:str,expectedSha256:{type:['string','null']},oldText:str}},annotations:{readOnlyHint:false,destructiveHint:true,openWorldHint:false}},
   {name:'delete_file',description:'Directly delete an existing local project file after reading it. Requires matching expectedSha256; original and path are saved for recovery. No directory or recursive deletion.',inputSchema:schema({token:str,path:str,expectedSha256:str}),annotations:{readOnlyHint:false,destructiveHint:true,openWorldHint:false}},
   {name:'get_task',description:'Read the assigned task and input names using its private task token. No repository or Git setup needed.',inputSchema:schema({token:str}),annotations:{readOnlyHint:true,openWorldHint:false}},
-  {name:'read_input',description:'Read one explicitly supplied input by name; no filesystem access. Optional offset (1-based), limit (lines) or maxChars returns complete lines with partial/range/nextOffset and the whole-input SHA256. Without options returns the original full text. Follow nextOffset for required context; an excerpt is not the full input. Set responseFormat:text for the same complete JSON once in content; default dual also includes structuredContent.',inputSchema:{...schema({token:str,name:str}),properties:{token:str,name:str,...windowProperties,responseFormat}},annotations:{readOnlyHint:true,openWorldHint:false}},
+  {name:'read_input',description:'Read one explicitly supplied input by name; no filesystem access. Optional offset (1-based line), limit or maxChars returns complete lines; follow nextOffset. For long lines use charOffset (0-based UTF-16) without line options; follow nextCharOffset for pages capped at 20,000 UTF-16 units of JSON-RPC output. Both modes return the whole-input SHA256. Without range options returns the original full text; an excerpt is not the full input. responseFormat:text omits the structuredContent copy; default dual returns both.',inputSchema:{...schema({token:str,name:str}),properties:{token:str,name:str,...windowProperties,charOffset,responseFormat}},annotations:{readOnlyHint:true,openWorldHint:false}},
   {name:'submit_result',description:'Save the finished task deliverable, evidence, real artifact references and limitations after feasible in-scope work and checks. Text submission does not transfer binary files. No file changes required. Terminal: stops backup checks; stop assigned changes and finish the final chat answer. Retry identical submission safely. Do not delete the chat.',inputSchema:schema({token:str,status:{type:'string',enum:['completed','failed','cancelled']},summary:str,result:str}),annotations:{readOnlyHint:false,destructiveHint:false,idempotentHint:true,openWorldHint:false}}
 ];
+
+// Select character pages only after the ordinary whole-source checks. The MCP
+// boundary owns the actual response cost; workspace I/O does not know its format.
+function readPageResult(value, {charOffset,responseFormat}, envelope) {
+  const serialize = page => JSON.stringify(envelope(toolSuccess(page,responseFormat)));
+  if(value.text===null){
+    // Preserve the missing-file shape without allowing large metadata to bypass
+    // the opt-in response allowance.
+    if(serialize(value).length+2>TEXT_PAGE_MAX_CHARS)throw RangeError('text page metadata exceeds output limit');
+    return toolSuccess(value,responseFormat);
+  }
+  const {text,...metadata}=value;
+  const readPage = ({content,startOffset,endOffset,nextOffset,...rest}) => ({...rest,text:content,
+    startCharOffset:startOffset,endCharOffset:endOffset,nextCharOffset:nextOffset});
+  const page=boundedTextPage(text,charOffset,metadata,candidate=>serialize(readPage(candidate)));
+  return toolSuccess(readPage(page),responseFormat);
+}
+
 export async function start({dir,port=43137,controlPort=43139,publicMcp=false,backupMs=900000,waitMs=55000,closeGraceMs=5000,now=Date.now,configFile=configurationFile(),audit=false,entryPath}={}) {
   const entryRoot=dirname(validatedEntryPath(import.meta.url,entryPath));
   if(typeof audit!=='boolean')throw fault('CONFIG_INVALID','audit must be boolean');
@@ -301,6 +321,8 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
     const tool=tools.find(tool=>tool.name===name);if(!tool)throw Error('unknown tool');
     if(['list_files','read_file','write_file','delete_file'].includes(name))checkDataBoundary(t.workspace);
     validateArguments(tool,args);
+    if(args.charOffset!==undefined && ['offset','limit','maxChars'].some(key=>args[key]!==undefined))
+      throw Error('charOffset cannot be combined with line window options');
     if(name==='get_task'){
       const inputs=Object.keys(t.inputs);
       // Keep legacy malformed records inspectable by the parent, not repaired
@@ -314,8 +336,8 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
       const text=t.inputs[args.name];
       if(!text.isWellFormed())throw Error('stored input is not well-formed Unicode; supervisor inspection required');
       const range=readWindowOptions({offset:args.offset,limit:args.limit,maxChars:args.maxChars});
-      if(!range)return {name:args.name,text}; // Preserve the original response exactly.
-      return {name:args.name,...textWindow(text,range,'input'),sha256:createHash('sha256').update(text).digest('hex')};
+      if(!range && args.charOffset===undefined)return {name:args.name,text}; // Preserve the original response exactly.
+      return {name:args.name,...(range?textWindow(text,range,'input'):{text}),sha256:createHash('sha256').update(text).digest('hex')};
     }
     if(['list_files','read_file','write_file','delete_file'].includes(name)) {
       if(t.status!=='running')throw Error('task is terminal; file access closed');
@@ -399,6 +421,7 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
     if(stopping)return json(res,503,{error:'worker is stopping',code:'SHUTTING_DOWN'});
     let kind;try{kind=validateMessage(m);}catch{return error(400,null,-32600,'invalid JSON-RPC request');}
     if(kind==='notification'){res.writeHead(202);return res.end();}
+    const envelope = result => ({jsonrpc:'2.0',id:m.id??null,result});
     let result,protocolVersion;
     if(m.method==='initialize') {
       try{protocolVersion=negotiateProtocol(m.params?.protocolVersion);}catch{return error(200,m.id,-32602,'invalid protocolVersion');}
@@ -425,12 +448,15 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
           taskId:typeof token==='string'?(tasks.find(t=>t.token&&t.token===token)?.id??null):null};
         started=performance.now();writeAudit({...record,phase:'tool_received'});
       }
-      try{const out=call(m.params?.name,m.params?.arguments);result=toolSuccess(out,m.params?.arguments?.responseFormat);}
+      try{
+        const args=m.params?.arguments,out=call(m.params?.name,args);
+        result=args.charOffset===undefined?toolSuccess(out,args.responseFormat):readPageResult(out,args,envelope);
+      }
       catch(e){result={content:[{type:'text',text:e.message}],isError:true};}
       if(record)writeAudit({...record,phase:'tool_completed',isError:result.isError,durationMs:Math.max(0,Math.round(performance.now()-started))});
     }
     else return json(res,200,{jsonrpc:'2.0',id:m.id??null,error:{code:-32601,message:'method not found'}});
-    json(res,200,{jsonrpc:'2.0',id:m.id??null,result});
+    json(res,200,envelope(result));
   });
   const control=createServer(async(req,res)=>{
     if(req.headers.origin)return json(res,403,{});

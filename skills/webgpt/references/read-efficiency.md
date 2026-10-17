@@ -37,26 +37,16 @@ state schema, recovery quarantine or collection condition changes.
 - `"text"`: the same complete JSON text in `content[0].text`, with no
   `structuredContent` duplicate. `isError` remains `false` on success.
 
-For example, after confirming that `tools/list` advertises this argument:
-
-```json
-{
-  "token": "YOUR_PRIVATE_TASK_TOKEN",
-  "path": "src/example.mjs",
-  "responseFormat": "text"
-}
-```
-
 This is still serialized JSON, not raw file text or a summary. Parse
 `result.content[0].text` after checking `result.isError`. Consumers supporting
 both formats can use `result.structuredContent ?? JSON.parse(result.content[0].text)`
 on successful responses. No body moves into hidden metadata or a separate resource.
 
-The option is per call and works with full reads and existing line windows.
-It does not opt a full read into a default window. File existence, exact text,
-whole-file SHA, mode and window metadata remain unchanged; full `read_input`
+The option is per call and works with full reads, line windows and character pages below.
+It does not opt a full read into a default window. For full reads and line windows,
+file existence, exact text, whole-file SHA, mode and window metadata remain unchanged; full `read_input`
 retains its existing `{name,text}` shape. Prefer bounded windows when only an
-excerpt is needed, and keep whole-file SHA pins across subsequent file windows.
+excerpt is needed, and keep whole-file SHA pins across subsequent file pages.
 Error envelopes, authorization, task lifecycle and the seven-tool surface remain
 unchanged. Other tools reject `responseFormat` as an unexpected argument.
 
@@ -71,6 +61,49 @@ when structured results are returned. Text mode instead returns an ordinary
 text-only tool result; it does not return structured data without that copy.
 These read tools do not declare a structured output schema.
 See <https://modelcontextprotocol.io/specification/2025-06-18/server/tools#structured-content>.
+
+## Character pages
+
+For a long single line or a read requiring a serialized-response bound, start either
+`read_input` or `read_file` with `charOffset: 0`. Confirm the installed tool advertises it:
+
+```json
+{
+  "token": "YOUR_PRIVATE_TASK_TOKEN",
+  "name": "source",
+  "charOffset": 0,
+  "responseFormat": "text"
+}
+```
+
+This example calls `read_input`; for `read_file`, use `path` instead of `name`.
+`charOffset` is a 0-based UTF-16 offset and cannot be combined with `offset`,
+`limit` or `maxChars`. A page contains exact `text`, whole-source `sha256`,
+`charUnit: "UTF-16"`, `startCharOffset`,
+`endCharOffset` (exclusive), `nextCharOffset`, `totalChars` and `partial`.
+Pass the returned `nextCharOffset` as the next `charOffset` for the same source;
+only the last page returns `null`. Join the pages' text in order without adding
+separators. Pages do not split surrogate pairs or CRLF. A starting offset inside
+either, or at/past the end of a nonempty source, is rejected. A final page starting after zero still
+has `partial:true`: `nextCharOffset:null` does not prove the earlier text was read.
+An empty source starts and ends at zero and returns `nextCharOffset:null`;
+a missing file retains its `exists:false` response without range metadata.
+The existing line-mode `nextOffset` keeps its 1-based line meaning.
+
+Each successful character page's complete serialized JSON-RPC response fits **20,000
+UTF-16 code units**. This includes the request ID, tool envelope, JSON escaping inside
+`content[0].text`, and `structuredContent` when using the default `dual` format.
+This is not a raw-text, UTF-8 byte or model-token limit. Format, request ID and other
+metadata can change the page length: follow the returned cursor rather than adding
+a fixed number. If an input name or other fixed metadata leaves no room for a page,
+the call fails explicitly; there is no automatic full-read fallback.
+
+Keep the same source identity and whole-source SHA across pages. For files, pass
+the first `sha256` as `expectedSha256` on subsequent calls and restart reading on
+a conflict. Each call still verifies current state/token authority and hashes the
+whole source; file reads retain their whole-file 10 MiB, UTF-8, NUL and link/path
+checks. Paging changes returned text, not original-file I/O or lifecycle rules.
+Calls without range arguments stay full reads; line windows still return complete lines.
 
 ## Reproducible checks
 
