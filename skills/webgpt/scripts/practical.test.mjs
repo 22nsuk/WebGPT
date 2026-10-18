@@ -5,6 +5,7 @@ import fs, { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, exists
 import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -180,14 +181,19 @@ test('private runtime descendants cannot be registered as read or edit workspace
 test('legacy grants inside private recovery data lose all file access but remain cancellable', () => fixture(async f => {
   const root = join(f.dir, 'recovery', 'prior-task'); mkdirSync(root, { recursive: true });
   const backup = join(root, 'private.before.txt'); writeFileSync(backup, 'private recovery fixture');
+  const expectedSha256 = createHash('sha256').update('private recovery fixture').digest('hex');
   for (const mode of ['read', 'edit']) {
     const id = 'legacy-' + mode;
     const { token } = await f.register(id, { workspace: { root: f.root, mode } });
     const statePath = join(f.dir, 'state.json'), state = JSON.parse(readFileSync(statePath, 'utf8'));
     state.find(t => t.id === id).workspace = grantWorkspace({ root, mode });
     writeFileSync(statePath, JSON.stringify(state)); await f.restart();
-    for (const name of ['list_files', 'read_file', 'write_file', 'delete_file']) {
-      const result = await f.call(name, { token, path: name === 'list_files' ? '.' : 'private.before.txt', text: 'forbidden', expectedSha256: null });
+    for (const [name, args] of [
+      ['list_files', { path: '.' }], ['read_file', { path: 'private.before.txt' }],
+      ['write_file', { path: 'private.before.txt', text: 'forbidden', expectedSha256 }],
+      ['delete_file', { path: 'private.before.txt', expectedSha256 }],
+    ]) {
+      const result = await f.call(name, { token, ...args });
       assert.equal(result.isError, true, mode + ': ' + name);
       assert.match(result.content[0].text, /private worker data/);
     }

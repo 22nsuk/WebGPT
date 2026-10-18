@@ -33,7 +33,8 @@ async function fixture(t, scenario = 'text', changeRegistration = () => {}) {
   changeRegistration(f.registration, f);
   f.dir = join(f.base, 'runtime');
   f.worker = await start({ dir: f.dir, port: 0, controlPort: 0, waitMs: 20 });
-  f.config = { dataDir: f.dir, controlPort: f.worker.controlPort };
+  // Keep both actual ports: an ephemeral controller may equal the default MCP port.
+  f.config = { dataDir: f.dir, mcpPort: f.worker.mcpPort, controlPort: f.worker.controlPort };
   f.task = await request('register', f.registration, f.config);
   f.state = () => fs.readFileSync(join(f.dir, 'state.json'));
   f.check = () => checkVerification(f.run, f.config);
@@ -689,6 +690,7 @@ test('connection evidence survives a clean worker restart and explicit collectio
   const restart = async () => {
     await f.worker.close();
     f.worker = await start({ dir: f.dir, port: 0, controlPort: 0, waitMs: 20 });
+    f.config.mcpPort = f.worker.mcpPort;
     f.config.controlPort = f.worker.controlPort;
   };
   await restart();

@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, existsSync, renameSync, symlinkSync, linkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -11,6 +12,7 @@ import { request as httpRequest } from 'node:http';
 import { grantWorkspace } from './workspace.mjs';
 import { start, tools } from './worker.mjs';
 import { request, collectTask } from './client.mjs';
+import { observeFileRead } from './test-fixtures/file-read.mjs';
 
 const MiB = 1024 * 1024;
 // Leave the body open when only headers are supplied: a declared overflow must
@@ -140,6 +142,80 @@ test('unexpected tool arguments are rejected in accordance with the advertised s
   assert.equal(existsSync(join(f.root, 'forbidden.txt')), false);
   assert.deepEqual((await f.call('get_task', { token })).structuredContent.changes, []);
   assert.equal(tools.length, 7);
+}));
+
+test('MCP admission rejects request-only errors before state reads or workspace checks', t => fixture(async f => {
+  const { token } = await f.register(), statePath = join(f.dir, 'state.json');
+  const state = readFileSync(statePath), workspaceRoot = JSON.parse(state)[0].workspace.root;
+  writeFileSync(join(f.root, 'source.txt'), 'preserved fixture text');
+  const traces = [statePath, join(f.dir, 'state.initialized')].map(file => observeFileRead(t, file));
+  let workspaceChecks = 0;
+  const native = fs.realpathSync.native;
+  const boundary = t.mock.method(fs.realpathSync, 'native', (file, ...args) => {
+    if (file === workspaceRoot) workspaceChecks++;
+    return native(file, ...args);
+  });
+  const snapshot = () => [...traces.map(trace => trace.evidence.opens), workspaceChecks];
+  try {
+    for (const [label, name, args, message] of [
+      ['argument container', 'write_file', null, 'tool arguments must be an object'],
+      ['token before tool', 'unknown_tool', { token: 'unknown_token' }, 'unknown task token'],
+      ['tool before schema', 'unknown_tool', { token, unexpected: true }, 'unknown tool'],
+      ['required field', 'read_file', { token }, 'required tool argument missing'],
+      ['extra field', 'write_file', { ...mutation(token).params.arguments, overwrite: true }, 'unexpected tool argument'],
+      ['field type', 'read_file', { token, path: 123 }, 'invalid tool argument value'],
+      ['page modes', 'read_file', { token, path: 'source.txt', charOffset: 0, offset: 1 }, 'charOffset cannot be combined with line window options'],
+    ]) await t.test(label, async () => {
+      const before = snapshot(), response = await f.rpc('tools/call', { name, arguments: args });
+      assert.deepEqual(response, { jsonrpc: '2.0', id: 1,
+        result: { content: [{ type: 'text', text: message }], isError: true } });
+      assert.deepEqual(snapshot(), before, 'rejected requests do not open state/marker or inspect the workspace');
+    });
+    for (const name of ['get_task', 'read_file']) await t.test(`valid ${name} still verifies state`, async () => {
+      const before = snapshot(), result = await f.call(name, { token, ...(name === 'read_file' ? { path: 'source.txt' } : {}) });
+      assert.equal(result.isError, false, JSON.stringify(result));
+      for (let i = 0; i < traces.length; i++) assert.ok(snapshot()[i] > before[i], 'fresh state and marker reads remain mandatory');
+      if (name === 'read_file') {
+        assert.ok(workspaceChecks > before[2], 'valid file access still checks its workspace boundary');
+        assert.equal(result.structuredContent.text, 'preserved fixture text');
+      } else assert.equal(result.structuredContent.status, 'running');
+    });
+  } finally { boundary.mock.restore(); for (const trace of traces.reverse()) trace.restore(); }
+  for (const trace of traces) assert.equal(trace.evidence.opens, trace.evidence.closes);
+  assert.deepEqual(readFileSync(statePath), state);
+  assert.equal(readFileSync(join(f.root, 'source.txt'), 'utf8'), 'preserved fixture text');
+  assert.equal(existsSync(join(f.root, 'forbidden.txt')), false);
+}));
+
+test('MCP admission preserves request errors and blocks every valid tool on changed state', t => fixture(async f => {
+  const { token } = await f.admin('register', { id: 'editor', instructions: 'private fixture instructions',
+    inputs: { source: 'private fixture input' }, workspace: { root: f.root, mode: 'edit' } });
+  const file = join(f.root, 'source.txt'), text = 'preserved fixture text'; writeFileSync(file, text);
+  const sha256 = createHash('sha256').update(text).digest('hex');
+  const corrupt = '{preserve changed state'; writeFileSync(join(f.dir, 'state.json'), corrupt);
+  const invalid = () => f.call('unknown_tool', { token: 'unknown_token' });
+  await t.test('unknown token precedes an unobserved state failure', async () => {
+    assert.deepEqual(await invalid(), { content: [{ type: 'text', text: 'unknown task token' }], isError: true });
+  });
+  for (const [name, args] of [
+    ['get_task', {}], ['read_input', { name: 'source' }], ['list_files', { path: '.' }],
+    ['read_file', { path: 'source.txt' }],
+    ['write_file', { path: 'source.txt', text: 'must not replace', expectedSha256: sha256 }],
+    ['delete_file', { path: 'source.txt', expectedSha256: sha256 }],
+    ['submit_result', { status: 'completed', summary: 'must not complete', result: 'must not save' }],
+  ]) await t.test(name, async () => {
+    const result = await f.call(name, { token, ...args });
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /state\.json changed outside this worker/);
+    assert.equal(result.structuredContent, undefined);
+    assert.equal(readFileSync(file, 'utf8'), text);
+    assert.equal(readFileSync(join(f.dir, 'state.json'), 'utf8'), corrupt);
+    assert.equal(existsSync(join(f.dir, 'editor.result.txt')), false);
+    assert.equal(existsSync(join(f.dir, 'recovery')), false);
+  });
+  await t.test('unknown token still precedes a latched state failure', async () => {
+    assert.deepEqual(await invalid(), { content: [{ type: 'text', text: 'unknown task token' }], isError: true });
+  });
 }));
 
 test('invalid wire UTF-8 is rejected rather than silently replacing bytes in a file', () => fixture(async f => {
