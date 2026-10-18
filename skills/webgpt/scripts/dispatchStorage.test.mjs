@@ -438,7 +438,8 @@ for (const initial of ['registered', 'prepared']) for (const path of ['split', '
           sends++;
           assert.equal(body, prompt);
           assert.equal(JSON.parse(fs.readFileSync(f.file)).dispatch.state, 'sending');
-          // The existing lock still spans the adapter.
+          // The existing lock still spans the adapter. This refactor changes
+          // publication granularity, not concurrent send/inspection authority.
           await assert.rejects(beginDispatch(f.file, { prompt, observation }), { code: 'DISPATCH_LOCKED' });
           assert.deepEqual(published.map(item => item.state), ['sending']);
           assert.equal(published[0].flushed, true);

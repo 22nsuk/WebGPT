@@ -25,9 +25,12 @@ const matches = (actual, expected) => hex(actual) && timingSafeEqual(Buffer.from
 export function serviceRuntime(dir) {
   const raw = realpathSync.native(dir, { encoding: 'buffer' }), canonical = raw.toString('utf8');
   if (!Buffer.from(canonical).equals(raw)) throw unavailable();
-  const stat = lstatSync(canonical);
+  const stat = lstatSync(canonical, { bigint: true });
   if (!stat.isDirectory() || stat.isSymbolicLink()) throw unavailable();
-  return createHash('sha256').update(JSON.stringify([canonical, stat.dev, stat.ino])).digest('hex');
+  // Exact decimal number literals preserve the v1 digest for safe integers
+  // without rounding full-width filesystem identifiers through Number.
+  const identity = `[${JSON.stringify(canonical)},${stat.dev},${stat.ino}]`;
+  return createHash('sha256').update(identity).digest('hex');
 }
 
 export function readServiceControl(dir) {

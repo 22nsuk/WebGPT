@@ -60,7 +60,9 @@ async function fixture(t, kind) {
     }
     expected = 'registered';
   }
-  return { dir, file, limit, run, expected, invalid, bytes: fs.readFileSync(file), probes: () => probes };
+  const limitInvalid = kind === 'diagnostic'
+    ? { code: 'DIAGNOSTIC_LIMIT_EXCEEDED', message: 'diagnostic data unavailable' } : invalid;
+  return { dir, file, limit, run, expected, invalid, limitInvalid, bytes: fs.readFileSync(file), probes: () => probes };
 }
 
 for (const kind of ['marker', 'owner', 'result', 'workspace', 'diagnostic', 'dispatch-ledger', 'dispatch-payload']) {
@@ -78,7 +80,7 @@ for (const kind of ['marker', 'owner', 'result', 'workspace', 'diagnostic', 'dis
   test(`${kind} read contract rejects growth without returning a bounded prefix`, async t => {
     const f = await fixture(t, kind), grown = Buffer.alloc(f.limit + 128, 120);
     const trace = observeFileRead(t, f.file, { beforeRead: () => fs.writeFileSync(f.file, grown) });
-    try { await assert.rejects(async () => f.run(), f.invalid); }
+    try { await assert.rejects(async () => f.run(), f.limitInvalid); }
     finally { trace.restore(); }
     assert.equal(trace.evidence.bytes, f.limit + 1);
     assert.equal(trace.evidence.opens, 1); assert.equal(trace.evidence.closes, 1);
@@ -91,7 +93,7 @@ for (const kind of ['marker', 'owner', 'result', 'workspace', 'diagnostic', 'dis
     const f = await fixture(t, kind), grown = Buffer.alloc(f.limit + 1, 120);
     fs.writeFileSync(f.file, grown);
     const trace = observeFileRead(t, f.file);
-    try { await assert.rejects(async () => f.run(), f.invalid); }
+    try { await assert.rejects(async () => f.run(), f.limitInvalid); }
     finally { trace.restore(); }
     assert.equal(trace.evidence.bytes, 0); assert.equal(trace.evidence.opens, 0);
     assert.deepEqual(fs.readFileSync(f.file), grown);

@@ -6,7 +6,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { createServer, createConnection } from 'node:net';
 import { once } from 'node:events';
-import { createHmac, randomBytes, randomUUID } from 'node:crypto';
+import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
+import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { acquireRuntimeLock } from './runtime.mjs';
@@ -32,8 +33,21 @@ function peer(port) {
   return { socket, closed, send: value => socket.write(JSON.stringify(value) + '\n'),
     next: () => queue.length ? Promise.resolve(queue.shift()) : ended ? Promise.resolve(null) : new Promise(resolve => pending.push(resolve)) };
 }
-async function fixture(t) {
-  const dir = fs.mkdtempSync(join(tmpdir(), 'webgpt-channel-'));
+async function fixture(t, identity) {
+  const dir = fs.realpathSync.native(fs.mkdtempSync(join(tmpdir(), 'webgpt-channel-')));
+  if (identity) {
+    // Only dev/ino are synthetic. Paths, directories, owner bytes and TCP peers
+    // remain real; Number callers see the same rounding as native fs metadata.
+    const native = fs.lstatSync;
+    const metadata = t.mock.method(fs, 'lstatSync', (path, options) => {
+      const stat = native(path, options);
+      if (path === dir) for (const field of ['dev', 'ino'])
+        stat[field] = options?.bigint ? identity[field] : Number(identity[field]);
+      return stat;
+    });
+    syncBuiltinESMExports();
+    t.after(() => { metadata.mock.restore(); syncBuiltinESMExports(); });
+  }
   const channel = await listenServiceControl(dir);
   const owner = acquireRuntimeLock(dir, { name: 'service', serviceControl: channel.descriptor });
   let stopped = 0; channel.activate(owner.instanceId, () => { stopped++; });
@@ -59,6 +73,41 @@ test('live credentials stop once without creating, reading or deleting a stop ma
   assert.equal(fs.readFileSync(join(marker, 'preserve'), 'utf8'), 'not authority');
   await f.channel.close();
   await assert.rejects(sendServiceStop(f.c), { code: 'SERVICE_STOP_UNCONFIRMED', requestMayHaveBeenSent: false });
+});
+
+for (const [dev, ino] of [[17n, 42n], [0n, BigInt(Number.MAX_SAFE_INTEGER)], [BigInt(Number.MAX_SAFE_INTEGER), 0n]])
+  test(`safe integer runtime ${dev}/${ino} retains the legacy digest and v1 stop`, async t => {
+    const f = await fixture(t, { dev, ino });
+    const legacy = createHash('sha256').update(JSON.stringify([f.dir, Number(dev), Number(ino)])).digest('hex');
+    const before = fs.readFileSync(f.file), owner = JSON.parse(before);
+    assert.equal(serviceRuntime(f.dir), legacy);
+    assert.deepEqual(owner.serviceControl, { version: 1, port: f.c.port, key: f.c.key, runtime: legacy });
+    assert.deepEqual(f.c, { ...owner.serviceControl, instanceId: f.owner.instanceId });
+    assert.deepEqual(await sendServiceStop({ ...f.c, runtime: legacy }), { accepted: true });
+    assert.equal(f.stopped(), 1); assert.deepEqual(fs.readFileSync(f.file), before);
+  });
+
+for (const field of ['dev', 'ino']) test(`full-width runtime ${field} rejects copied discovery after directory replacement`, async t => {
+  const first = 2n ** 53n, identity = { dev: 17n, ino: 42n, [field]: first };
+  const f = await fixture(t, identity), original = fs.readFileSync(f.file), retained = f.dir + '-original';
+  t.after(() => fs.rmSync(retained, { recursive: true, force: true }));
+  fs.renameSync(f.dir, retained); fs.mkdirSync(f.dir, { mode: 0o700 });
+  fs.mkdirSync(join(f.dir, 'service.lock'), { mode: 0o700 });
+  fs.writeFileSync(f.file, original, { mode: 0o600 });
+  identity[field]++;
+  assert.notEqual(first, identity[field]); assert.equal(Number(first), Number(identity[field]));
+  // A fresh lookup must fail before the still-live original listener is sent a
+  // stop. This same path authenticated and stopped it under rounded identities.
+  await assert.rejects(async () => sendServiceStop(readServiceControl(f.dir)), { code: 'SERVICE_CONTROL_UNAVAILABLE' });
+  assert.equal(f.stopped(), 0); assert.deepEqual(fs.readFileSync(f.file), original);
+  assert.deepEqual(fs.readFileSync(join(retained, 'service.lock', 'owner.json')), original);
+
+  // Returning the original directory to the same canonical path still permits
+  // its unchanged v1 owner credentials to stop the real listener.
+  fs.rmSync(f.dir, { recursive: true }); fs.renameSync(retained, f.dir); identity[field] = first;
+  assert.deepEqual(readServiceControl(f.dir), f.c);
+  assert.deepEqual(await sendServiceStop(readServiceControl(f.dir)), { accepted: true });
+  assert.equal(f.stopped(), 1);
 });
 
 for (const field of ['key', 'instanceId', 'runtime']) test(`wrong ${field} cannot authenticate this instance`, async t => {

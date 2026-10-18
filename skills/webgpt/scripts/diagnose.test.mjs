@@ -11,12 +11,15 @@ import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { diagnoseTask } from './diagnose.mjs';
 import { AUDIT_LIMIT, readDiagnosticBytes } from './audit.mjs';
-import { createStateMarker, readStateMarker } from './runtime.mjs';
+import { acquireRuntimeLock, createStateMarker, readStateMarker, readStateBytes, writeStateBytes, parseState } from './runtime.mjs';
 import { start } from './worker.mjs';
 import { request } from './client.mjs';
+import { observeFileRead } from './test-fixtures/file-read.mjs';
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const logName = 'mcp-audit.jsonl';
+const stateLimit = 32 * 1024 * 1024;
+const stateLimitMessage = 'task state exceeds offline diagnostic limit (32 MiB); state not validated';
 function fixture(t) {
   const dir = fs.mkdtempSync(join(tmpdir(), 'webgpt-diagnose-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
@@ -26,6 +29,23 @@ function fixture(t) {
   const save = () => fs.writeFileSync(state, JSON.stringify([task]), { mode: 0o600 });
   save(); createStateMarker(marker);
   return { dir, state, marker, task, save, config: { dataDir: dir } };
+}
+function accumulatedTasks(f, size) {
+  const tasks = Array.from({ length: 17 }, (_, i) => ({ ...f.task,
+    id: i ? `retained-${i}` : f.task.id, token: i ? `${f.task.token}-${i}` : f.task.token,
+    instructions: '', workspace: null, changes: [] }));
+  let remaining = size - Buffer.byteLength(JSON.stringify(tasks));
+  // ASCII content makes the compact JSON size exact without oversized individual
+  // registrations or padding outside the inventory. Reuse the instruction text.
+  const instructions = f.task.instructions.padEnd(2000000, 'x');
+  for (const task of tasks) {
+    const length = Math.min(instructions.length, remaining);
+    assert.ok(length > 0); task.instructions = instructions.slice(0, length); remaining -= length;
+    const overhead = Buffer.byteLength(JSON.stringify({ id: task.id, instructions: '', inputs: task.inputs }));
+    assert.ok(overhead + length < 2 * 1024 * 1024, 'each registration fits the controller request allowance');
+  }
+  assert.equal(remaining, 0);
+  return tasks;
 }
 function event(taskId = 'owned') {
   return { version: 1, phase: 'tool_received', runId: randomUUID(), timestamp: '2026-09-24T00:00:00.000Z',
@@ -208,6 +228,74 @@ test('real controller recovery warnings also appear in offline diagnosis with au
   assert.equal(report.stateMarker, 'invalid_or_unreadable'); assert.equal(report.pendingResults.length, 1);
   assert.equal(report.task.status, 'running'); assert.equal(report.audit.availability, 'not_observed');
   assert.equal(JSON.parse(fs.readFileSync(join(dir, 'state.json')))[0].token, registered.token);
+});
+
+test('valid accumulated state fits the diagnostic boundary and reports excess without reading or guessing', async t => {
+  const f = fixture(t), tasks = accumulatedTasks(f, stateLimit), ownership = acquireRuntimeLock(f.dir);
+  const marker = fs.readFileSync(f.marker);
+  try {
+    let bytes = Buffer.from(JSON.stringify(tasks)); assert.equal(bytes.length, stateLimit);
+    writeStateBytes(f.state, bytes);
+    const report = diagnoseTask('owned', f.config);
+    assert.equal(report.task.status, 'running'); assert.equal(report.stateMarker, 'valid'); noPrivateData(report, f);
+    tasks.at(-1).instructions += 'x';
+    bytes = Buffer.from(JSON.stringify(tasks)); assert.equal(bytes.length, stateLimit + 1);
+    writeStateBytes(f.state, bytes);
+    assert.equal(parseState(readStateBytes(f.state), f.dir).length, 17, 'runtime reads and validates the larger inventory');
+    const expectedHash = hash(bytes), trace = observeFileRead(t, f.state);
+    try { assert.throws(() => diagnoseTask('owned', f.config), { message: stateLimitMessage }); }
+    finally { trace.restore(); }
+    assert.equal(trace.evidence.opens, 0); assert.equal(trace.evidence.bytes, 0);
+    const configFile = join(f.dir, 'config.json'); fs.writeFileSync(configFile, JSON.stringify(f.config));
+    const cli = fileURLToPath(new URL('./diagnose.mjs', import.meta.url));
+    await assert.rejects(promisify(execFile)(process.execPath, [cli, 'owned'], {
+      env: { ...process.env, WEBGPT_CONFIG: configFile, WEBGPT_DATA_DIR: f.dir }, timeout: 5000, maxBuffer: 65536,
+    }), error => {
+      assert.equal(error.code, 1); assert.equal(error.stdout, '');
+      assert.equal(error.stderr, `WebGPT diagnose: ${stateLimitMessage}\n`);
+      noPrivateData({ stdout: error.stdout, stderr: error.stderr }, f); return true;
+    });
+    assert.equal(fs.statSync(f.state).size, stateLimit + 1);
+    assert.equal(hash(readStateBytes(f.state)), expectedHash);
+    assert.deepEqual(fs.readFileSync(f.marker), marker);
+  } finally { ownership.release(); }
+});
+
+test('state growth at open or read retains the diagnostic size classification and bounded I/O', t => {
+  const f = fixture(t), grown = Buffer.from(JSON.stringify(accumulatedTasks(f, stateLimit + 1)));
+  const expectedHash = hash(grown); assert.equal(grown.length, stateLimit + 1);
+  for (const [hook, expectedBytes] of [['beforeOpen', 0], ['beforeRead', stateLimit + 1]]) {
+    f.save();
+    const trace = observeFileRead(t, f.state, { [hook]: () => fs.writeFileSync(f.state, grown) });
+    try { assert.throws(() => diagnoseTask('owned', f.config), { message: stateLimitMessage }); }
+    finally { trace.restore(); }
+    assert.equal(trace.evidence.opens, 1, hook); assert.equal(trace.evidence.closes, 1, hook);
+    assert.equal(trace.evidence.bytes, expectedBytes, hook);
+    assert.equal(fs.statSync(f.state).size, grown.length);
+    assert.equal(hash(readStateBytes(f.state)), expectedHash);
+  }
+});
+
+test('missing, unsafe, malformed and native-failing state keep the unavailable classification', t => {
+  const f = fixture(t), unavailable = { message: 'task state unavailable' };
+  fs.unlinkSync(f.state);
+  assert.throws(() => diagnoseTask('owned', f.config), unavailable);
+  fs.mkdirSync(f.state);
+  assert.throws(() => diagnoseTask('owned', f.config), unavailable);
+  fs.rmdirSync(f.state);
+  for (const bytes of [Buffer.from([0xff]), Buffer.from('{fixture-private-evidence'), Buffer.from('{}')]) {
+    fs.writeFileSync(f.state, bytes);
+    assert.throws(() => diagnoseTask('owned', f.config), unavailable);
+    assert.deepEqual(fs.readFileSync(f.state), bytes);
+  }
+  f.save(); const original = readStateBytes(f.state);
+  const trace = observeFileRead(t, f.state, { beforeRead() {
+    throw Object.assign(Error('fixture-private-error ' + f.state), { code: 'EIO' });
+  } });
+  try { assert.throws(() => diagnoseTask('owned', f.config), unavailable); }
+  finally { trace.restore(); }
+  assert.equal(trace.evidence.bytes, 0); assert.equal(trace.evidence.closes, 1);
+  assert.deepEqual(readStateBytes(f.state), original);
 });
 
 test('CLI emits a partial report but still fails on invalid authoritative state', async t => {

@@ -54,11 +54,11 @@ for (const bytes of [Buffer.from([0, 255, 192, 128]), Buffer.from('\uFEFF한국�
   });
 }
 
-for (const kind of ['oversized', 'directory', 'hardlink', 'symlink', 'dangling']) {
+for (const kind of ['oversized', 'directory', 'hardlink', 'oversized-hardlink', 'symlink', 'dangling']) {
   test(`bounded file rejects known ${kind} before opening content and preserves evidence`, t => {
     const { file, bytes } = fixture(t), target = file + '.target';
     if (kind === 'directory') { fs.unlinkSync(file); fs.mkdirSync(file); }
-    if (kind === 'hardlink') fs.linkSync(file, target);
+    if (kind === 'hardlink' || kind === 'oversized-hardlink') fs.linkSync(file, target);
     if (kind === 'symlink' || kind === 'dangling') {
       fs.renameSync(file, target);
       try { fs.symlinkSync(kind === 'dangling' ? target + '.missing' : target, file, 'file'); }
@@ -68,8 +68,10 @@ for (const kind of ['oversized', 'directory', 'hardlink', 'symlink', 'dangling']
         throw error;
       }
     }
+    // Unsafe links remain metadata failures even when they also exceed the limit.
+    const limit = kind.startsWith('oversized') ? bytes.length - 1 : 4096;
     const trace = observeFileRead(t, file);
-    try { assert.throws(() => readBoundedFile(file, kind === 'oversized' ? bytes.length - 1 : 4096, invalid), rejected('metadata')); }
+    try { assert.throws(() => readBoundedFile(file, limit, invalid), rejected(kind === 'oversized' ? 'size' : 'metadata')); }
     finally { trace.restore(); }
     assert.equal(trace.evidence.opens, 0); assert.equal(trace.evidence.bytes, 0);
     if (kind === 'directory') assert.ok(fs.lstatSync(file).isDirectory());
@@ -91,7 +93,7 @@ for (const property of ['size', 'nlink', 'isFile']) test(`bounded file rechecks 
     return info;
   });
   syncBuiltinESMExports();
-  try { assert.throws(() => readBoundedFile(file, bytes.length, invalid), rejected('metadata')); }
+  try { assert.throws(() => readBoundedFile(file, bytes.length, invalid), rejected(property === 'size' ? 'size' : 'metadata')); }
   finally {
     // This test owns both layers. Disassociate them before restoring in reverse
     // order, or automatic test cleanup can reinstall the inner layer's observer.

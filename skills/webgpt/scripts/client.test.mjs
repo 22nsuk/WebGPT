@@ -360,6 +360,7 @@ test('resume recovers a lost acknowledgment response by observing once without r
 test('resume preserves a concurrent discard and reports unverifiable post-ack results as unconfirmed', () => fixture(async f => {
   await completedTask(f, 'discard'); await completedTask(f, 'changed');
   await controllerProxy(f, async ({ config, actions }) => {
+    // The guarded command now rejects the raced discard before any new write.
     await assert.rejects(collectTask('discard', config, { resume: true }), { code: 'COLLECTION_DISCARDED', statusCode: 409 });
     const discarded = await collectTask('discard', config, { resume: true });
     assert.equal(discarded.disposition, 'discarded'); assert.equal(discarded.discarded, true);

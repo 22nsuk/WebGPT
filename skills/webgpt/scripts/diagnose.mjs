@@ -7,6 +7,8 @@ import { parseState, parseStateMarker, assertNoStateStage } from './runtime.mjs'
 import { verifySavedResult, inspectPendingResults } from './results.mjs';
 import { AUDIT_LIMIT, auditRecord, readDiagnosticBytes, validAuditTaskId } from './audit.mjs';
 
+const stateLimitMessage = 'task state exceeds offline diagnostic limit (32 MiB); state not validated';
+
 export function diagnoseTask(id, config = configuration()) {
   if (!validAuditTaskId(id)) throw Error('invalid task ID');
   const stateFile = join(config.dataDir, 'state.json');
@@ -15,7 +17,9 @@ export function diagnoseTask(id, config = configuration()) {
     const bytes = readDiagnosticBytes(stateFile, 32 * 1024 * 1024);
     if (bytes === null) throw Error();
     tasks = parseState(bytes, config.dataDir);
-  } catch { throw Error('task state unavailable'); }
+  } catch (error) {
+    throw Error(error.code === 'DIAGNOSTIC_LIMIT_EXCEEDED' ? stateLimitMessage : 'task state unavailable');
+  }
   const task = tasks.find(value => value.id === id);
   if (!task) throw Error('unknown task');
   let stateStage = 'absent', integrity = 'not_expected';
@@ -91,7 +95,8 @@ if (isCliEntry(import.meta)) {
     if (process.argv.length !== 3) throw Error('usage: diagnose.mjs <task-id>');
     console.log(JSON.stringify(diagnoseTask(process.argv[2])));
   } catch (error) {
-    const allowed = new Set(['usage: diagnose.mjs <task-id>', 'invalid task ID', 'unknown task', 'task state unavailable', 'diagnostic data unavailable']);
+    const allowed = new Set(['usage: diagnose.mjs <task-id>', 'invalid task ID', 'unknown task',
+      'task state unavailable', stateLimitMessage, 'diagnostic data unavailable']);
     console.error('WebGPT diagnose: ' + (allowed.has(error.message) ? error.message : 'diagnosis unavailable'));
     process.exitCode = 1;
   }

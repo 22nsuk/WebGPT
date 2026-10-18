@@ -115,7 +115,7 @@ This is the protocol available to the worker, not a sequence to copy into ordina
 
 - `get_task(token)` returns instructions, input names and any workspace grant;
   `read_input(token,name)` reads a named string supplied in `inputs`. With no range
-  arguments, the original `{name,text}` full response is unchanged. Optional `offset`
+  arguments, the original `{name,text}` full response is unchanged. For line windows, `offset`
   (1-based line), `limit` (1–5000 lines) and `maxChars` (1–200000 UTF-16 code units,
   including line endings) use the same complete-line window as `read_file`. If any
   is supplied, omitted values default to 1 / 400 / 16000. The response also includes
@@ -126,13 +126,14 @@ This is the protocol available to the worker, not a sequence to copy into ordina
   for the task has been read. Do not describe one page as the full original.
   CRLF, CR, LF, BOM, Unicode and supplied NULs are preserved, not normalized. A first
   line that exceeds the budget is rejected, not split or skipped; explicitly choose
-  a larger allowed budget or a full read. Empty input has zero lines; unknown names
-  and offsets beyond the input are errors. Names are exact input keys, never paths.
+  a larger allowed line budget, a character page or a full read. Empty input has zero
+  lines; unknown names and offsets beyond the input are errors. Names are exact input keys, never paths.
   Reads retain the current state/token checks and never acknowledge a task. This
   reduces returned context for selective rereads, not the shared-state verification
-  or complete-input hash/line scan. It does not measure or promise model-token savings.
-  Update the matching scripts (including `text-window.mjs`) through the normal idle,
-  stopped-worker procedure and refresh the connector's tool schema before using the
+  or whole-input hashing; line windows also scan the input's lines. It does not
+  promise model-token savings. Update the matching scripts (including `text-window.mjs`
+  and `bounded-text-page.mjs`) through the normal idle, stopped-worker procedure
+  and refresh the connector's tool schema before using the
   new optional arguments. Older workers reject them; there is no silent full-read
   fallback, new registration format or stored-state migration.
 - When local files are needed and granted, `list_files(token,path,limit?,cursor?)` lists a directory
@@ -150,18 +151,20 @@ This is the protocol available to the worker, not a sequence to copy into ordina
   This check is local to the listed directory, not recursive; known valid files/subdirectories
   retain their ordinary access checks. Readiness does not certify every directory entry name.
   `read_file(token,path)` gets text and SHA-256 (missing files return `exists:false`).
-  Optional `offset` (1-based line), `limit` (1–5000 lines) or `maxChars` (1–200000 UTF-16 code units)
-  enables a bounded window; omitted values then default to 1, 400 and 16000. Calls with none of
-  these options preserve the full-file response. A window adds `partial`, `startLine`, `endLine`,
-  `totalLines` and `nextOffset` (`null` at end). Empty files have zero lines and `endLine:0`;
+  For line windows, optional `offset` (1-based line), `limit` (1–5000 lines) or `maxChars`
+  (1–200000 UTF-16 code units) selects a bounded window; omitted values default to 1, 400 and 16000.
+  Calls without read-range options preserve the full-file response. A line window adds
+  `partial`, `startLine`, `endLine`, `totalLines` and `nextOffset` (`null` at end).
+  Empty files have zero lines and `endLine:0`;
   missing files keep `exists:false` without range metadata. An offset beyond the file is rejected.
   Complete lines retain their original LF, CRLF or CR endings. If the first requested line exceeds
-  the character budget, increase it or use the full-file call; a line tail is never silently omitted.
+  the character budget, explicitly choose a larger line budget, a character page or a full read;
+  a line tail is never silently omitted.
   `sha256` always covers the **entire original file**, not the excerpt. Optional `expectedSha256`
   pins a read to that digest and rejects a changed/deleted file; by itself it keeps the full response.
   Compare hashes between windows and restart reading after a revision change. Read the whole file
   before full-file replacement so an excerpt is never mistaken for the full body. The 10 MiB/UTF-8/
-  link/path checks still apply to the whole file, including bytes outside the returned window.
+  NUL/link/path checks still apply to the whole file, including bytes outside the returned window.
   For a local change in a large file, read the needed windows with a whole-file SHA pin and
   use a small, unambiguous `oldText` span rather than transferring the full body for that change.
 - For requested edits, `write_file(token,path,text,expectedSha256,oldText?)` creates (`null` revision)
@@ -185,6 +188,13 @@ This is the protocol available to the worker, not a sequence to copy into ordina
   completion separately before closing the owned tab; see [chat-lifecycle.md](chat-lifecycle.md).
 
 With no workspace grant, only `get_task`, `read_input` and `submit_result` are available to the task.
+
+Both read tools also accept `charOffset: 0` for [character pages](read-efficiency.md#character-pages),
+including long single lines. Pass each returned `nextCharOffset` as the next `charOffset` until
+it is `null`; offsets count UTF-16 code units from zero. Do not combine `charOffset` with
+`offset`, `limit` or `maxChars`. The existing `nextOffset` continues to mean a line offset.
+Successful character pages fit a 20,000-code-unit serialized JSON-RPC response, including
+escaping and both copies in the default `dual` format; page lengths can vary with the envelope.
 
 The service rejects stale revisions, symlinks/hardlinks, traversal and Git metadata access.
 Separate authorized GitHub tools do not bypass or change this file-access boundary.
@@ -219,8 +229,8 @@ project snapshot or explicitly supplied inputs when unrelated credentials must r
 Project files and original backups have a 10 MiB limit; mutation journals retain their
 1 MiB limit. Actual bounded reads enforce the respective limit plus one sentinel byte
 per snapshot, not only an earlier file-size check. They reject overflow; no prefix is
-returned as a complete file. Optional line windows still validate and hash the whole
-bounded snapshot before selecting lines. Empty files, UTF-8, CRLF and whole-file revision
+returned as a complete file. Optional line windows and character pages still validate and hash
+the whole bounded snapshot before selecting text. Empty files, UTF-8, CRLF and whole-file revision
 semantics are unchanged. A read error does not authorize truncation, retrying a write or
 skipping recovery inspection.
 This byte cap is not a read deadline or an atomic snapshot against concurrent writers.
@@ -250,11 +260,12 @@ limit is rejected before buffering; actual received-byte limits remain enforced 
 requests, including chunked bodies and those without that header. Invalid wire UTF-8 and
 tool strings containing unpaired UTF-16 surrogates fail rather than being silently replaced.
 
-Calls without read-window options still return the whole file. MCP responses include the
-same tool data in both text `content` and `structuredContent`; full reads of large files
-can therefore produce much larger serialized responses. Use bounded windows for selective
-reading, but each call still reads, validates and hashes the entire file. Edits and recovery
-inspection also retain full original backups and their I/O costs. The request cap is not a
+Calls without read-range options still return the whole file. MCP responses default to the
+same tool data in both text `content` and `structuredContent`; optional `responseFormat:"text"`
+omits the second copy. Full reads and line windows have no serialized-response cap; use
+`charOffset` when that bound or progress through a long line is needed. Each call still reads,
+validates and hashes the entire file. Edits and recovery inspection also retain full
+original backups and their I/O costs. The request cap is not a
 response-size, total-memory, latency or denial-of-service guarantee. Use the normal stopped-worker
 update procedure before relying on the larger file allowance; older workers keep their old limits.
 
