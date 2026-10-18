@@ -233,8 +233,9 @@ export function changeWorkspace(grant,dir,taskId,{path,text,expectedSha256,oldTe
     text=before.text.slice(0,offset)+text+before.text.slice(offset+oldText.length);
     if(Buffer.byteLength(text)>MAX_BYTES)throw Error('resulting text must be <=10 MiB');
   }
-  const permissions=before.exists?lstatSync(file):null;
-  if(!deleting && process.platform!=='win32' && permissions && (permissions.mode & 0o7000))throw Error('editing special-mode files is not supported');
+  // Preserve full-width source identity through the final replacement check.
+  const permissions=before.exists?lstatSync(file,{bigint:true}):null;
+  if(!deleting && process.platform!=='win32' && permissions && (permissions.mode & 0o7000n))throw Error('editing special-mode files is not supported');
   const recovery=resolve(dir,'recovery',taskId);mkdirSync(recovery,{recursive:true,mode:0o700});
   const operation=randomUUID(), backup=before.exists?resolve(recovery,operation+'.before.txt'):null;
   if(backup) writeFileSync(backup,before.text,{flag:'wx',mode:0o600,flush:true});
@@ -277,18 +278,18 @@ export function changeWorkspace(grant,dir,taskId,{path,text,expectedSha256,oldTe
         if(!ownedStage(stage))throw stageConflict();
         writeFileSync(fd,text);
         if(process.platform!=='win32') {
-          const staged=fstatSync(fd);
-          if(staged.uid!==permissions.uid || staged.gid!==permissions.gid)fchownSync(fd,permissions.uid,permissions.gid);
-          fchmodSync(fd,permissions.mode & 0o777);
-          const preserved=fstatSync(fd);
+          const staged=fstatSync(fd,{bigint:true});
+          if(staged.uid!==permissions.uid || staged.gid!==permissions.gid)fchownSync(fd,Number(permissions.uid),Number(permissions.gid));
+          fchmodSync(fd,Number(permissions.mode & 0o777n));
+          const preserved=fstatSync(fd,{bigint:true});
           if(preserved.uid!==permissions.uid || preserved.gid!==permissions.gid
-              || (preserved.mode & 0o7777)!==(permissions.mode & 0o777))throw Error('could not preserve file permissions');
+              || (preserved.mode & 0o7777n)!==(permissions.mode & 0o777n))throw Error('could not preserve file permissions');
         }
         fsyncSync(fd);
       } finally {closeSync(fd);}
       target(grant,path,true);
       if(snapshot(file).sha256!==expectedSha256) throw Error('file revision conflict');
-      const current=lstatSync(file);
+      const current=lstatSync(file,{bigint:true});
       if(current.dev!==permissions.dev || current.ino!==permissions.ino || current.mode!==permissions.mode
           || current.uid!==permissions.uid || current.gid!==permissions.gid)throw Error('file permissions or identity changed');
       // Bind publication to the descriptor we wrote, not its reusable pathname.
