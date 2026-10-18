@@ -70,6 +70,12 @@ register it as success or automatically retry/remove it. On success stdout conta
 `ok`, the output byte count and SHA-256 of the **evidence file**, not its contents.
 Do not pipe that receipt into registration as though it were the evidence.
 
+On Windows, `--out` rejects colons outside a leading drive prefix before source or
+output I/O. This includes named streams, `file::$DATA`, and stream syntax in parent
+components; NTFS stream creation can modify an existing host file instead of creating
+a separate evidence file. Ordinary drive, UNC and namespaced paths remain supported.
+POSIX literal-colon filenames remain valid. The supplied path is not rewritten.
+
 Before opening the output, the CLI rejects any existing leaf (including a dangling
 symlink) and treats metadata lookup failures as errors, not absence. Exclusive
 creation remains mandatory because this check cannot reserve the path. The newly
