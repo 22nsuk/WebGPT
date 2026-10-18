@@ -158,7 +158,8 @@ This is the protocol available to the worker, not a sequence to copy into ordina
   Empty files have zero lines and `endLine:0`;
   missing files keep `exists:false` without range metadata. An offset beyond the file is rejected.
   Complete lines retain their original LF, CRLF or CR endings. If the first requested line exceeds
-  the character budget, explicitly choose a larger line budget, a character page or a full read;
+  the character budget, follow the [character-page retry](read-efficiency.md#character-pages)
+  with `charOffset: 0` and no line options. A larger `maxChars` can help only up to 200000;
   a line tail is never silently omitted.
   `sha256` always covers the **entire original file**, not the excerpt. Optional `expectedSha256`
   pins a read to that digest and rejects a changed/deleted file; by itself it keeps the full response.

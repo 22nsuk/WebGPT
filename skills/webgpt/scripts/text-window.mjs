@@ -30,7 +30,8 @@ export function textWindow(text, { offset, limit, maxChars }, source = 'file') {
     if (parts.length === limit) { stopped = true; continue; }
     const length = cursor - start;
     if (characters + length > maxChars) {
-      if (parts.length === 0) throw Error(`first requested line exceeds maxChars; increase maxChars or read the whole ${source}`);
+      if (parts.length === 0) throw Object.assign(
+        Error(`first requested line exceeds maxChars; increase maxChars or read the whole ${source}`), { code: 'READ_LINE_TOO_LONG' });
       stopped = true; continue;
     }
     parts.push(text.slice(start, cursor)); characters += length; endLine = totalLines;
