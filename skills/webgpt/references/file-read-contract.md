@@ -43,9 +43,13 @@ back to the existing numeric `mode` field. No BigInt enters wire data or state.
 These checks cover this shared reader family; it does not migrate
 persisted workspace-root identifiers or every other filesystem identity check.
 
-The rejection factory returns the domain error for `metadata`, `identity` or
-`overflow`. Native I/O errors propagate; adapters retain their existing public
-classification boundaries. In particular, owner lookup I/O retains its native
+The rejection factory returns the domain error for `metadata` (file type/link policy),
+`size` (observed size above the allowance), `identity` or `overflow` (actual read above
+the allowance). File type/link checks precede size classification. The diagnostic
+adapter marks `size` and `overflow` as `DIAGNOSTIC_LIMIT_EXCEEDED`, while preserving
+its existing message; offline task diagnosis distinguishes that allowance from
+other state failures. Native I/O errors propagate; other adapters retain their existing
+public classification boundaries. In particular, owner lookup I/O retains its native
 error boundary, while failure to read/decode a discovered owner remains
 `LOCK_UNCERTAIN`. No failed owner read is proof of death or permission to release
 or replace a lock. Caller authorization, privacy checks, decoding, SHA checks,

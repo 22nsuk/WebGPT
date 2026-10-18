@@ -73,7 +73,8 @@ for (const kind of ['directory', 'hardlink', 'oversized']) test(`bounded scan re
   if (kind === 'directory') fs.mkdirSync(file);
   else { fs.writeFileSync(file, 'original'); if (kind === 'hardlink') fs.linkSync(file, file + '.link'); }
   const observed = observeFileRead(t, file);
-  try { assert.throws(() => scan(file, kind === 'oversized' ? 7 : 8, invalid, () => assert.fail('untrusted bytes')), { code: 'metadata' }); }
+  try { assert.throws(() => scan(file, kind === 'oversized' ? 7 : 8, invalid, () => assert.fail('untrusted bytes')),
+    { code: kind === 'oversized' ? 'size' : 'metadata' }); }
   finally { observed.restore(); }
   assert.equal(observed.evidence.opens, 0); assert.equal(observed.evidence.bytes, 0);
 });
