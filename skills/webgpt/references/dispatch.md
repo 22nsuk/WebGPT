@@ -61,6 +61,8 @@ inventing a digest. Do not use broad UI snapshots as diagnostic output.
 Import `registerDispatch`, `dispatchPrompt`, `confirmDispatch`, `inspectDispatch`, `recoverDispatch`
 and `textDigest` from the installed `scripts/dispatch.mjs`. No dependency installation is needed.
 `prepareDispatch` and `beginDispatch` are also available for an explicitly staged workflow.
+`diagnoseDispatch` provides the separate read-only observation described below, including while
+the ledger is locked; it does not recover or validate permission to continue an attempt.
 The high-level adapter is for a supported ordinary Node host that can call authorized browser
 controls; its availability does not imply that CUA can host arbitrary Node code.
 
@@ -225,6 +227,7 @@ node <skill>/scripts/client.mjs dispatch prepare <absolute-ledger.json> <absolut
 node <skill>/scripts/client.mjs dispatch begin <absolute-ledger.json> <absolute-begin.json>
 node <skill>/scripts/client.mjs dispatch confirm <absolute-ledger.json> <absolute-confirmation.json>
 node <skill>/scripts/client.mjs dispatch inspect <absolute-ledger.json>
+node <skill>/scripts/client.mjs dispatch diagnose <absolute-ledger.json>
 node <skill>/scripts/client.mjs dispatch recover <absolute-ledger.json>
 ```
 
@@ -257,10 +260,10 @@ uninterrupted attempt: upload if required, observe readiness, fill/send once, th
 actual new message. After a lost response or interrupted attempt, use the reconciliation table
 below; never repeat `begin` to find out whether the earlier action ran.
 
-Text-only helper/dispatch CLI results contain only `state`, `mode`, `connectorRequired`,
+Text-only dispatch transition and `inspect` results contain only `state`, `mode`, `connectorRequired`,
 `uiPrepared`, `submissionConfirmed`, `resendBlocked`, `needsInspection` and a fixed `reason` code.
 Version-2 attachment tasks additionally expose `requiredAttachmentCount` and `attachmentEvidenceConfirmed`;
-filenames remain private. A CLI exit of zero means the state operation succeeded, **not** that
+filenames remain private. For these commands, a CLI exit of zero means the state operation succeeded, **not** that
 sending succeeded: check `state` and `submissionConfirmed`.
 
 Failures retain exactly `code`, `stage`, `reason`, `message`, with fixed text and WeakMap-backed
@@ -284,12 +287,57 @@ records `uncertain`/`evidence_unconfirmed` and can exit zero, or refuses to down
 Invalid JSON cannot reach that check and leaves the prior state unchanged. Neither case permits a
 resend. An input error describes this invocation; it does not prove that no earlier attempt ran.
 `DISPATCH_LOCKED` is not an instruction to add `await` and retry: another parent may own the lock.
-Inspect ownership and retained state rather than stealing the lock, registering a replacement ID
+Use `diagnose` for a read-only observation of the lock and saved dispatch, then inspect ownership
+and retained state rather than stealing the lock, registering a replacement ID
 or uploading again. Interpret trusted diagnostics instead of printing rejected Promises or payloads.
 
 Existing controller commands retain their contracts; notably controller `register` still returns
 a private task token. Consume that result privately, not as general diagnostic output. The compact
 projection does not sanitize separate browser-tool logs; constrain their returned observations too.
+
+## Read-only diagnosis of an interrupted parent
+
+Run `dispatch diagnose <absolute-ledger.json>` to observe a retained ledger even when
+`<ledger>.dispatch.lock` exists. The API is `await diagnoseDispatch(ledgerPath)`. This path does
+not acquire, release or modify the lock, save/recover dispatch, scan temporary candidates or
+contact the browser/controller. Existing `inspect`, `inspect-review` and verification evidence
+reads retain their exclusive-lock contract.
+
+The result always includes `readOnly: true`, `snapshotConfirmed: false`, `browserChecked: false`
+and `controllerChecked: false`. `lock.before` and `lock.after` are each `present`, `absent` or
+`unavailable`; a directory or dangling link also counts as an entry being present. Lock contents
+and PIDs are never read. `lock.changed` is `true` when the two metadata observations differ,
+`false` when they agree, and `null` if either could not be obtained. A failure has a fixed
+four-field `lock.diagnostic` (`DISPATCH_STORAGE`, `lock_observe`, bounded reason/message);
+otherwise it is `null`. Presence does not prove that an owner is live or stopped.
+
+The independent `ledger` observation has these meanings:
+
+| `ledger.status` | Interpretation | `ledger.recordedDispatch` |
+| --- | --- | --- |
+| `observed` | The bounded read passed dispatch validation, and the compared file observations agreed. | The existing compact v1/v2 summary of the saved dispatch record. |
+| `missing` | Both ledger lookups observed absence. | `null` |
+| `no_dispatch` | A JSON object was read but has no own `dispatch` field. No record is initialized. | `null` |
+| `changed` | A different opened file, disappearance, appearance, or metadata/byte-count change was observed. | `null` |
+| `invalid` | UTF-8, JSON or dispatch schema validation failed. | `null` |
+| `unavailable` | The file type/link policy, 2 MiB read allowance or filesystem I/O prevented a complete observation. | `null` |
+
+`ledger.diagnostic` is a fixed four-field error for `invalid` or `unavailable`, otherwise `null`.
+File-policy/allowance rejection uses `DISPATCH_LEDGER / ledger_read / ledger_file_invalid`;
+decode/schema failures retain `DISPATCH_LEDGER / ledger_validate / invalid_ledger`; I/O failures
+use `DISPATCH_STORAGE / ledger_read`. None includes private paths, raw errors or file contents.
+
+For `diagnose`, exit zero means an observation report was produced, including incomplete or
+invalid observations. Invalid arguments, an invalid path/runtime, or failure to resolve the
+parent directory instead fail with the existing bounded CLI/API diagnostics. Inspect the
+report fields; exit zero is not proof of a usable ledger, completed submission or permission
+to resume, remove a lock or resend.
+
+A saved summary can still be reported when only the lock changed, because it describes the
+record that was read. Even `observed` with `lock.changed: false` is not an atomic snapshot:
+same-metadata changes, changes between observations that are reversed, and later changes may
+escape detection. The helper validates the dispatch record, not arbitrary parent metadata or
+all review evidence. See [dispatch-storage.md](dispatch-storage.md) for the read boundaries.
 
 ## Interruption and reconciliation
 
@@ -313,7 +361,8 @@ cancelling generation or deleting the chat. Preserve the completed final answer 
 owned tab, following [parent-workflow.md](parent-workflow.md) and [chat-lifecycle.md](chat-lifecycle.md).
 
 A forcibly terminated high-level caller may leave `<ledger>.dispatch.lock`. No TTL/PID-only stealing
-is performed. Preserve the lock and ledger; establish that every relevant parent is stopped and
+is performed. Start with `diagnose` to observe saved dispatch and lock presence without modifying
+either. Preserve the lock and ledger; establish that every relevant parent is stopped and
 inspect the retained chat/controller before explicitly archiving the stale lock. Then use `recover`,
 not another begin. Never remove a live/ambiguous owner's lock. An unreadable/corrupt ledger, changed
 schema, failed publication or external edit is an inspection case, not permission to start over.
@@ -335,6 +384,9 @@ explicit UI fixtures. `dispatchCli.test.mjs` checks action-specific diagnostics,
 ledger writes, forged diagnostics, v1/v2 CLI compatibility and real Worker conditional collection
 independent of uncertain UI records, including recovery refusal. The repository test runner discovers
 all three files without a separate runtime or new workflow.
+
+`dispatchStorage.test.mjs` and the actual CLI fixtures also cover read-only diagnosis with a held
+send barrier, file/lock changes, bounded reads, incomplete observations and private output.
 
 These tests are not a live signed-in ChatGPT/connector/browser end-to-end run. Verify the actual
 adapter's supported controls and evidence contract in the authorized environment before routine use.

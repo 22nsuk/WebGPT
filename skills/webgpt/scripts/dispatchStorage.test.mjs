@@ -6,8 +6,9 @@ import crypto from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { syncBuiltinESMExports } from 'node:module';
-import { registerDispatch, prepareDispatch, beginDispatch, dispatchPrompt, inspectDispatch, dispatchCli,
+import { registerDispatch, prepareDispatch, beginDispatch, dispatchPrompt, inspectDispatch, diagnoseDispatch, dispatchCli,
   dispatchDiagnostic, textDigest } from './dispatch.mjs';
+import { observeFileRead } from './test-fixtures/file-read.mjs';
 
 const limit = 2 * 1024 * 1024;
 const nonce = '00000000-0000-4000-8000-000000000001';
@@ -63,6 +64,7 @@ test('native-byte directory aliases cannot select a replacement-character ledger
     assert.equal(diagnostic.reason, 'native_path_not_utf8'); return true;
   };
   await assert.rejects(registerDispatch(join(alias, 'ledger.json'), spec), rejected);
+  await assert.rejects(diagnoseDispatch(join(alias, 'ledger.json')), rejected);
   const payload = join(f.dir, 'payload.json'); fs.writeFileSync(payload, JSON.stringify(spec));
   await assert.rejects(dispatchCli(['register', join(alias, 'ledger.json'), payload]), rejected);
   assert.deepEqual(fs.readFileSync(rawFile), original); assert.deepEqual(fs.readFileSync(other), sibling);
@@ -82,6 +84,7 @@ test('ill-formed ledger paths cannot address literal replacement-character names
     await assert.rejects(registerDispatch(invalid, spec), error => {
       redacted(error, f); assert.equal(error.code, 'DISPATCH_INPUT'); return true;
     });
+    await assert.rejects(diagnoseDispatch(invalid), { code: 'DISPATCH_INPUT' });
     for (const [file] of paths) assert.deepEqual(fs.readFileSync(file), before);
     assert.deepEqual(fs.readdirSync(f.dir).sort(), entries);
     assert.deepEqual(fs.readdirSync(parent), ['ledger.json']);
@@ -137,7 +140,15 @@ test('Windows filename case aliases share the task-ledger lock and committed sen
     fillAndSend: async () => { sends++; entered(); await gate; }, observeSent: async () => sent(),
   });
   await Promise.race([started, writer]);
-  try { await assert.rejects(beginDispatch(alias, { prompt, observation: ready() }), { code: 'DISPATCH_LOCKED' }); }
+  try {
+    await assert.rejects(beginDispatch(alias, { prompt, observation: ready() }), { code: 'DISPATCH_LOCKED' });
+    const ledger = fs.readFileSync(f.file), lock = fs.readFileSync(f.file + '.dispatch.lock');
+    const report = await diagnoseDispatch(alias);
+    assert.equal(report.ledger.status, 'observed'); assert.equal(report.ledger.recordedDispatch.state, 'sending');
+    assert.deepEqual(report.lock, { before: 'present', after: 'present', changed: false, diagnostic: null });
+    assert.equal(report.snapshotConfirmed, false);
+    assert.deepEqual(fs.readFileSync(f.file), ledger); assert.deepEqual(fs.readFileSync(f.file + '.dispatch.lock'), lock);
+  }
   finally { release(); await writer; }
   const submitted = fs.readFileSync(f.file);
   assert.equal(JSON.parse(submitted).dispatch.state, 'submitted'); assert.equal(sends, 1);
@@ -155,6 +166,7 @@ test('ledger paths reject Windows stream syntax before I/O and retain POSIX colo
       const file = join(f.dir, name);
       assert.equal((await registerDispatch(file, spec)).state, 'registered');
       assert.equal((await dispatchCli(['begin', file, payload])).state, 'sending');
+      assert.equal((await diagnoseDispatch(file)).ledger.recordedDispatch.state, 'sending');
       assert.equal(JSON.parse(fs.readFileSync(file)).dispatch.state, 'sending');
     }
   } else {
@@ -169,8 +181,9 @@ test('ledger paths reject Windows stream syntax before I/O and retain POSIX colo
         await assert.rejects(registerDispatch(file, spec), {
           code: 'DISPATCH_INPUT', stage: 'input', reason: 'invalid_input',
         });
-        for (const action of ['inspect', 'begin']) await assert.rejects(
-          dispatchCli(action === 'inspect' ? [action, file] : [action, file, payload]), {
+        await assert.rejects(diagnoseDispatch(file), { code: 'DISPATCH_INPUT' });
+        for (const action of ['inspect', 'diagnose', 'begin']) await assert.rejects(
+          dispatchCli(action === 'begin' ? [action, file, payload] : [action, file]), {
             code: 'DISPATCH_INPUT', stage: 'cli_arguments', reason: action + '_ledger_path_invalid',
           });
       }
@@ -180,6 +193,185 @@ test('ledger paths reject Windows stream syntax before I/O and retain POSIX colo
   }
   assert.deepEqual(fs.readFileSync(f.file), f.before);
   assert.equal(fs.readFileSync(payload, 'utf8'), JSON.stringify({ prompt, observation: ready() }));
+});
+
+test('dispatch diagnose observes an owned sending barrier without writing or opening the lock or candidates', async t => {
+  const f = await fixture(t), lock = f.file + '.dispatch.lock';
+  fs.writeFileSync(f.stage, 'PRIVATE_FIXTURE_ONLY unfinished candidate');
+  let release, entered, sends = 0;
+  const gate = new Promise(resolve => { release = resolve; });
+  const started = new Promise(resolve => { entered = resolve; });
+  const writer = dispatchPrompt(f.file, prompt, {
+    observeReady: async () => ready(),
+    fillAndSend: async () => { sends++; entered(); await gate; }, observeSent: async () => sent(),
+  });
+  await Promise.race([started, writer]);
+  const saved = fs.readFileSync(f.file), owner = fs.readFileSync(lock), candidate = fs.readFileSync(f.stage);
+  let report, published, forbiddenCalls = 0;
+  const open = fs.openSync, native = fs.realpathSync.native, opened = [];
+  const forbidden = () => { forbiddenCalls++; throw Error('diagnosis reached a write or directory scan'); };
+  try {
+    await assert.rejects(inspectDispatch(f.file), { code: 'DISPATCH_LOCKED' });
+    t.mock.method(fs.realpathSync, 'native', (path, ...args) => {
+      assert.notEqual(path, f.file, 'do not open the final ledger through native realpath');
+      assert.notEqual(path, lock); return native(path, ...args);
+    });
+    await patched(t, {
+      ...Object.fromEntries(['writeFileSync', 'renameSync', 'unlinkSync', 'fsyncSync', 'mkdirSync', 'readdirSync']
+        .map(name => [name, forbidden])),
+      openSync(path, flags, ...args) {
+        opened.push(path);
+        assert.equal(flags & (fs.constants.O_WRONLY | fs.constants.O_RDWR | fs.constants.O_CREAT
+          | fs.constants.O_TRUNC | fs.constants.O_APPEND), 0);
+        return open(path, flags, ...args);
+      },
+    }, async () => { report = await diagnoseDispatch(f.file); });
+    assert.equal(forbiddenCalls, 0); assert.deepEqual(opened, [f.file]);
+    assert.equal(report.readOnly, true); assert.equal(report.snapshotConfirmed, false);
+    assert.equal(report.browserChecked, false); assert.equal(report.controllerChecked, false);
+    assert.deepEqual(report.lock, { before: 'present', after: 'present', changed: false, diagnostic: null });
+    assert.equal(report.ledger.status, 'observed'); assert.equal(report.ledger.diagnostic, null);
+    assert.equal(report.ledger.recordedDispatch.state, 'sending');
+    assert.equal(report.ledger.recordedDispatch.resendBlocked, true);
+    for (const secret of [f.dir, prompt, 'PRIVATE_FIXTURE_ONLY', target.tabId, textDigest(prompt), owner.toString()])
+      assert.ok(!JSON.stringify(report).includes(secret));
+    assert.deepEqual(fs.readFileSync(f.file), saved); assert.deepEqual(fs.readFileSync(lock), owner);
+    assert.deepEqual(fs.readFileSync(f.stage), candidate);
+  } finally { release(); published = await writer; }
+  assert.equal(published.state, 'submitted'); assert.equal(sends, 1);
+  assert.equal(fs.existsSync(lock), false); assert.deepEqual(fs.readFileSync(f.stage), candidate);
+});
+
+for (const change of ['replace_before_open', 'remove_before_open', 'replace_after_read', 'remove_after_read', 'same_size_edit', 'shrink', 'grow']) {
+  test(`dispatch diagnose withholds the saved summary after ${change}`, async t => {
+    const f = await fixture(t), lstat = fs.lstatSync;
+    let named = 0, changed = false, report;
+    const mutate = () => {
+      changed = true;
+      if (change.startsWith('replace')) { fs.renameSync(f.file, f.stage); fs.writeFileSync(f.file, f.before); }
+      else if (change.startsWith('remove')) fs.unlinkSync(f.file);
+      else if (change === 'same_size_edit') {
+        fs.writeFileSync(f.file, f.before.toString().replace('"taskId": "owned"', '"taskId": "other"'));
+        fs.utimesSync(f.file, 1, 1); // Deterministic metadata difference, even on coarse timestamp filesystems.
+      } else fs.writeFileSync(f.file, change === 'shrink' ? '{}' : Buffer.concat([f.before, Buffer.from(' ')]));
+    };
+    await patched(t, { lstatSync(path, ...args) {
+      if (path === f.file && ++named === 2 && change.endsWith('after_read')) mutate();
+      return lstat(path, ...args);
+    } }, async () => {
+      const read = observeFileRead(t, f.file, {
+        beforeOpen: change.endsWith('before_open') ? mutate : undefined,
+        afterStat: ['same_size_edit', 'shrink', 'grow'].includes(change) ? mutate : undefined,
+      });
+      try { report = await diagnoseDispatch(f.file); }
+      finally { read.restore(); }
+      assert.equal(read.evidence.opens, read.evidence.closes);
+    });
+    assert.equal(changed, true);
+    assert.deepEqual(report.ledger, { status: 'changed', recordedDispatch: null, diagnostic: null });
+    assert.equal(report.snapshotConfirmed, false); assert.equal(fs.existsSync(f.file + '.dispatch.lock'), false);
+    if (change.startsWith('replace')) {
+      assert.deepEqual(fs.readFileSync(f.stage), f.before); assert.deepEqual(fs.readFileSync(f.file), f.before);
+    }
+  });
+}
+
+test('dispatch diagnose distinguishes an absent ledger from one appearing after the initial lookup', async t => {
+  const f = await fixture(t), lstat = fs.lstatSync;
+  fs.unlinkSync(f.file);
+  let appeared = false;
+  const report = await patched(t, { lstatSync(path, ...args) {
+    try { return lstat(path, ...args); }
+    catch (error) {
+      if (path === f.file && !appeared && error.code === 'ENOENT') {
+        fs.writeFileSync(f.file, f.before); appeared = true;
+      }
+      throw error;
+    }
+  } }, () => diagnoseDispatch(f.file));
+  assert.equal(appeared, true);
+  assert.deepEqual(report.ledger, { status: 'changed', recordedDispatch: null, diagnostic: null });
+  assert.deepEqual(fs.readFileSync(f.file), f.before);
+});
+
+for (const size of ['exact', 'oversized', 'growth']) test(`dispatch diagnose keeps the bounded reader contract for ${size} data`, async t => {
+  const f = await fixture(t), bytes = Buffer.concat([f.before, Buffer.alloc(limit + (size === 'exact' ? 0 : 1000) - f.before.length, 32)]);
+  if (size !== 'growth') fs.writeFileSync(f.file, bytes);
+  const read = observeFileRead(t, f.file, { afterStat: size === 'growth' ? () => fs.writeFileSync(f.file, bytes) : undefined });
+  let report;
+  try { report = await diagnoseDispatch(f.file); } finally { read.restore(); }
+  assert.equal(read.evidence.bytes, size === 'exact' ? limit : size === 'growth' ? limit + 1 : 0);
+  assert.equal(read.evidence.opens, size === 'oversized' ? 0 : 1);
+  assert.equal(read.evidence.closes, read.evidence.opens);
+  assert.equal(report.ledger.status, size === 'exact' ? 'observed' : 'unavailable');
+  if (size !== 'exact') {
+    assert.equal(report.ledger.recordedDispatch, null);
+    assert.equal(report.ledger.diagnostic.reason, 'ledger_file_invalid');
+  }
+  assert.deepEqual(fs.readFileSync(f.file), bytes); assert.equal(fs.existsSync(f.file + '.dispatch.lock'), false);
+});
+
+for (const failure of ['read', 'final_stat', 'lock_before', 'lock_after']) {
+  test(`dispatch diagnose reports a fixed incomplete observation for ${failure}`, async t => {
+    const f = await fixture(t), lock = f.file + '.dispatch.lock', lstat = fs.lstatSync;
+    fs.writeFileSync(lock, 'PRIVATE_FIXTURE_ONLY owner');
+    let ledgerStats = 0, lockStats = 0, reached = false, report;
+    const fault = () => { reached = true; throw Object.assign(Error(f.dir + prompt), { code: 'EACCES', reason: prompt }); };
+    await patched(t, { lstatSync(path, ...args) {
+      if (path === f.file && ++ledgerStats === 2 && failure === 'final_stat') fault();
+      if (path === lock && ++lockStats === (failure === 'lock_before' ? 1 : 2) && failure.startsWith('lock')) fault();
+      return lstat(path, ...args);
+    } }, async () => {
+      const read = observeFileRead(t, f.file, { beforeRead: failure === 'read' ? fault : undefined });
+      try { report = await diagnoseDispatch(f.file); } finally { read.restore(); }
+      assert.equal(read.evidence.opens, 1); assert.equal(read.evidence.closes, 1);
+    });
+    assert.equal(reached, true); assert.equal(lockStats, 2);
+    const diagnostic = failure.startsWith('lock') ? report.lock.diagnostic : report.ledger.diagnostic;
+    assert.deepEqual(diagnostic, { code: 'DISPATCH_STORAGE', stage: failure.startsWith('lock') ? 'lock_observe' : 'ledger_read',
+      reason: 'permission_denied', message: 'dispatch storage unavailable; inspect private files' });
+    assert.equal(report.ledger.status, failure.startsWith('lock') ? 'observed' : 'unavailable');
+    if (failure.startsWith('lock')) {
+      assert.equal(report.lock.changed, null);
+      assert.equal(report.lock[failure === 'lock_before' ? 'before' : 'after'], 'unavailable');
+    } else assert.equal(report.ledger.recordedDispatch, null);
+    assert.equal(report.snapshotConfirmed, false);
+    assert.deepEqual(fs.readFileSync(f.file), f.before); assert.equal(fs.readFileSync(lock, 'utf8'), 'PRIVATE_FIXTURE_ONLY owner');
+  });
+}
+
+for (const change of ['create', 'remove', 'replace']) test(`dispatch diagnose reports a lock ${change} without interpreting its contents`, async t => {
+  const f = await fixture(t), lock = f.file + '.dispatch.lock';
+  if (change !== 'create') fs.writeFileSync(lock, 'PRIVATE_FIXTURE_ONLY previous owner');
+  const read = observeFileRead(t, f.file, { beforeRead() {
+    if (change !== 'create') fs.renameSync(lock, lock + '.held');
+    if (change !== 'remove') fs.mkdirSync(lock); // An entry need not be a readable regular lock file.
+  } });
+  let report;
+  try { report = await diagnoseDispatch(f.file); } finally { read.restore(); }
+  assert.deepEqual(report.lock, { before: change === 'create' ? 'absent' : 'present',
+    after: change === 'remove' ? 'absent' : 'present', changed: true, diagnostic: null });
+  assert.equal(report.ledger.status, 'observed'); assert.equal(report.snapshotConfirmed, false);
+  assert.deepEqual(fs.readFileSync(f.file), f.before);
+  if (change !== 'create') assert.equal(fs.readFileSync(lock + '.held', 'utf8'), 'PRIVATE_FIXTURE_ONLY previous owner');
+  if (change !== 'remove') assert.equal(fs.lstatSync(lock).isDirectory(), true);
+});
+
+for (const type of ['directory', 'symlink', 'hardlink']) test(`dispatch diagnose refuses a ${type} ledger without opening it`, async t => {
+  const f = await fixture(t);
+  if (type === 'hardlink') fs.linkSync(f.file, f.stage);
+  else {
+    fs.renameSync(f.file, f.stage);
+    if (type === 'directory') fs.mkdirSync(f.file);
+    else if (!link(t, f.stage, f.file)) return;
+  }
+  const read = observeFileRead(t, f.file);
+  let report;
+  try { report = await diagnoseDispatch(f.file); } finally { read.restore(); }
+  assert.equal(read.evidence.opens, 0); assert.equal(read.evidence.bytes, 0);
+  assert.equal(report.ledger.status, 'unavailable'); assert.equal(report.ledger.recordedDispatch, null);
+  assert.equal(report.ledger.diagnostic.reason, 'ledger_file_invalid');
+  assert.deepEqual(fs.readFileSync(f.stage), f.before);
 });
 
 for (const held of [true, false]) test(`pre-lock displaced inode metadata does not bypass ${held ? 'the current owner' : 'the committed send barrier'}`, async t => {

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
@@ -30,7 +31,7 @@ const read = file => JSON.parse(fs.readFileSync(file, 'utf8'));
 const safe = (value, f) => {
   const text = JSON.stringify(value);
   for (const privateValue of [secret, prompt, target.tabId, target.chatUrl, 'private-new',
-    'private-previous', 'private-source.txt', textDigest(prompt), f.file, f.payload])
+    'private-previous', 'private-source.txt', textDigest(prompt), f.dir, f.file, f.payload])
     assert.equal(text.includes(privateValue), false, 'private data in compact output');
   return value;
 };
@@ -42,7 +43,7 @@ const inputFailure = (f, stage, reason, code = 'DISPATCH_INPUT') => error => {
 };
 const payloadActions = ['register', 'prepare', 'begin', 'confirm'];
 
-for (const [action, count] of Object.entries({ preflight: 1, inspect: 2, recover: 2, register: 3, prepare: 3, begin: 3, confirm: 3 }))
+for (const [action, count] of Object.entries({ preflight: 1, inspect: 2, diagnose: 2, recover: 2, register: 3, prepare: 3, begin: 3, confirm: 3 }))
   test(`CLI ${action} diagnoses arity before payload or ledger access`, async t => {
     const f = fixture(t), original = fs.lstatSync;
     const normal = [action, f.file, f.payload].slice(0, count);
@@ -132,22 +133,99 @@ test('CLI value diagnostics retain trusted error identity and do not reclassify 
   assert.equal(fs.readFileSync(f.file, 'utf8'), '{"dispatch":null}');
 });
 
-// Fresh ordinary Node processes call the actual dispatcher; these are UI fixtures,
-// not real browser submissions. The existing dispatch.test.mjs also tests client.mjs.
-function cli(args) {
+// Fresh ordinary Node processes call the dispatcher directly or the real client entry.
+// The observations are UI fixtures without real browser submissions.
+function cli(args, { client = false } = {}) {
   const source = `import {dispatchCli, dispatchDiagnostic} from ${JSON.stringify(new URL('./dispatch.mjs', import.meta.url).href)};
     try { console.log(JSON.stringify(await dispatchCli(process.argv.slice(1)))); }
     catch (error) { console.error(JSON.stringify(dispatchDiagnostic(error))); process.exitCode = 1; }`;
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, ['--input-type=module', '-e', source, '--', ...args], { timeout: 15000, windowsHide: true });
+    const argv = client ? [fileURLToPath(new URL('./client.mjs', import.meta.url)), 'dispatch', ...args]
+      : ['--input-type=module', '-e', source, '--', ...args];
+    const child = spawn(process.execPath, argv, { timeout: 15000, windowsHide: true });
     let out = '', err = '';
     child.stdout.on('data', data => { out += data; }); child.stderr.on('data', data => { err += data; });
     child.once('error', reject);
     child.once('close', code => {
-      try { resolve({ code, out, err, value: JSON.parse(code === 0 ? out : err) }); } catch (error) { reject(error); }
+      try { resolve({ code, out, err, value: JSON.parse(code === 0 ? out : client ? err.replace(/^WebGPT: /, '') : err) }); }
+      catch (error) { reject(error); }
     });
   });
 }
+
+for (const attachments of [false, true]) test(`client CLI diagnose v${attachments ? 2 : 1} reports a locked sending ledger without changing retained evidence`, async t => {
+  const f = fixture(t);
+  await registerDispatch(f.file, spec(attachments));
+  fs.writeFileSync(f.payload, JSON.stringify({ prompt, observation: ready() }));
+  await dispatchCli(['begin', f.file, f.payload]);
+  const lock = f.file + '.dispatch.lock';
+  fs.writeFileSync(lock, secret);
+  const names = fs.readdirSync(f.dir), before = names.map(name => fs.readFileSync(join(f.dir, name)));
+  const result = await cli(['diagnose', f.file], { client: true });
+  assert.equal(result.code, 0, result.err); assert.equal(result.err, '');
+  assert.deepEqual(safe(result.value, f), {
+    readOnly: true, snapshotConfirmed: false,
+    lock: { before: 'present', after: 'present', changed: false, diagnostic: null },
+    ledger: { status: 'observed', recordedDispatch: {
+      state: 'sending', mode: 'pro', connectorRequired: true, uiPrepared: true,
+      submissionConfirmed: false, resendBlocked: true, needsInspection: true, reason: null,
+      ...(attachments ? { requiredAttachmentCount: 1, attachmentEvidenceConfirmed: false } : {}),
+    }, diagnostic: null },
+    browserChecked: false, controllerChecked: false,
+  });
+  assert.deepEqual(fs.readdirSync(f.dir), names);
+  assert.deepEqual(names.map(name => fs.readFileSync(join(f.dir, name))), before);
+  await assert.rejects(dispatchCli(['inspect', f.file]), inputFailure(f, 'lock_acquire', 'lock_exists', 'DISPATCH_LOCKED'));
+});
+
+test('CLI diagnose rejects invalid paths before ledger access and the client preserves its bounded error', async t => {
+  const f = fixture(t), before = fs.readFileSync(f.file), original = fs.lstatSync;
+  let accesses = 0;
+  fs.lstatSync = () => { accesses++; throw Error(secret); }; syncBuiltinESMExports();
+  try {
+    for (const file of [secret + '.json', join(f.dir, 'path-\ud800.json'), join(f.dir, 'wrong-extension.txt'),
+      ...(process.platform === 'win32' ? [f.file + ':stream.json'] : [])])
+      await assert.rejects(dispatchCli(['diagnose', file]), inputFailure(f, 'cli_arguments', 'diagnose_ledger_path_invalid'));
+  } finally { fs.lstatSync = original; syncBuiltinESMExports(); }
+  assert.equal(accesses, 0);
+  const result = await cli(['diagnose', secret + '.json'], { client: true });
+  assert.equal(result.code, 1); assert.equal(result.out, '');
+  assert.deepEqual(safe(result.value, f), { code: 'DISPATCH_INPUT', stage: 'cli_arguments',
+    reason: 'diagnose_ledger_path_invalid', message: 'invalid private dispatch input' });
+  assert.deepEqual(fs.readFileSync(f.file), before);
+  assert.deepEqual(fs.readdirSync(f.dir), ['ledger.json']);
+});
+
+for (const [kind, bytes, status, diagnostic] of [
+  ['missing', null, 'missing', null],
+  ['parent-only', JSON.stringify({ token: secret, ownership: 'preserve' }), 'no_dispatch', null],
+  ['invalid', '{"token":"' + secret, 'invalid', { code: 'DISPATCH_LEDGER', stage: 'ledger_validate',
+    reason: 'invalid_ledger', message: 'invalid dispatch ledger; preserve it for inspection' }],
+  ['invalid UTF-8', Buffer.concat([Buffer.from('{"token":"' + secret), Buffer.from([0xff]), Buffer.from('"}')]),
+    'invalid', { code: 'DISPATCH_LEDGER', stage: 'ledger_validate',
+      reason: 'invalid_ledger', message: 'invalid dispatch ledger; preserve it for inspection' }],
+  ['invalid dispatch schema', JSON.stringify({ token: secret, dispatch: { version: 1, taskId: 'cli-task',
+    mode: 'pro', connectorRequired: true, promptSha256: textDigest(prompt), target, state: secret,
+    registeredAt: '2026-10-18T00:00:00.000Z' } }), 'invalid', { code: 'DISPATCH_LEDGER', stage: 'ledger_validate',
+    reason: 'invalid_ledger', message: 'invalid dispatch ledger; preserve it for inspection' }],
+  ['oversized', Buffer.alloc(2 * 1024 * 1024 + 1, 32), 'unavailable', { code: 'DISPATCH_LEDGER', stage: 'ledger_read',
+    reason: 'ledger_file_invalid', message: 'invalid dispatch ledger; preserve it for inspection' }],
+]) test(`client CLI diagnose reports ${kind} ledger status without initializing or repairing it`, async t => {
+  const f = fixture(t);
+  if (bytes === null) fs.unlinkSync(f.file);
+  else fs.writeFileSync(f.file, bytes);
+  const names = fs.readdirSync(f.dir), before = names.map(name => fs.readFileSync(join(f.dir, name)));
+  const result = await cli(['diagnose', f.file], { client: true });
+  assert.equal(result.code, 0, result.err); assert.equal(result.err, '');
+  assert.deepEqual(safe(result.value, f), {
+    readOnly: true, snapshotConfirmed: false,
+    lock: { before: 'absent', after: 'absent', changed: false, diagnostic: null },
+    ledger: { status, recordedDispatch: null, diagnostic },
+    browserChecked: false, controllerChecked: false,
+  });
+  assert.deepEqual(fs.readdirSync(f.dir), names);
+  assert.deepEqual(names.map(name => fs.readFileSync(join(f.dir, name))), before);
+});
 
 for (const attachments of [false, true]) test(`CLI v${attachments ? 2 : 1} sequential begin, competing begin, incomplete evidence and late confirm preserve contracts`, async t => {
   const f = fixture(t);
