@@ -72,55 +72,79 @@ function alias(t, destination, name, type = process.platform === 'win32' ? 'junc
   }
 }
 
-for (const name of ['run-worker-task.ps1', 'register-worker-task.ps1', 'worker.xml.example']) {
-  for (const mode of ['read', 'edit']) test(`linked ${name} protects both installation targets from ${mode} grants`, async t => {
+for (const [name, location, expectedError] of [
+  ...['run-worker-task.ps1', 'register-worker-task.ps1', 'worker.xml.example'].map(name => [name, 'windows', denied]),
+  ['replace-workspace-file.ps1', 'scripts', /workspace overlaps running worker code/],
+]) {
+  const helper = location === 'scripts';
+  for (const mode of ['read', 'edit']) test(`linked ${name} protects ${helper ? 'its actual installation target' : 'both installation targets'} from ${mode} grants`, async t => {
     const f = await fixture(t, { linkedScripts: true, deploy: false }); if (!f) return;
-    const roots = [f.windows, join(f.nativeScripts, '..', 'deploy', 'windows')];
+    const roots = helper ? [f.nativeScripts] : [f.windows, join(f.nativeScripts, '..', 'deploy', 'windows')];
     const projects = roots.map((_, index) => join(f.base, 'project-' + index));
-    for (const [index, windows] of roots.entries()) {
+    for (const [index, root] of roots.entries()) {
       const project = projects[index];
-      fs.mkdirSync(windows, { recursive: true }); fs.mkdirSync(project);
+      fs.mkdirSync(root, { recursive: true }); fs.mkdirSync(project);
       fs.writeFileSync(join(project, name), f.original);
-      if (!alias(t, join(project, name), join(windows, name), 'file')) return;
+      if (helper) fs.unlinkSync(join(root, name));
+      if (!alias(t, join(project, name), join(root, name), 'file')) return;
     }
     await f.boot();
     for (const project of projects) {
-      await assert.rejects(f.register('linked-file', project, mode), denied);
+      await assert.rejects(f.register('linked-file', project, mode), expectedError);
       assert.equal(fs.readFileSync(join(project, name), 'utf8'), f.original);
     }
     assert.equal(fs.existsSync(join(f.dir, 'state.json')), false);
     assert.equal(fs.existsSync(join(f.dir, 'recovery')), false);
   });
 
-  for (const timing of ['legacy', 'after registration']) test(`linked ${name} blocks ${timing} grants on every file tool and readiness`, async t => {
+  for (const timing of helper ? ['legacy', 'after registration', 'after retargeting'] : ['legacy', 'after registration']) test(`linked ${name} blocks ${timing} grants on every file tool and readiness`, async t => {
     const f = await fixture(t, { deploy: false }), project = join(f.base, 'project');
     fs.mkdirSync(project); fs.mkdirSync(f.windows, { recursive: true });
     fs.writeFileSync(join(project, name), f.original);
+    const installedFile = join(f[location], name);
+    const linkToProject = () => {
+      if (helper) fs.unlinkSync(installedFile);
+      return alias(t, join(project, name), installedFile, 'file');
+    };
     let token;
     if (timing === 'legacy') {
       token = f.legacy('linked-file', project, 'edit');
-      if (!alias(t, join(project, name), join(f.windows, name), 'file')) return;
+      if (!linkToProject()) return;
       await f.boot();
     } else {
+      if (timing === 'after retargeting') {
+        const earlierTarget = join(f.base, name);
+        fs.writeFileSync(earlierTarget, f.original); fs.unlinkSync(installedFile);
+        if (!alias(t, earlierTarget, installedFile, 'file')) return;
+      }
       await f.boot();
       ({ token } = await f.register('linked-file', project));
       assert.equal((await f.call('read_file', { token, path: name })).isError, false);
-      if (!alias(t, join(project, name), join(f.windows, name), 'file')) return;
+      if (!linkToProject()) return;
     }
+    const state = fs.readFileSync(join(f.dir, 'state.json'));
     for (const [tool, extra] of [
       ['list_files', { path: '.' }], ['read_file', { path: name }],
+      // A missed denial must never execute the inert replacement helper on Windows.
       ['write_file', { path: 'new.txt', text: 'no', expectedSha256: null }],
       ['delete_file', { path: name, expectedSha256: '0'.repeat(64) }],
     ]) {
       const result = await f.call(tool, { token, ...extra });
-      assert.equal(result.isError, true); assert.match(result.content[0].text, denied);
+      assert.equal(result.isError, true); assert.match(result.content[0].text, expectedError);
     }
-    await assert.rejects(f.register('linked-file', project), denied);
+    await assert.rejects(f.register('linked-file', project), expectedError);
     await assert.rejects(f.admin('ready'), error => error.details.unavailableWorkspaces.includes('linked-file'));
-    assert.equal(fs.readFileSync(join(f.windows, name), 'utf8'), f.original);
+    assert.equal(fs.readFileSync(installedFile, 'utf8'), f.original);
     assert.equal(fs.existsSync(join(project, 'new.txt')), false);
+    assert.deepEqual(fs.readFileSync(join(f.dir, 'state.json')), state);
     assert.equal(fs.existsSync(join(f.dir, 'recovery')), false);
     assert.equal((await f.call('get_task', { token })).isError, false);
+    if (helper) {
+      const independent = join(f.base, 'independent'); fs.mkdirSync(independent);
+      const other = await f.register('independent', independent);
+      assert.equal((await f.call('write_file', { token: other.token, path: 'note.txt', text: 'allowed', expectedSha256: null })).isError, false);
+      assert.equal((await f.call('read_file', { token: other.token, path: 'note.txt' })).structuredContent.text, 'allowed');
+    }
     await f.admin('cancel', { id: 'linked-file' });
     assert.equal((await f.admin('ready')).ok, true);
   });
@@ -233,15 +257,16 @@ for (const location of ['source-copy', 'deploy-copy', 'references']) {
     const f = await fixture(t); await f.boot();
     const root = location === 'source-copy' ? join(f.base, 'separate-source', 'deploy', 'windows')
       : join(f.installed, location);
+    const path = location === 'source-copy' ? 'replace-workspace-file.ps1' : 'notes.txt';
     fs.mkdirSync(root, { recursive: true });
     const task = await f.register('independent', root);
     const retry = await f.register('independent', root);
     assert.equal(retry.token, task.token); assert.equal(retry.duplicate, true);
-    const created = await f.call('write_file', { token: task.token, path: 'notes.txt', text: '허용된 복사본', expectedSha256: null });
+    const created = await f.call('write_file', { token: task.token, path, text: '허용된 복사본', expectedSha256: null });
     assert.equal(created.isError, false);
-    const read = await f.call('read_file', { token: task.token, path: 'notes.txt' });
+    const read = await f.call('read_file', { token: task.token, path });
     assert.equal(read.structuredContent.text, '허용된 복사본');
-    assert.equal((await f.call('delete_file', { token: task.token, path: 'notes.txt', expectedSha256: read.structuredContent.sha256 })).isError, false);
+    assert.equal((await f.call('delete_file', { token: task.token, path, expectedSha256: read.structuredContent.sha256 })).isError, false);
     assert.equal((await f.admin('ready')).ok, true);
   });
 }

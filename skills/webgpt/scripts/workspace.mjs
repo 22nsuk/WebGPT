@@ -12,14 +12,15 @@ import { normalizeWorkspaceIdentity } from './workspace-identity.mjs';
 
 const MAX_BYTES = 10 * 1024 * 1024;
 const JOURNAL_MAX_BYTES = 1024 * 1024;
+// The worker protects the same module-relative helper that file replacement executes.
+export const windowsReplacementHelperPath = fileURLToPath(new URL('./replace-workspace-file.ps1', import.meta.url));
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const metadata = (path, options) => { try { return lstatSync(path, options); } catch (e) { if (e.code === 'ENOENT') return null; throw e; } };
 function windowsReplacement(action,file,temporary,expectedSha256,context) {
   const executable=resolve(process.env.SystemRoot || 'C:\\Windows','System32/WindowsPowerShell/v1.0/powershell.exe');
-  const helper=fileURLToPath(new URL('./replace-workspace-file.ps1',import.meta.url));
   let result;
   try {
-    result=spawnSync(executable,['-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',helper,action],{
+    result=spawnSync(executable,['-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',windowsReplacementHelperPath,action],{
       // Bound each synchronous helper invocation; a stalled PowerShell must not
       // wait indefinitely in the worker. Timeout is an uncertain mutation, not a retry.
       input:JSON.stringify({file,temporary,expectedSha256}),encoding:'utf8',windowsHide:true,maxBuffer:64*1024,timeout:30000,

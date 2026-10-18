@@ -5,7 +5,7 @@ import { resolve, relative, isAbsolute, sep, dirname, basename } from 'node:path
 import { isDeepStrictEqual } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { isCliEntry } from './cli-entry.mjs';
-import { grantWorkspace, listWorkspace, probeWorkspace, readWorkspace, changeWorkspace, inspectRecovery } from './workspace.mjs';
+import { grantWorkspace, listWorkspace, probeWorkspace, readWorkspace, changeWorkspace, inspectRecovery, windowsReplacementHelperPath } from './workspace.mjs';
 import { configuration, configurationFile } from './client.mjs';
 import { hasPendingResults, inspectPendingResults, storeResult, verifySavedResult } from './results.mjs';
 import { acquireRuntimeLock, readStateBytes, stateBytesEqual, readStateMarker, createStateMarker, assertNoStateStage, writeStateBytes, parseState, fault, startupExitCode } from './runtime.mjs';
@@ -153,12 +153,13 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
   const checkDataBoundary=workspace=>{
     if(!workspace)return;
     const workspaceRoot=realpathSync.native(workspace.root);
-    // An unattended restart must never execute code modified through its own grant.
+    // This worker and later restarts must never execute code modified through their own grants.
     // Use a separate source checkout to edit WebGPT, not the running installation.
-    // The shipped service launchers live beside scripts, not beneath it. Check
-    // both their named location and current native target on every grant/use.
+    // The replacement helper and shipped service launchers can be file aliases.
+    // Check both their named location and current native target on every grant/use.
     for(const [protectedRoot,label] of [[realpathSync.native(dir),'private worker data'],[codeRoot,'running worker code'],
       [entryRoot,'running worker code'],[canonicalOperationalPath(entryRoot),'running worker code'],
+      [windowsReplacementHelperPath,'running worker code'],[canonicalOperationalPath(windowsReplacementHelperPath),'running worker code'],
       ...deploymentRoots.flatMap(root=>[root,canonicalOperationalPath(root),canonicalOperationalPath(resolve(root,'windows')),
         ...['run-worker-task.ps1','register-worker-task.ps1','worker.xml.example']
           .map(name=>canonicalOperationalPath(resolve(root,'windows',name)))]
