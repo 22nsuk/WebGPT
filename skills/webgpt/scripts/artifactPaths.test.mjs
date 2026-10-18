@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, sep, toNamespacedPath } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
@@ -298,6 +298,110 @@ test('CLI rejects malformed in-memory output paths without creating replacement-
     assert.equal(fs.existsSync(join(dir, '\ufffd.json')), false);
   }
   assert.equal(fs.readFileSync(source, 'utf8'), 'approved evidence\n');
+});
+
+// Exercise the Windows output policy through the real CLI on every host. The
+// source probe stops an invalid path from progressing to native output I/O on
+// unpatched code; native Windows stream behavior is checked separately below.
+function outputPathProbe(f, out) {
+  const preload = join(f.dir, 'output-path-preload.mjs'), observation = join(f.dir, 'path-access.json');
+  fs.writeFileSync(preload, `import fs from 'node:fs';
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    const source = ${JSON.stringify(f.source)}, out = ${JSON.stringify(out)};
+    const stat = fs.lstatSync, open = fs.openSync, write = fs.writeFileSync;
+    const calls = { sourceStats: 0, sourceOpens: 0, outputStats: 0, outputOpens: 0 };
+    fs.lstatSync = (file, ...args) => {
+      if (file === source) { calls.sourceStats++; throw Object.assign(Error('source probe'), { code: 'SOURCE_PROBE_REACHED' }); }
+      if (file === out) calls.outputStats++;
+      return stat(file, ...args);
+    };
+    fs.openSync = (file, ...args) => {
+      if (file === source) calls.sourceOpens++;
+      if (file === out) calls.outputOpens++;
+      return open(file, ...args);
+    };
+    process.once('exit', () => write(${JSON.stringify(observation)}, JSON.stringify(calls)));
+  `);
+  const result = node(['--import', pathToFileURL(preload).href, script,
+    '--source', f.source, '--label', 'fixture', '--out', out]);
+  assert.equal(result.error, undefined); assert.equal(result.signal, null);
+  assert.equal(result.status, 1, result.stderr); assert.equal(result.stdout, '');
+  assert.equal(result.stderr.includes(f.dir), false); assert.equal(result.stderr.includes(out), false);
+  return { error: JSON.parse(result.stderr), calls: JSON.parse(fs.readFileSync(observation, 'utf8')) };
+}
+
+for (const suffix of ['host.txt:evidence.json', 'host.txt:evidence.json:$DATA', 'host.txt::$DATA',
+  'BASEFI~1.TXT:evidence.json', 'folder:stream/evidence.json', 'folder::$INDEX_ALLOCATION/evidence.json',
+  'host.txt:stream/.']) {
+  test(`Windows output policy rejects ${suffix} before source or output access`, t => {
+    const f = fixture(t), out = f.dir + sep + suffix.replaceAll('/', sep);
+    const result = outputPathProbe(f, out);
+    assert.equal(result.error.code, 'INVALID_ARGUMENT');
+    assert.deepEqual(result.calls, { sourceStats: 0, sourceOpens: 0, outputStats: 0, outputOpens: 0 });
+    assert.equal(fs.readFileSync(f.source, 'utf8'), 'approved evidence\n');
+    assert.deepEqual(fs.readdirSync(f.dir).sort(), ['output-path-preload.mjs', 'path-access.json', 'source.txt']);
+  });
+}
+
+test('Windows output policy rejects a colon in the UNC share before source or output access', t => {
+  const f = fixture(t), result = outputPathProbe(f, '//server/share:stream/evidence.json');
+  assert.equal(result.error.code, 'INVALID_ARGUMENT');
+  assert.deepEqual(result.calls, { sourceStats: 0, sourceOpens: 0, outputStats: 0, outputOpens: 0 });
+});
+
+test('Windows output policy accepts drive and UNC prefixes without accessing the output', { skip: process.platform !== 'win32' }, t => {
+  const f = fixture(t), ordinary = join(f.dir, 'evidence.json');
+  for (const out of [ordinary, ordinary.replaceAll('\\', '/'), toNamespacedPath(ordinary),
+    '\\\\server\\share\\evidence.json', '\\\\?\\UNC\\server\\share\\evidence.json']) {
+    const result = outputPathProbe(f, out);
+    assert.equal(result.error.code, 'SOURCE_PROBE_REACHED');
+    assert.deepEqual(result.calls, { sourceStats: 1, sourceOpens: 0, outputStats: 0, outputOpens: 0 });
+  }
+});
+
+test('Windows CLI rejects stream outputs and preserves real hosts and existing streams', { skip: process.platform !== 'win32' }, t => {
+  const f = fixture(t), host = join(f.dir, 'host.txt'), retained = host + ':retained';
+  fs.writeFileSync(host, 'preserve host');
+  fs.writeFileSync(retained, 'preserve stream', { flag: 'wx' });
+  assert.equal(fs.readFileSync(retained, 'utf8'), 'preserve stream', 'the native stream fixture is readable');
+  const absent = [host + ':new', f.source + ':new', join(f.dir, 'new-host.txt') + ':new',
+    join(f.dir, 'default-output.json') + '::$DATA'];
+  for (const out of [...absent, retained, host + '::$DATA', toNamespacedPath(host) + ':new']) {
+    const result = node([script, '--source', f.source, '--label', 'fixture', '--out', out]);
+    assert.equal(result.error, undefined); assert.equal(result.signal, null);
+    assert.equal(result.status, 1, result.stderr); assert.equal(result.stdout, '');
+    assert.equal(JSON.parse(result.stderr).code, 'INVALID_ARGUMENT');
+    assert.equal(result.stderr.includes(f.dir), false);
+  }
+  for (const out of absent) assert.throws(() => fs.readFileSync(out), { code: 'ENOENT' });
+  assert.equal(fs.readFileSync(host, 'utf8'), 'preserve host');
+  assert.equal(fs.readFileSync(retained, 'utf8'), 'preserve stream');
+  assert.equal(fs.readFileSync(f.source, 'utf8'), 'approved evidence\n');
+  assert.deepEqual(fs.readdirSync(f.dir).sort(), ['host.txt', 'source.txt']);
+});
+
+test('Windows CLI creates ordinary and namespaced drive outputs with matching receipts', { skip: process.platform !== 'win32' }, t => {
+  const f = fixture(t);
+  for (const [index, namespaced] of [false, true].entries()) {
+    const file = join(f.dir, `evidence 한글-${index}.json`), out = namespaced ? toNamespacedPath(file) : file;
+    const result = node([script, '--source', f.source, '--label', 'fixture', '--out', out]);
+    assert.equal(result.status, 0, result.stderr); assert.equal(result.stderr, '');
+    const bytes = fs.readFileSync(file);
+    assert.deepEqual(JSON.parse(result.stdout), { ok: true, inputBytes: bytes.length, sha256: hash(bytes) });
+    assert.equal(JSON.parse(bytes).source.sha256, hash('approved evidence\n'));
+  }
+});
+
+test('POSIX CLI retains literal colon output names and verifiable receipts', { skip: process.platform === 'win32' }, t => {
+  const f = fixture(t);
+  for (const name of ['host.txt:evidence.json', 'host.txt::$DATA']) {
+    const out = join(f.dir, name), result = node([script, '--source', f.source, '--label', 'fixture', '--out', out]);
+    assert.equal(result.status, 0, result.stderr); assert.equal(result.stderr, '');
+    const bytes = fs.readFileSync(out);
+    assert.deepEqual(JSON.parse(result.stdout), { ok: true, inputBytes: bytes.length, sha256: hash(bytes) });
+    assert.equal(JSON.parse(bytes).source.sha256, hash('approved evidence\n'));
+  }
+  assert.equal(fs.readFileSync(f.source, 'utf8'), 'approved evidence\n');
 });
 
 for (const flags of [[], ['--preserve-symlinks-main'], ['--preserve-symlinks'],

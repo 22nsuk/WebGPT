@@ -151,6 +151,10 @@ function run(argv) {
   if (values.help && tokens.length === 1) { process.stdout.write(usage); return; }
   if (values.help || !validPath(values.out))
     fail('INVALID_ARGUMENT', 'Provide a new well-formed absolute --out path, or --help alone.');
+  // Exempt only a leading drive separator. A colon in any other component can
+  // select an NTFS stream, including aliases hidden by dot-path normalization.
+  if (process.platform === 'win32' && values.out.replace(/^(?:[\\/]{2}[?.][\\/])?[A-Za-z]:[\\/]/, '').includes(':'))
+    fail('INVALID_ARGUMENT', 'Windows --out must name an ordinary file without stream syntax.');
   const ranges = (values.range ?? []).map(value => {
     if (!/^(0|[1-9][0-9]*):(0|[1-9][0-9]*)$/.test(value))
       fail('INVALID_ARGUMENT', 'Use --range byte-offset:byte-length with decimal integers.');
