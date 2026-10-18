@@ -71,9 +71,9 @@ export function scanUnboundedFile(file, invalid, consume) {
 function readRegularFile(file, limit, invalid, allowLinks = false, consume) {
   if (typeof invalid !== 'function') throw TypeError('file rejection factory required');
   const regular = info => {
-    if (!info.isFile() || (!allowLinks && (info.isSymbolicLink() || info.nlink !== 1n))
-        || (limit !== null && info.size > limit))
+    if (!info.isFile() || (!allowLinks && (info.isSymbolicLink() || info.nlink !== 1n)))
       throw invalid('metadata');
+    if (limit !== null && info.size > limit) throw invalid('size');
   };
   // User-selected inputs can follow links without weakening the default
   // private-file policy. Compare the resolved target with the opened descriptor.

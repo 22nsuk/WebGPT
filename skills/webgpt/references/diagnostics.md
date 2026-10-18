@@ -68,9 +68,10 @@ The command is offline and read-only: no controller writes, acknowledgments, can
 re-registration, browser access, tunnel repair or automatic retries. It uses the existing
 private configuration, validates the persisted inventory, and rechecks a retained result
 with the normal expected-path, single-link and SHA-256 checks. It never follows an
-artifact path supplied by state to an arbitrary location. It reads at most 32 MiB of
-state and 1 MiB from each log, rejects malformed UTF-8 and unsafe files, and returns no
-more than 50 recent records for the selected task. Unknown record fields are discarded.
+artifact path supplied by state to an arbitrary location. It accepts at most 32 MiB of
+state and 1 MiB from each log, with one extra byte allowed to detect growth during a
+read. It rejects malformed UTF-8 and unsafe files, and returns no more than 50 recent
+records for the selected task. Unknown record fields are discarded.
 
 Optional audit failures do not hide a valid task inventory or result information.
 Each `audit.segments` entry identifies `previous` or `current`, with `read`, `missing`
@@ -87,6 +88,17 @@ Counters cover valid records in the readable window only, never missing traffic 
 lifetime totals. Even `observed` does not imply complete capture. A malformed line
 is counted and excluded, without echoing its contents. Corrupt, linked, missing or
 oversized **task state** still prevents a report; optional logs cannot replace it.
+
+The 32 MiB state allowance belongs to offline diagnosis, not runtime state storage:
+valid retained tasks can exceed it. A size rejection reports
+`task state exceeds offline diagnostic limit (32 MiB); state not validated`, exits
+with code 1 and leaves stdout empty. This identifies an observed size above the
+diagnostic allowance; state corruption or task absence has not been established. The full
+inventory was not validated, so no task, marker, stage, result or audit verdict is
+produced. Other state failures retain `task state unavailable`. Neither error
+authorizes truncating/resetting state or retrying with an unbounded diagnostic read;
+preserve the inventory and use the existing authenticated inspection paths when
+available.
 
 `stateMarker` is `valid`, `absent`, or `invalid_or_unreadable`. Its read is capped at
 4 KiB and uses the same marker-byte validator as worker startup. Absence is not by
@@ -135,7 +147,8 @@ reader, in timeout-bounded child processes. Windows skips only these FIFO cases.
 `scripts/fileReadContract.test.mjs` owns diagnostic-reader short reads, initial oversize,
 growth bounds, native read errors and opened-file identity; do not duplicate that matrix.
 `scripts/diagnose.test.mjs` additionally checks degraded audit segments, bounded marker
-reads, uncommitted results, redaction and agreement with real controller warnings.
+reads, state allowance classification through the CLI, uncommitted results, redaction
+and agreement with real controller warnings.
 Run the full repository suite and supported OS/Node matrix before deployment. Local
 fixtures do not establish live ChatGPT, tunnel or production-service compatibility.
 

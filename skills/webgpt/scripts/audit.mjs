@@ -106,5 +106,9 @@ export function createAuditWriter(dir, enabled = false, { warn = () => console.e
 
 // Diagnostics keep their own allowance and unavailable error, not a separate read loop.
 export function readDiagnosticBytes(file, limit) {
-  return readBoundedFile(file, limit, unavailable)?.bytes ?? null;
+  return readBoundedFile(file, limit, reason => {
+    const error = unavailable();
+    if (reason === 'size' || reason === 'overflow') error.code = 'DIAGNOSTIC_LIMIT_EXCEEDED';
+    return error;
+  })?.bytes ?? null;
 }
