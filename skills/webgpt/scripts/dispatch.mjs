@@ -32,14 +32,15 @@ const defaults = {
 };
 const storageStages = ['payload_read', 'ledger_path', 'lock_acquire', 'ledger_read', 'ledger_write',
   'ledger_publish'];
-const cliActions = ['preflight', 'inspect', 'recover', 'register', 'prepare', 'begin', 'confirm', 'record-review', 'inspect-review'];
+const cliActions = ['preflight', 'inspect', 'diagnose', 'recover', 'register', 'prepare', 'begin', 'confirm', 'record-review', 'inspect-review'];
 const cliReasons = ['arguments_invalid', 'ledger_path_invalid', 'payload_path_invalid', 'payload_missing',
   'payload_file_invalid', 'payload_utf8_invalid', 'payload_json_invalid', 'input_shape_invalid', 'input_invalid'];
 const diagnosticStages = new Set([...Object.values(defaults).map(([stage]) => stage), ...storageStages,
-  'lock_release', 'cli_arguments', 'payload_decode', 'payload_validate']);
+  'lock_release', 'lock_observe', 'cli_arguments', 'payload_decode', 'payload_validate']);
 const diagnosticReasons = new Set([...Object.values(defaults).map(([, reason]) => reason),
   'not_found', 'permission_denied', 'storage_full', 'native_path_not_utf8', 'lock_owner_changed', 'lock_release_failed',
-  'invalid_arguments', 'unknown_action', ...cliActions.flatMap(action => cliReasons.map(reason => action + '_' + reason))]);
+  'ledger_file_invalid', 'invalid_arguments', 'unknown_action',
+  ...cliActions.flatMap(action => cliReasons.map(reason => action + '_' + reason))]);
 const diagnostics = new WeakMap();
 class DispatchError extends Error {
   constructor(code, stage = defaults[code][0], reason = defaults[code][1]) {
@@ -168,8 +169,8 @@ function safeSummary(d) {
       attachmentEvidenceConfirmed: d.state === 'submitted' } : {}) };
 }
 
-function fileInfo(file) {
-  try { return lstatSync(file); } catch (e) { if (e.code === 'ENOENT') return null; throw e; }
+function fileInfo(file, options) {
+  try { return lstatSync(file, options); } catch (e) { if (e.code === 'ENOENT') return null; throw e; }
 }
 function canonicalLedgerDirectory(directory) {
   // The JS resolver can replace symlink bytes even when its output encoding is 'buffer'.
@@ -380,6 +381,61 @@ export async function inspectDispatch(file) {
   return withLedger(file, ledger => safeSummary(getDispatch(ledger)));
 }
 
+// Metadata equality detects observed changes; it cannot establish an atomic snapshot.
+const sameFileObservation = (a, b) => a === null || b === null ? a === b
+  : ['dev', 'ino', 'mode', 'nlink', 'size', 'mtimeNs', 'ctimeNs'].every(key => a[key] === b[key]);
+function observeDispatchLock(file) {
+  try {
+    const stat = fileInfo(file, { bigint: true });
+    return { state: stat === null ? 'absent' : 'present', stat, diagnostic: null };
+  } catch (error) {
+    return { state: 'unavailable', diagnostic: dispatchDiagnostic(storageError(error, 'lock_observe')) };
+  }
+}
+function observeDispatchLedger(file) {
+  const result = (status, recordedDispatch = null, diagnostic = null) => ({ status, recordedDispatch, diagnostic });
+  let read, rejected;
+  try {
+    read = readBoundedFile(file, MAX_BYTES, reason => {
+      rejected = reason;
+      return new DispatchError('LEDGER', 'ledger_read', 'ledger_file_invalid');
+    });
+  } catch (error) {
+    // Only the reader's initial ENOENT returns null. Disappearance after that
+    // observation and a different opened inode are evidence of a changing path.
+    if (rejected === 'identity' || error?.code === 'ENOENT') return result('changed');
+    return result('unavailable', null, dispatchDiagnostic(error instanceof DispatchError
+      ? error : storageError(error, 'ledger_read')));
+  }
+  let after;
+  try { after = fileInfo(file, { bigint: true }); }
+  catch (error) { return result('unavailable', null, dispatchDiagnostic(storageError(error, 'ledger_read'))); }
+  if (!sameFileObservation(read?.stat ?? null, after)
+      || (read && BigInt(read.bytes.length) !== read.stat.size)) return result('changed');
+  if (read === null) return result('missing');
+  let ledger;
+  try { ledger = parseLedger(read.bytes); }
+  catch (error) { return result('invalid', null, dispatchDiagnostic(error)); }
+  return Object.hasOwn(ledger, 'dispatch') ? result('observed', safeSummary(ledger.dispatch)) : result('no_dispatch');
+}
+// Investigation only: never take/release a lock, recover state, inspect a browser
+// or promote a temporary candidate. Existing inspect/evidence paths stay locked.
+export async function diagnoseDispatch(file) {
+  preflightDispatchRuntime();
+  if (!validLedgerPath(file)) fail('INPUT');
+  try { file = join(canonicalLedgerDirectory(dirname(file)), basename(file)); }
+  catch (error) { throw error instanceof DispatchError ? error : storageError(error, 'ledger_path'); }
+  const lock = file + '.dispatch.lock';
+  const before = observeDispatchLock(lock);
+  const ledger = observeDispatchLedger(file);
+  const after = observeDispatchLock(lock);
+  return { readOnly: true, snapshotConfirmed: false,
+    lock: { before: before.state, after: after.state,
+      changed: before.diagnostic || after.diagnostic ? null : !sameFileObservation(before.stat, after.stat),
+      diagnostic: before.diagnostic ?? after.diagnostic },
+    ledger, browserChecked: false, controllerChecked: false };
+}
+
 function reviewTarget(d, receipt) {
   if (d.state !== 'submitted' || receipt.taskId !== d.taskId
       || receipt.chat.url !== d.confirmation.target.chatUrl
@@ -470,7 +526,8 @@ export async function dispatchCli(args) {
     if (!cliActions.includes(action)) throw new DispatchError('INPUT', 'cli_arguments', 'unknown_action');
     // Only a fixed, validated action can enter a public reason. No supplied values are copied.
     const inputError = (reason, stage) => new DispatchError('INPUT', stage, action + '_' + reason);
-    const noPayload = { inspect: inspectDispatch, recover: recoverDispatch, 'inspect-review': inspectDispatchReview };
+    const noPayload = { inspect: inspectDispatch, diagnose: diagnoseDispatch, recover: recoverDispatch,
+      'inspect-review': inspectDispatchReview };
     const withPayload = { register: registerDispatch, prepare: prepareDispatch, begin: beginDispatch, confirm: confirmDispatch,
       'record-review': recordDispatchReview };
     const count = action === 'preflight' ? 1 : Object.hasOwn(noPayload, action) ? 2 : 3;

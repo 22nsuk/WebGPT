@@ -28,6 +28,8 @@ reject links or changed file identity, and read at most 2 MiB plus one overflow
 sentinel byte. Overflow is an error, never a truncated JSON value. Exact-limit
 files remain valid. Strict UTF-8 parsing and bounded public errors are unchanged.
 This limits bytes per read, not total memory, execution time or every local race.
+Read-only `diagnose` applies the same bounded policy to the ledger; it only observes
+lock metadata and never opens the lock's contents.
 
 Locks and temporary ledger files are created exclusively with mode 0600, written
 through the owned descriptor, flushed and closed before successful publication.
@@ -49,6 +51,32 @@ writer of the destination, or lock changes later in the browser callback. The
 existing cooperative/private-directory assumptions and no-resend workflow remain.
 
 Windows privacy still depends on the existing directory ACLs. No ACL is modified.
+
+## Read-only observation
+
+`diagnoseDispatch` / `dispatch diagnose` samples lock metadata, reads the committed
+ledger once through the checked reader, compares its opened metadata and actual
+byte count with a final named-file observation, then samples the lock again.
+The device, inode, mode, link count, size and nanosecond modification/change times
+are compared as BigInt values. No metadata or file identity is returned in public
+output. Only the parent directory goes through native realpath, preserving the
+Windows publication boundary described above.
+
+An observed ledger change withholds the dispatch summary. File-policy/size
+rejections or I/O failures report `unavailable`; invalid UTF-8, JSON or dispatch
+schema reports `invalid`. Initial over-limit metadata causes no content read;
+growth past the allowance consumes at most 2 MiB plus one sentinel and never
+certifies the prefix. A read failure still closes its descriptor. Metadata-only
+lock observation can report presence even for an unreadable or non-file entry.
+Lock observation failures are reported separately from the saved dispatch.
+
+This is a bounded observation without an acquired lock, not an atomic snapshot.
+There is no retry or claim to detect same-metadata edits, changes reversed between
+observations, or changes after the final lookup. `snapshotConfirmed` is always
+false. The [diagnostic result contract](dispatch.md#read-only-diagnosis-of-an-interrupted-parent)
+keeps the saved summary separate from these limitations and any action authority.
+The observer never searches `.tmp-*`, promotes a candidate, removes a stale lock,
+or changes the existing locked inspection/verification and recovery contracts.
 
 ## One publication for each requested transition
 
