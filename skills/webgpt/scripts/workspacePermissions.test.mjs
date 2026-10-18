@@ -223,6 +223,82 @@ for(const failure of ['open','write','sync'])test(`owned staging ${failure} fail
     assert.equal(prepared.state,'prepared');assert.equal(fs.readFileSync(prepared.backup,'utf8'),'original');
   }));
 
+// Keep file bytes, descriptors, replacement helpers and recovery records real.
+// Only source identity fields and the interleaving after a real stage flush are
+// injected; normalize both fields so the other native field cannot mask a miss.
+function withSourceIdentity(f,identity,afterStage,run) {
+  const source=join(f.grant.root,f.path), descriptors=new Map();
+  const saved={lstatSync:fs.lstatSync,fstatSync:fs.fstatSync,openSync:fs.openSync,
+    closeSync:fs.closeSync,fsyncSync:fs.fsyncSync};
+  let staged=false;
+  const observed=(info,options)=>{
+    for(const field of ['dev','ino'])info[field]=options?.bigint?identity[field]:Number(identity[field]);
+    return info;
+  };
+  fs.lstatSync=(path,options)=>{
+    const info=saved.lstatSync(path,options);return path===source?observed(info,options):info;
+  };
+  fs.openSync=(path,...args)=>{
+    const fd=saved.openSync(path,...args);descriptors.set(fd,path);return fd;
+  };
+  fs.closeSync=fd=>{descriptors.delete(fd);return saved.closeSync(fd);};
+  fs.fstatSync=(fd,options)=>{
+    const info=saved.fstatSync(fd,options);return descriptors.get(fd)===source?observed(info,options):info;
+  };
+  fs.fsyncSync=fd=>{
+    const result=saved.fsyncSync(fd), path=descriptors.get(fd);
+    if(!staged && typeof path==='string' && path.startsWith(join(f.grant.root,'.webgpt-'))) {
+      staged=true;afterStage();
+    }
+    return result;
+  };
+  syncBuiltinESMExports();
+  try {const result=run();assert.equal(staged,true,'the real replacement stage was flushed');return result;}
+  finally {Object.assign(fs,saved);syncBuiltinESMExports();}
+}
+
+for(const field of ['dev','ino'])for(const initial of [1000n,2n**60n])
+  test(`source identity rejects a substituted file with ${field} ${initial} -> ${initial+1n}`,()=>fixture(f=>{
+    const revision=readWorkspace(f.grant,f.path).sha256, native=fs.lstatSync;
+    const before=native(f.file,{bigint:true}), displaced=join(f.dir,'displaced.txt');
+    const identity={dev:17n,ino:42n,[field]:initial};
+    assert.notEqual(initial,initial+1n);
+    assert.equal(Number(initial)===Number(initial+1n),initial>BigInt(Number.MAX_SAFE_INTEGER));
+    withSourceIdentity(f,identity,()=>{
+      fs.renameSync(f.file,displaced);fs.writeFileSync(f.file,'original',{flag:'wx'});
+      const substituted=native(f.file,{bigint:true});
+      assert.ok(substituted.dev!==before.dev || substituted.ino!==before.ino,'the real source file was replaced');
+      for(const property of ['mode','uid','gid'])assert.equal(substituted[property],before[property]);
+      identity[field]++;
+    },()=>{
+      assert.throws(()=>changeWorkspace(f.grant,f.dir,'source-identity',{
+        path:f.path,text:'changed',expectedSha256:revision,
+      }),/file permissions or identity changed/);
+    });
+    assert.equal(fs.readFileSync(f.file,'utf8'),'original');
+    assert.equal(fs.readFileSync(displaced,'utf8'),'original');
+    assert.deepEqual(fs.readdirSync(f.root),[f.path]);
+    const recovery=inspectRecovery(f.dir,'source-identity');
+    assert.equal(recovery.receipts.length,0);assert.equal(recovery.unresolved.length,1);
+    const prepared=JSON.parse(fs.readFileSync(recovery.unresolved[0],'utf8'));
+    assert.equal(prepared.state,'prepared');assert.equal(fs.readFileSync(prepared.backup,'utf8'),'original');
+    assert.equal(fs.readdirSync(join(f.dir,'recovery','source-identity')).length,2);
+  }));
+
+for(const exact of [false,true])test(`source identity retains full-width IDs during a normal ${exact?'exact-span':'whole-file'} edit`,()=>fixture(f=>{
+  const revision=readWorkspace(f.grant,f.path).sha256, before=fs.lstatSync(f.file,{bigint:true});
+  const identity={dev:2n**60n+1n,ino:2n**61n+3n};
+  for(const value of Object.values(identity))assert.notEqual(BigInt(Number(value)),value);
+  const receipt=withSourceIdentity(f,identity,()=>{},()=>changeWorkspace(f.grant,f.dir,'source-identity',{
+    path:f.path,text:'changed',expectedSha256:revision,...(exact?{oldText:'original'}:{}),
+  }));
+  const after=fs.lstatSync(f.file,{bigint:true});
+  for(const property of ['mode','uid','gid'])assert.equal(after[property],before[property]);
+  assert.equal(fs.readFileSync(f.file,'utf8'),'changed');assert.equal(fs.readFileSync(receipt.backup,'utf8'),'original');
+  assert.deepEqual(inspectRecovery(f.dir,'source-identity'),{receipts:[receipt],unresolved:[]});
+  assert.deepEqual(fs.readdirSync(f.root),[f.path]);
+}));
+
 for(const mask of [0o000,0o022,0o077])for(const mode of [0o444,0o600,0o664,0o751,0o755])
   test(`POSIX edit preserves mode ${mode.toString(8)} and ownership under umask ${mask.toString(8)}`,{skip:windows},()=>fixture(f=>{
     fs.chmodSync(f.file,mode);const before=fs.statSync(f.file),revision=readWorkspace(f.grant,f.path).sha256;

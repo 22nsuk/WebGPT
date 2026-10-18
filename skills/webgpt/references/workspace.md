@@ -462,6 +462,11 @@ symlinks or Windows junctions. A link or invalid type at the shared parent preve
 recovery tree for every running task, so several tasks may require inspection; task lookup and
 explicit cancellation remain available. Do not delete or follow linked records as a repair.
 
+Existing-file edits compare the source's full-width device and inode identifiers, mode, owner and
+group between the initial metadata observation and the final check before replacement. Identifiers
+are never rounded through JavaScript numbers, so a detected identity change rejects replacement even
+when the contents match. These observations do not isolate the file from concurrent external writers.
+
 Existing-file edits preserve POSIX permission bits (`0777`), owner and group before replacing the
 file; the process umask does not reduce the final mode. Edits to files with setuid, setgid or sticky
 bits are rejected before mutation. The worker cannot safely infer whether those special bits should
