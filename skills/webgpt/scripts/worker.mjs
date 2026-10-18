@@ -315,14 +315,15 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
   const body=createJsonBodyReader(),mcpBody=createJsonBodyReader(128*1024*1024);
   const call=(name,args)=>{
     if(stopping)throw fault('SHUTTING_DOWN','worker is stopping');
-    verifyState();
+    // Reject request-only errors before state reads or workspace inspection.
     if(!args||typeof args!=='object'||Array.isArray(args))throw Error('tool arguments must be an object');
     const t=typeof args.token==='string'&&tasks.find(t=>t.token&&t.token===args.token);if(!t)throw Error('unknown task token');
     const tool=tools.find(tool=>tool.name===name);if(!tool)throw Error('unknown tool');
-    if(['list_files','read_file','write_file','delete_file'].includes(name))checkDataBoundary(t.workspace);
     validateArguments(tool,args);
     if(args.charOffset!==undefined && ['offset','limit','maxChars'].some(key=>args[key]!==undefined))
       throw Error('charOffset cannot be combined with line window options');
+    verifyState();
+    if(['list_files','read_file','write_file','delete_file'].includes(name))checkDataBoundary(t.workspace);
     if(name==='get_task'){
       const inputs=Object.keys(t.inputs);
       // Keep legacy malformed records inspectable by the parent, not repaired
