@@ -189,8 +189,14 @@ these once in `serviceControl: {version,port,key,runtime}`; it is discovery and 
 local capability, not an instruction file. Never copy that record into ordinary
 logs or reports. The running listener retains its credentials in memory, not by
 rereading changing disk contents. The scope hashes the canonical runtime path and
-its device/inode; credentials from another runtime or incarnation cannot authorize
+exact device/inode integers, preserving the previous digest when both identifiers
+are safe integers. Credentials from another runtime or incarnation cannot authorize
 this listener. No controller key or task token is reused or sent over this channel.
+
+For larger identifiers, an older Number-based digest can differ. When it does,
+updated discovery for `service.mjs stop` returns `SERVICE_CONTROL_UNAVAILABLE`
+before connecting. The service-control protocol remains version 1; the owner-record
+schema and the authentication flow for an already captured descriptor are unchanged.
 
 The client captures discovery once, then uses one connection with a two-second
 absolute deadline and no retry, redirect, port scan, marker fallback or PID kill.
@@ -215,10 +221,11 @@ The channel is not HTTP/MCP, must never be proxied by a tunnel or exposed remote
 and changes neither browser delegation nor the public MCP transport.
 
 Install matching service/runtime/control scripts only after stopping the old
-supervisor with its matching old command or permitted wrapper. New clients fail
-closed for old owner records; old marker writers cannot stop a new service. Any
-legacy marker left in a lock is untouched, and existing release checks may refuse
-that unexpected evidence rather than delete it. No state migration is needed.
+supervisor with its matching old command or permitted wrapper and verifying exit.
+New clients reject owner records from the removed stop-file protocol; old marker
+writers cannot stop a new service. Any legacy marker left in a lock is untouched,
+and existing release checks may refuse that unexpected evidence rather than delete
+it. No state migration is needed.
 
 Removing the stop file eliminates its create/read/unlink races, including Windows
 late links and same-inode edits of that file. It does NOT eliminate the separate
