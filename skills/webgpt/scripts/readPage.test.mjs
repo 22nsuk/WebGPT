@@ -67,12 +67,17 @@ function pageValue(reply, source, offset, format = 'dual') {
   return page;
 }
 async function reconstruct(f, name, selector, source, responseFormat, id = 1) {
-  let offset = 0, assembled = '', count = 0;
+  let offset = 0, assembled = '', count = 0, expectedSha256;
   do {
     // Bound the harness if a regression makes these modest fixtures crawl.
     assert.ok(++count <= 100, 'the fixture did not finish within 100 pages');
-    const page = pageValue(await f.call(name, { ...selector, charOffset: offset, responseFormat }, id), source, offset, responseFormat);
-    if (name === 'read_file') { assert.equal(page.path, selector.path); assert.equal(page.exists, true); assert.equal(typeof page.mode, 'number'); }
+    const options = { ...selector, charOffset: offset, responseFormat };
+    if (expectedSha256 !== undefined) options.expectedSha256 = expectedSha256;
+    const page = pageValue(await f.call(name, options, id), source, offset, responseFormat);
+    if (name === 'read_file') {
+      assert.equal(page.path, selector.path); assert.equal(page.exists, true); assert.equal(typeof page.mode, 'number');
+      expectedSha256 ??= page.sha256;
+    }
     else assert.equal(page.name, selector.name);
     assembled += page.text; offset = page.nextCharOffset;
   } while (offset !== null);
@@ -92,8 +97,20 @@ test('only the two MCP read tools advertise optional UTF-16 character offsets', 
 
 for (const [name, selector, format] of [
   ['read_file', { path: 'owned.txt' }, 'dual'], ['read_input', { name: 'supplied' }, 'text'],
-]) test(`${name} reconstructs a 200001-character single line within the actual ${format} response budget`, async t => {
+]) test(`${name} follows long-line error guidance to reconstruct 200001 characters within the actual ${format} response budget`, async t => {
   const source = 'x'.repeat(200001), f = await fixture(t, { source }), before = f.state();
+  const rejected = await f.call(name, { ...selector, offset: 1, limit: 1, maxChars: 200000, responseFormat: format });
+  failure(rejected, /first requested line exceeds maxChars/);
+  const message = rejected.result.content[0].text;
+  assert.match(message, /same source.*charOffset: 0.*without offset, limit or maxChars/);
+  assert.match(message, /nextCharOffset until null/);
+  assert.match(message, /whole-source sha256/);
+  assert.doesNotMatch(message, /increase maxChars|read the whole/);
+  if (name === 'read_file') assert.match(message, /first page sha256 as expectedSha256/);
+  else assert.doesNotMatch(message, /expectedSha256/);
+  const beyond = await f.call(name, { ...selector, offset: 2, responseFormat: format });
+  failure(beyond);
+  assert.equal(beyond.result.content[0].text, `read offset is beyond the ${name === 'read_file' ? 'file' : 'input'}`);
   await reconstruct(f, name, selector, source, format);
   assert.deepEqual(f.state(), before); assert.equal(fs.readFileSync(f.file, 'utf8'), source);
 });

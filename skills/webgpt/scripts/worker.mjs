@@ -453,7 +453,14 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
         const args=m.params?.arguments,out=call(m.params?.name,args);
         result=args.charOffset===undefined?toolSuccess(out,args.responseFormat):readPageResult(out,args,envelope);
       }
-      catch(e){result={content:[{type:'text',text:e.message}],isError:true};}
+      catch(e){
+        // Character-page advice belongs to MCP, not shared line selection or the parent CLI.
+        const message=e.code==='READ_LINE_TOO_LONG'
+          ? 'first requested line exceeds maxChars; retry the same source with charOffset: 0 without offset, limit or maxChars; follow nextCharOffset until null and keep the same whole-source sha256'
+            +(m.params.name==='read_file'?'; pass the first page sha256 as expectedSha256 on subsequent pages':'')
+          : e.message;
+        result={content:[{type:'text',text:message}],isError:true};
+      }
       if(record)writeAudit({...record,phase:'tool_completed',isError:result.isError,durationMs:Math.max(0,Math.round(performance.now()-started))});
     }
     else return json(res,200,{jsonrpc:'2.0',id:m.id??null,error:{code:-32601,message:'method not found'}});

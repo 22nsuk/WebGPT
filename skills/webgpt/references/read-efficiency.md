@@ -65,7 +65,12 @@ See <https://modelcontextprotocol.io/specification/2025-06-18/server/tools#struc
 ## Character pages
 
 For a long single line or a read requiring a serialized-response bound, start either
-`read_input` or `read_file` with `charOffset: 0`. Confirm the installed tool advertises it:
+`read_input` or `read_file` with `charOffset: 0`. A line-window error
+`first requested line exceeds maxChars` means its first complete line does not fit
+the requested budget; the maximum `maxChars` is 200000. Follow the MCP error's
+character-page retry with the same token and input `name` or file `path`, removing
+`offset`, `limit` and `maxChars`. Start from zero even if the failed line window
+began later: a line offset is not a character offset. Confirm the installed tool advertises it:
 
 ```json
 {

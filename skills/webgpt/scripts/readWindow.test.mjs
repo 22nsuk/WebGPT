@@ -49,7 +49,9 @@ test('character bounds return complete lines and a continuation without losing a
   const rest=readWorkspace(grant,'source.txt',{offset:2,maxChars:10});
   assert.equal(first.text+rest.text,text);assert.equal(rest.nextOffset,null);
   writeFileSync(join(root,'long.txt'),'x'.repeat(200001));
-  assert.throws(()=>readWorkspace(grant,'long.txt',{maxChars:200000}),/exceeds maxChars/);
+  assert.throws(()=>readWorkspace(grant,'long.txt',{maxChars:200000}),{
+    code:'READ_LINE_TOO_LONG',message:'first requested line exceeds maxChars; increase maxChars or read the whole file',
+  });
   assert.equal(readWorkspace(grant,'long.txt').text.length,200001);
 }));
 
