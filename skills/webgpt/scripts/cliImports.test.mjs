@@ -77,6 +77,18 @@ for (const [file, exported, args, status, diagnostic] of entries) {
   }
 }
 
+for (const argument of ['--help', '--child']) {
+  test(`operating-performance.mjs: importing with ${argument} preserves the caller's exit code`, t => {
+    const { run } = fixture(t), script = join(scripts, 'operating-performance.mjs');
+    const body = `process.exitCode = 23; process.env.WEBGPT_PERFORMANCE_CHILD = '{';
+      await import(${JSON.stringify(pathToFileURL(script).href)});`;
+    const result = run(['--input-type=module', '-e', body, script, argument]);
+    assert.equal(result.status, 23, result.stderr);
+    assert.equal(result.stdout, '');
+    assert.equal(result.stderr, '');
+  });
+}
+
 test('client.mjs: preserved linked preflight returns its actual receipt without configuration access', t => {
   const { dir, run } = fixture(t);
   const alias = join(dir, 'scripts');

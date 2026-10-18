@@ -71,6 +71,8 @@ const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const digest = v => typeof v === 'string' && /^[a-f0-9]{64}$/.test(v);
 const opaque = v => typeof v === 'string' && v.length > 0 && v.length <= 512 && !/[\x00-\x20\x7f]/.test(v) && v.isWellFormed();
 const messageId = v => v === null || opaque(v);
+const validLedgerPath = file => typeof file === 'string' && file.isWellFormed() && isAbsolute(file)
+  && file.endsWith('.json') && (process.platform !== 'win32' || !basename(file).includes(':'));
 // Share identity rules between stored evidence and new CLI input without relabeling ledger failures.
 const validDispatchIdentity = d => typeof d.taskId === 'string' && /^[a-zA-Z0-9_-]{1,80}$/.test(d.taskId)
   && !/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(d.taskId) && ['pro', 'xhigh'].includes(d.mode);
@@ -169,9 +171,9 @@ function safeSummary(d) {
 function fileInfo(file) {
   try { return lstatSync(file); } catch (e) { if (e.code === 'ENOENT') return null; throw e; }
 }
-function canonicalLedgerPath(file) {
+function canonicalLedgerDirectory(directory) {
   // The JS resolver can replace symlink bytes even when its output encoding is 'buffer'.
-  const bytes = realpathSync.native(file, { encoding: 'buffer' });
+  const bytes = realpathSync.native(directory, { encoding: 'buffer' });
   if (!isUtf8(bytes)) throw new DispatchError('LEDGER', 'ledger_path', 'native_path_not_utf8');
   return bytes.toString('utf8');
 }
@@ -211,16 +213,14 @@ async function withLedger(file, work) {
   let lock, owner, acquired = false;
   let stage = 'input';
   try {
-    if (typeof file !== 'string' || !file.isWellFormed() || !isAbsolute(file) || !file.endsWith('.json')) fail('INPUT');
-    // Canonicalize native aliases (including existing filenames) without following a linked ledger.
+    if (!validLedgerPath(file)) fail('INPUT');
+    // Resolve directory aliases without opening the final ledger through native
+    // realpath: its unshared Windows handle can block an owner's publication.
     // Do not create directories or change ACLs. Every parent must use the same canonical ledger.
     stage = 'ledger_path';
-    file = join(canonicalLedgerPath(dirname(file)), basename(file));
+    file = join(canonicalLedgerDirectory(dirname(file)), basename(file));
     const candidate = fileInfo(file);
-    if (candidate) {
-      if (!candidate.isFile() || candidate.isSymbolicLink()) fail('LEDGER');
-      file = canonicalLedgerPath(file);
-    }
+    if (candidate && (!candidate.isFile() || candidate.isSymbolicLink())) fail('LEDGER');
     // A publisher may replace the inode during the path lookup above. Validate
     // link count, size and opened identity only after acquiring its shared lock.
     lock = file + '.dispatch.lock';
@@ -476,7 +476,7 @@ export async function dispatchCli(args) {
     const count = action === 'preflight' ? 1 : Object.hasOwn(noPayload, action) ? 2 : 3;
     if (args.length !== count) throw inputError('arguments_invalid', 'cli_arguments');
     if (action === 'preflight') return preflightDispatchRuntime();
-    if (!file.isWellFormed() || !isAbsolute(file) || !file.endsWith('.json')) throw inputError('ledger_path_invalid', 'cli_arguments');
+    if (!validLedgerPath(file)) throw inputError('ledger_path_invalid', 'cli_arguments');
     if (Object.hasOwn(noPayload, action)) return await noPayload[action](file);
     if (!payloadFile.isWellFormed() || !isAbsolute(payloadFile)) throw inputError('payload_path_invalid', 'cli_arguments');
     let bytes;
