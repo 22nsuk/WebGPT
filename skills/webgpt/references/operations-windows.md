@@ -20,10 +20,14 @@ Both read and edit grants are rejected. The named deployment tree and native tar
 of `deploy/`, `deploy/windows/`, and the shipped `run-worker-task.ps1`,
 `register-worker-task.ps1`, and `worker.xml.example` files are checked at registration
 and each file-tool use, including directory aliases/junctions and individual file
-symlinks. A scripts-only installation can omit deployment
-files; checking the boundary does not create directories. To develop WebGPT, use a
-separate source checkout and install reviewed updates while idle. The service never
-starts a browser, Codex, Git, cloudflared or arbitrary user-supplied commands.
+symlinks. The executed `scripts/replace-workspace-file.ps1` helper and its current
+native target are also protected as running worker code. Readiness applies the
+same checks to active grants, so adding or retargeting a helper link after
+registration makes the affected workspace unavailable. A scripts-only installation
+can omit deployment files; checking the boundary does not create directories. To
+develop WebGPT, use a separate source checkout and install reviewed updates while
+idle. The service never starts a browser, Codex, Git, cloudflared or arbitrary
+user-supplied commands.
 
 The worker and service CLI retain the original absolute entrypoint path as well as
 the native module path. When `scripts/` is a directory alias/junction, both scripts
