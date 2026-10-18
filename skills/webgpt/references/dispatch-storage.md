@@ -5,13 +5,23 @@ canonical. No new task state, controller protocol or browser transport is introd
 
 ## Reads and creation
 
-Input paths must be well-formed Unicode. Canonical ledger paths are resolved as
+Input paths must be well-formed Unicode. Canonical parent directories are resolved as
 native bytes and checked for valid UTF-8 before decoding, locking or writing.
 This prevents an unrepresentable directory name from selecting a different file
 whose name contains the replacement character U+FFFD. Normal Unicode directory
 aliases, including literal U+FFFD names, still share the canonical ledger lock.
 An invalid native path returns `DISPATCH_LEDGER` at `ledger_path` with the fixed
 reason `native_path_not_utf8`; the private path is not included in the diagnostic.
+
+The final `.json` basename is retained, and a ledger symlink is refused. The
+canonical parent plus basename selects the shared `<ledger>.dispatch.lock`;
+filename case variants still share that lock on case-insensitive filesystems.
+The ledger itself is not passed to native realpath: its
+[unshared Windows file handle](https://github.com/nodejs/node/blob/v22.23.3/deps/uv/src/win/fs.c#L3001-L3025)
+can deny an owner's read or replacement before a contender reaches the lock.
+Windows stream syntax (`:` in the basename) is rejected before filesystem access,
+including stream paths with an aliased base filename; POSIX colon filenames remain
+valid. The API and CLI share this path rule, while preserving their input diagnostics.
 
 Ledger, CLI payload and lock reads validate the named file and opened descriptor,
 reject links or changed file identity, and read at most 2 MiB plus one overflow
@@ -90,7 +100,11 @@ Run `node --test --test-reporter=tap scripts/dispatch.test.mjs scripts/dispatchS
 from the installed skill, and the complete repository suite before deployment.
 The fixtures test failed creation, partial writes, flush/close/rename barriers,
 post-publication errors, single-begin publication, input growth, exact-limit reads
-and lock/descriptor cleanup. The existing storage fault matrix also swaps real
+and lock/descriptor cleanup. A gated writer/contender fixture rejects a native
+ledger lookup during owned publication; it verifies lock refusal and one successful
+send without claiming to reproduce a particular Windows rename error. Windows
+filename-case aliases and pre-I/O stream rejection have separate coverage.
+The existing storage fault matrix also swaps real
 same-size candidates after flush/close at preparation, sending and confirmation.
 It requires refusal before the relevant send, retained committed barriers after
 sending, and preservation of the flushed and substituted files. Creator-specific

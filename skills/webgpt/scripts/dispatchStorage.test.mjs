@@ -88,6 +88,100 @@ test('ill-formed ledger paths cannot address literal replacement-character names
   }
 });
 
+test('a competing begin reaches the held lock without opening the ledger through native realpath', async t => {
+  const f = await fixture(t), lock = f.file + '.dispatch.lock';
+  let releaseReady, entered, sends = 0;
+  const gate = new Promise(resolve => { releaseReady = resolve; });
+  const started = new Promise(resolve => { entered = resolve; });
+  const writer = dispatchPrompt(f.file, prompt, {
+    observeReady: async () => { entered(); await gate; return ready(); },
+    fillAndSend: async () => { sends++; }, observeSent: async () => sent(),
+  });
+  await Promise.race([started, writer]);
+  const owner = fs.readFileSync(lock), native = fs.realpathSync.native;
+  let contender, heldLedger, heldLock, published;
+  t.mock.method(fs.realpathSync, 'native', (file, ...args) => {
+    // Model an unavailable ledger lookup while another parent owns publication.
+    // Windows native realpath opens an unshared handle, so a contender must not
+    // perform that lookup before discovering the owner's lock.
+    if (file === f.file) throw Object.assign(Error('fixture ledger lookup unavailable'), { code: 'EACCES' });
+    return native(file, ...args);
+  });
+  try {
+    try { await beginDispatch(f.file, { prompt, observation: ready() }); }
+    catch (error) { contender = error; }
+    heldLedger = fs.readFileSync(f.file); heldLock = fs.readFileSync(lock);
+  } finally {
+    t.mock.restoreAll(); releaseReady(); published = await writer;
+  }
+  assert.equal(contender?.code, 'DISPATCH_LOCKED');
+  redacted(contender, f);
+  assert.deepEqual(heldLedger, f.before); assert.deepEqual(heldLock, owner);
+  assert.equal(published.state, 'submitted'); assert.equal(sends, 1);
+  assert.equal(JSON.parse(fs.readFileSync(f.file)).dispatch.state, 'submitted');
+  assert.deepEqual(fs.readdirSync(f.dir), ['ledger.json']);
+});
+
+test('Windows filename case aliases share the task-ledger lock and committed send barrier', {
+  skip: process.platform !== 'win32' && 'native Windows filename aliases required',
+}, async t => {
+  const f = await fixture(t), alias = join(f.dir, 'LEDGER.json');
+  if (!fs.existsSync(alias)) { t.skip('fixture filesystem has case-sensitive filenames'); return; }
+  const original = fs.lstatSync(f.file, { bigint: true }), selected = fs.lstatSync(alias, { bigint: true });
+  assert.equal(selected.dev, original.dev); assert.equal(selected.ino, original.ino);
+  let release, entered, sends = 0;
+  const gate = new Promise(resolve => { release = resolve; });
+  const started = new Promise(resolve => { entered = resolve; });
+  const writer = dispatchPrompt(f.file, prompt, {
+    observeReady: async () => ready(),
+    fillAndSend: async () => { sends++; entered(); await gate; }, observeSent: async () => sent(),
+  });
+  await Promise.race([started, writer]);
+  try { await assert.rejects(beginDispatch(alias, { prompt, observation: ready() }), { code: 'DISPATCH_LOCKED' }); }
+  finally { release(); await writer; }
+  const submitted = fs.readFileSync(f.file);
+  assert.equal(JSON.parse(submitted).dispatch.state, 'submitted'); assert.equal(sends, 1);
+  await assert.rejects(beginDispatch(alias, { prompt, observation: ready() }), { code: 'DISPATCH_BLOCKED' });
+  assert.deepEqual(fs.readFileSync(f.file), submitted);
+  assert.deepEqual(fs.readdirSync(f.dir), ['ledger.json']);
+});
+
+test('ledger paths reject Windows stream syntax before I/O and retain POSIX colon filenames', async t => {
+  const f = await fixture(t), payload = join(f.dir, 'payload.json');
+  const names = ['ledger.json:stream.json', 'BASEFI~1.TXT:stream.json'];
+  fs.writeFileSync(payload, JSON.stringify({ prompt, observation: ready() }));
+  if (process.platform !== 'win32') {
+    for (const name of names) {
+      const file = join(f.dir, name);
+      assert.equal((await registerDispatch(file, spec)).state, 'registered');
+      assert.equal((await dispatchCli(['begin', file, payload])).state, 'sending');
+      assert.equal(JSON.parse(fs.readFileSync(file)).dispatch.state, 'sending');
+    }
+  } else {
+    let accesses = 0;
+    const forbidden = () => { accesses++; throw Error('stream path reached filesystem'); };
+    forbidden.native = forbidden;
+    const methods = Object.fromEntries(['lstatSync', 'openSync', 'readSync', 'fstatSync', 'fsyncSync',
+      'writeFileSync', 'closeSync', 'renameSync', 'unlinkSync', 'realpathSync'].map(name => [name, forbidden]));
+    await patched(t, methods, async () => {
+      for (const name of names) {
+        const file = join(f.dir, name);
+        await assert.rejects(registerDispatch(file, spec), {
+          code: 'DISPATCH_INPUT', stage: 'input', reason: 'invalid_input',
+        });
+        for (const action of ['inspect', 'begin']) await assert.rejects(
+          dispatchCli(action === 'inspect' ? [action, file] : [action, file, payload]), {
+            code: 'DISPATCH_INPUT', stage: 'cli_arguments', reason: action + '_ledger_path_invalid',
+          });
+      }
+    });
+    assert.equal(accesses, 0);
+    assert.deepEqual(fs.readdirSync(f.dir).sort(), ['ledger.json', 'payload.json']);
+  }
+  assert.deepEqual(fs.readFileSync(f.file), f.before);
+  assert.equal(fs.readFileSync(payload, 'utf8'), JSON.stringify({ prompt, observation: ready() }));
+});
+
 for (const held of [true, false]) test(`pre-lock displaced inode metadata does not bypass ${held ? 'the current owner' : 'the committed send barrier'}`, async t => {
   const f = await fixture(t), lock = f.file + '.dispatch.lock';
   if (held) fs.writeFileSync(lock, 'another parent owns publication', { mode: 0o600 });

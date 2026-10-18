@@ -14,6 +14,8 @@ const entries = [
   ['service.mjs', 'runService', [], 78, /"event":"service_failed".*"code":"CONFIG_INVALID"/],
   ['diagnose.mjs', 'diagnoseTask', [], 1, /usage: diagnose\.mjs/],
   ['verification.mjs', 'prepareVerification', [], 1, /WebGPT verification: unavailable or invalid input/],
+  // No library export: a direct run still rejects unknown options before fixtures.
+  ['operating-performance.mjs', null, ['--wat', '1'], 1, /unknown, duplicate or missing option: --wat/],
 ];
 function fixture(t) {
   const dir = fs.mkdtempSync(join(tmpdir(), 'webgpt-cli-import-'));
@@ -41,7 +43,9 @@ function quiet(result) {
 
 for (const [file, exported, args, status, diagnostic] of entries) {
   const script = join(scripts, file), url = pathToFileURL(script).href;
-  const importBody = `const m = await import(${JSON.stringify(url)}); if (typeof m[${JSON.stringify(exported)}] !== 'function') throw Error('missing export');`;
+  const importBody = exported
+    ? `const m = await import(${JSON.stringify(url)}); if (typeof m[${JSON.stringify(exported)}] !== 'function') throw Error('missing export');`
+    : `await import(${JSON.stringify(url)});`;
   test(`${file}: eval arguments do not become filesystem paths or trigger CLI actions`, t => {
     const { dir, run } = fixture(t);
     quiet(run(['--input-type=module', '-e', importBody]));
@@ -71,6 +75,18 @@ for (const [file, exported, args, status, diagnostic] of entries) {
       assert.ok(!result.stderr.includes(dir), 'private paths must not appear in entry diagnostics');
     });
   }
+}
+
+for (const argument of ['--help', '--child']) {
+  test(`operating-performance.mjs: importing with ${argument} preserves the caller's exit code`, t => {
+    const { run } = fixture(t), script = join(scripts, 'operating-performance.mjs');
+    const body = `process.exitCode = 23; process.env.WEBGPT_PERFORMANCE_CHILD = '{';
+      await import(${JSON.stringify(pathToFileURL(script).href)});`;
+    const result = run(['--input-type=module', '-e', body, script, argument]);
+    assert.equal(result.status, 23, result.stderr);
+    assert.equal(result.stdout, '');
+    assert.equal(result.stderr, '');
+  });
 }
 
 test('client.mjs: preserved linked preflight returns its actual receipt without configuration access', t => {

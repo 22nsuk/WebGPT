@@ -6,6 +6,14 @@ const script = new URL('./operating-performance.mjs', import.meta.url);
 const run = args => spawnSync(process.execPath, [fileURLToPath(script), ...args],
   { encoding: 'utf8', timeout: 60000, maxBuffer: 1024 * 1024 });
 
+test('performance CLI help succeeds without running a benchmark', () => {
+  const result = run(['--help']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stderr, '');
+  assert.match(result.stdout, /^node skills\/webgpt\/scripts\/operating-performance\.mjs \[options\]/);
+  assert.match(result.stdout, /--tasks 100,1000,10000/);
+});
+
 test('performance CLI rejects invalid parameters before fixtures', () => {
   for (const args of [['--wat', '1'], ['--tasks'], ['--tasks', '2,1'],
     ['--iterations', '0'], ['--warmups', '-1'], ['--tasks', '1.5'],
