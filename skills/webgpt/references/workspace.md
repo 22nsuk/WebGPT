@@ -23,6 +23,11 @@ Node's `process` or filesystem lifecycle. Keep browser actions in its authorized
 node <skill>/scripts/client.mjs register <private-task.json>
 ```
 
+`register` requires exactly one JSON-file path. `status`, `tasks`, `ready`, and `shutdown`
+take no arguments. The general controller CLI reports unknown commands and invalid argument
+counts before reading input files or runtime configuration. Direct task-ID syntax is checked
+before configuration; file-based `wait` checks its IDs after reading the selected JSON.
+
 Registration payload:
 
 ```json
