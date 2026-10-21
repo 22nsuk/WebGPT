@@ -68,7 +68,7 @@ function taskIds(ids) {
   return selected;
 }
 
-export async function request(action, payload, config = configuration(), { signal, timeoutMs = action === 'wait' ? 60000 : 5000 } = {}) {
+export async function request(action, payload, config, { signal, timeoutMs = action === 'wait' ? 60000 : 5000 } = {}) {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60000) throw Error('invalid controller timeout');
   const read = ['wait', 'status', 'tasks', 'ready', 'reconcile'].includes(action);
   if (!read && !['register', 'ack', 'collect', 'checked', 'cancel', 'shutdown'].includes(action)) throw Error('unknown controller action');
@@ -84,6 +84,7 @@ export async function request(action, payload, config = configuration(), { signa
   // for the wire query and exact reconciliation scope confirmation.
   const scope = ids ? new Set(ids) : null;
   signal?.throwIfAborted();
+  if (config === undefined) config = configuration();
   // Match the worker's stored-key allowance and private-file policy. Never
   // generate, trim or rotate a key here; native read errors remain non-retryable.
   const storedKey = readBoundedFile(join(config.dataDir, 'controller.key'), 4096,
@@ -150,7 +151,7 @@ export function retryableControllerError(error) {
     'UND_ERR_SOCKET', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT'].includes(error.cause?.code);
 }
 
-export async function waitForTasks(ids, config = configuration(), { signal, retryDelays = [250, 1000, 3000] } = {}) {
+export async function waitForTasks(ids, config, { signal, retryDelays = [250, 1000, 3000] } = {}) {
   ids = taskIds(ids);
   // Capture at most three indexed values before waiting. Do not retain the
   // caller's mutable budget or skip holes during validation.
@@ -158,6 +159,8 @@ export async function waitForTasks(ids, config = configuration(), { signal, retr
     ? Array.from({ length: retryDelays.length }, (_, index) => retryDelays[index]) : null;
   if (!delays || delays.some(value => !Number.isSafeInteger(value) || value < 0 || value > 10000))
     throw Error('invalid bounded wait retry policy');
+  // Resolve the default once, after preflight; every poll keeps the same controller.
+  if (config === undefined) config = configuration();
   let retries = 0;
   for (;;) {
     signal?.throwIfAborted();
@@ -453,8 +456,9 @@ if (executeCli) {
       const { exportReadCli } = await import('./result-export-read.mjs');
       result = exportReadCli(args);
     } else if (action === 'reconcile') {
-      result = await reconcileTasks(configuration(), args.length ? { ids: args } : {});
-    } else if (action === 'ready' || action === 'shutdown') {
+      const options = args.length ? { ids: taskIds(args) } : {};
+      result = await reconcileTasks(configuration(), options);
+    } else if (['status', 'tasks', 'ready', 'shutdown'].includes(action)) {
       if (args.length) throw Error('unexpected controller arguments');
       result = await request(action, action === 'shutdown' ? {} : undefined);
     } else if (action === 'wait' && args.length) {
@@ -484,6 +488,7 @@ if (executeCli) {
       const ids = args.slice(resume ? 1 : 0);
       if (ids[0] === '--') ids.shift();
       if (ids.length !== 1) throw Error('usage: client.mjs collect [--resume] [--] <task-id>');
+      taskIds(ids);
       result = await collectTask(ids[0], configuration(), { resume });
     } else if (['ack', 'checked', 'cancel'].includes(action)) {
       const ids = literalIds ?? args, fileMode = literalIds === null && args[0] === '--file';
@@ -493,11 +498,12 @@ if (executeCli) {
       const payload = literalIds !== null ? { id: taskIds(literalIds)[0] } : fileMode ? readJsonFile(args[1])
         : isTaskId(args[0]) ? { id: args[0] } : readJsonFile(args[0]);
       result = await request(action, payload);
-    } else {
-      if (args.length > 1) throw Error('unexpected controller arguments');
-      const payload = args[0] ? readJsonFile(args[0]) : undefined;
-      result = await request(action, payload);
-    }
+    } else if (action === 'register') {
+      if (args.length !== 1 || !args[0]) throw Error('usage: client.mjs register <json-file>');
+      result = await request(action, readJsonFile(args[0]));
+    } else if (action === 'wait') {
+      result = await request(action);
+    } else throw Error('unknown controller action');
     console.log(JSON.stringify(result));
   } catch (error) {
     if (action === 'read-handoff') {
