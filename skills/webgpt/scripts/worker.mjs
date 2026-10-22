@@ -5,7 +5,7 @@ import { resolve, relative, isAbsolute, sep, dirname, basename } from 'node:path
 import { isDeepStrictEqual } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { isCliEntry } from './cli-entry.mjs';
-import { grantWorkspace, listWorkspace, probeWorkspace, readWorkspace, changeWorkspace, inspectRecovery, windowsReplacementHelperPath } from './workspace.mjs';
+import { grantWorkspace, validateWorkspaceInput, listWorkspace, probeWorkspace, readWorkspace, changeWorkspace, inspectRecovery, windowsReplacementHelperPath } from './workspace.mjs';
 import { configuration, configurationFile } from './client.mjs';
 import { hasPendingResults, inspectPendingResults, storeResult, verifySavedResult } from './results.mjs';
 import { acquireRuntimeLock, readStateBytes, stateBytesEqual, readStateMarker, createStateMarker, assertNoStateStage, writeStateBytes, parseState, fault, startupExitCode } from './runtime.mjs';
@@ -258,10 +258,6 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
   // event-loop yield may split these checks from persist. This serializes worker
   // requests, not arbitrary external filesystem writers or power-loss recovery.
   const commitCollection=a=>{
-    if(!a||typeof a!=='object'||Array.isArray(a)||Object.keys(a).some(k=>!['id','expectedStatus','expectedSha256'].includes(k))
-        ||typeof a.id!=='string'||!/^[a-zA-Z0-9_-]{1,80}$/.test(a.id)
-        ||!['completed','failed','cancelled'].includes(a.expectedStatus)
-        ||typeof a.expectedSha256!=='string'||!/^[a-f0-9]{64}$/.test(a.expectedSha256))throw Error('invalid conditional collection');
     const t=tasks.find(t=>t.id===a.id);if(!t)throw Error('unknown task');
     const conflict=(code,message,extra={})=>Object.assign(fault(code,message),{statusCode:409,...extra});
     if(t.discarded)throw conflict('COLLECTION_DISCARDED','result was discarded; inspect with collect --resume');
@@ -472,13 +468,25 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
     if(req.headers.authorization!=='Bearer '+key)return json(res,401,{});
     try{
       const url=new URL(req.url,'http://localhost');
+      // Admit only supported request shapes before inspecting state or reading a
+      // POST body. Scoped reads keep their query support; other routes are exact.
+      const scoped=req.method==='GET'&&['/wait','/reconcile'].includes(url.pathname);
+      if(!(scoped||req.method==='GET'&&['/ready','/status','/tasks'].includes(req.url)
+          ||req.method==='POST'&&['/register','/collect','/ack','/checked','/cancel','/shutdown'].includes(req.url))){
+        if(!req.complete)res.setHeader('connection','close');
+        return json(res,404,{});
+      }
+      let ids;
+      if(scoped){
+        ids=new Set(url.searchParams.getAll('id'));
+        if([...url.searchParams.keys()].some(key=>key!=='id')
+            ||[...ids].some(id=>!/^[a-zA-Z0-9_-]{1,80}$/.test(id)))
+          throw Error(url.pathname==='/wait'?'invalid wait query':'invalid reconciliation query');
+      }
       if(req.method==='GET'&&req.url==='/ready'){
         const report=readiness();return json(res,report.ok?200:503,report);
       }
       if(req.method==='GET'&&url.pathname==='/reconcile'){
-        const ids=new Set(url.searchParams.getAll('id'));
-        if([...url.searchParams.keys()].some(key=>key!=='id')
-            ||[...ids].some(id=>!/^[a-zA-Z0-9_-]{1,80}$/.test(id)))throw Error('invalid reconciliation query');
         const selected=selectTasks(ids);
         // Health remains global. Only retained-task detail inspection is scoped;
         // full reconcile still audits every journal, original and result candidate.
@@ -490,8 +498,6 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
       if(stopping)return json(res,503,{error:'worker is stopping',code:'SHUTTING_DOWN',retryable:true});
       if(req.method==='GET'&&['/wait','/status','/tasks'].includes(url.pathname))verifyState();
       if(req.method==='GET'&&url.pathname==='/wait'){
-        const ids=new Set(url.searchParams.getAll('id'));
-        if([...url.searchParams.keys()].some(key=>key!=='id'))throw Error('invalid wait query');
         const snapshot=()=>{
           const selected=selectTasks(ids);
           let settled=true,nextCheck=Infinity;
@@ -531,7 +537,6 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
             recoveryRequired:Boolean(t.recoveryRequired?.length)}))});
       }
 
-      if(req.method!=='POST')return json(res,404,{});
       const a=await body(req);
       if(stopping)return json(res,503,{error:'worker is stopping',code:'SHUTTING_DOWN',retryable:true});
       if(req.url==='/shutdown'){
@@ -542,17 +547,28 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
         setImmediate(()=>{close().catch(()=>{process.exitCode=74;});});
         json(res,202,{accepted:true});return;
       }
-      verifyState();
-      if(req.url==='/collect')return json(res,200,commitCollection(a));
+      // Only request data belongs in this phase. Workspace I/O, task comparisons
+      // and mutation remain synchronous after the fresh state check below.
       if(req.url==='/register'){
         if(a&&['terminal','mode'].some(key=>Object.hasOwn(a,key)))throw Error('terminal/open modes are not supported by this file-scoped fork');
-        if(!a||typeof a.id!=='string'||!/^[a-zA-Z0-9_-]{1,80}$/.test(a.id)||typeof a.instructions!=='string'||!a.inputs||typeof a.inputs!=='object'||Array.isArray(a.inputs)||Object.values(a.inputs).some(v=>typeof v!=='string'))throw Error('invalid task');
+        if(!a||typeof a!=='object'||Array.isArray(a)||typeof a.id!=='string'||!/^[a-zA-Z0-9_-]{1,80}$/.test(a.id)||typeof a.instructions!=='string'||!a.inputs||typeof a.inputs!=='object'||Array.isArray(a.inputs)||Object.values(a.inputs).some(v=>typeof v!=='string'))throw Error('invalid task');
         // Valid wire UTF-8 does not exclude JSON-escaped unpaired surrogates.
         // Reject them before storing unreadable keys or lossy UTF-8 input hashes.
         if(!a.instructions.isWellFormed()||Object.entries(a.inputs).some(([name,text])=>!name.isWellFormed()||!text.isWellFormed()))
           throw Error('task instructions and inputs must be well-formed Unicode');
         // IDs become result/recovery filenames, so keep them portable across Windows and POSIX.
         if(/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(a.id))throw Error('invalid task ID: reserved Windows filename');
+        validateWorkspaceInput(a.workspace);
+      }else if(req.url==='/collect'){
+        if(!a||typeof a!=='object'||Array.isArray(a)||Object.keys(a).some(k=>!['id','expectedStatus','expectedSha256'].includes(k))
+            ||typeof a.id!=='string'||!/^[a-zA-Z0-9_-]{1,80}$/.test(a.id)
+            ||!['completed','failed','cancelled'].includes(a.expectedStatus)
+            ||typeof a.expectedSha256!=='string'||!/^[a-f0-9]{64}$/.test(a.expectedSha256))throw Error('invalid conditional collection');
+      }else if(!a||typeof a!=='object'||Array.isArray(a)||typeof a.id!=='string'||!/^[a-zA-Z0-9_-]{1,80}$/.test(a.id))
+        throw Error('invalid task ID');
+      verifyState();
+      if(req.url==='/collect')return json(res,200,commitCollection(a));
+      if(req.url==='/register'){
         const workspace=grantWorkspace(a.workspace);
         checkDataBoundary(workspace);
         const existing=tasks.find(t=>t.id===a.id);
