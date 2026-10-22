@@ -283,16 +283,15 @@ test('shutdown is authenticated, drains an in-flight wait, is idempotent, and pr
   const a = await f.register('a');
   assert.equal((await fetch(`http://127.0.0.1:${f.service.controlPort}/shutdown`, { method: 'POST', body: '{}' })).status, 401);
   await rejectsRequest(f.admin('shutdown', { extra: true }), /empty object/);
-  // The GET handler installs its waiter synchronously. Observe its real request
-  // after that handler returns, instead of guessing acceptance from elapsed time.
+  // Observe the body parser's completion and ensuing state-check continuation.
   let accepted;
   const waitAccepted = new Promise(resolve => { accepted = resolve; });
   const originalEmit = Server.prototype.emit;
   const observeRequest = t.mock.method(Server.prototype, 'emit', function (event, ...args) {
     const emitted = Reflect.apply(originalEmit, this, [event, ...args]);
     if (event === 'request' && this.address()?.port === f.service.controlPort
-        && args[0].method === 'GET' && args[0].url === '/wait?id=a')
-      accepted(!args[1].headersSent && !args[1].writableEnded);
+        && args[0].method === 'POST' && args[0].url === '/wait')
+      args[0].once('end', () => setImmediate(() => accepted(!args[1].headersSent && !args[1].writableEnded)));
     return emitted;
   });
   const waiting = f.admin('wait', { ids: ['a'] });
@@ -419,7 +418,14 @@ test('transport disconnects use a finite budget and never replay POST operations
 test('temporary disconnect followed by a healthy result renews the same scoped read', async () => {
   await transportFixture((req, res, count) => {
     if (count === 1) return req.socket.destroy();
-    assert.equal(req.url, '/wait?id=a'); res.end(JSON.stringify({ events: [], backupDue: ['a'], settled: false }));
+    assert.equal(req.url, '/wait');
+    assert.equal(req.method, 'POST');
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.once('end', () => {
+      assert.deepEqual(JSON.parse(Buffer.concat(chunks).toString('utf8')), { ids: ['a'] });
+      res.end(JSON.stringify({ events: [], backupDue: ['a'], settled: false }));
+    });
   }, async f => {
     const result = await waitForTasks(['a'], f.config, { retryDelays: [0] });
     assert.deepEqual(result.backupDue, ['a']); assert.equal(f.count(), 2);

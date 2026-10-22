@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
+import { readScope } from './test-fixtures/worker-http.mjs';
 
 const execute = promisify(execFile), cli = realpathSync.native(fileURLToPath(new URL('./client.mjs', import.meta.url)));
 async function fixture(t, { live = false, preload = false } = {}) {
@@ -20,9 +21,9 @@ async function fixture(t, { live = false, preload = false } = {}) {
     if (server) await new Promise(resolve => { server.close(resolve); server.closeAllConnections(); });
     rmSync(dir, { recursive: true, force: true });
   });
-  const observe = req => {
+  const observe = async req => {
     const url = new URL(req.url, 'http://localhost');
-    requests.push({ method: req.method, path: url.pathname, ids: url.searchParams.getAll('id') });
+    requests.push({ method: req.method, path: url.pathname, ids: await readScope(req) });
   };
   writeFileSync(join(dir, 'controller.key'), 'test-controller-key');
   if (live) {
@@ -32,12 +33,19 @@ async function fixture(t, { live = false, preload = false } = {}) {
     const emit = Server.prototype.emit;
     observer = t.mock.method(Server.prototype, 'emit', function(event, ...args) {
       const result = Reflect.apply(emit, this, [event, ...args]);
-      if (event === 'request' && this.address()?.port === port && args[0].url.startsWith('/wait')) observe(args[0]);
+      if (event === 'request' && this.address()?.port === port && args[0].url.startsWith('/wait')) {
+        // Observe chunks without competing with the worker's body iterator.
+        const req = args[0], chunks = [];
+        req.on('data', chunk => chunks.push(chunk));
+        req.once('end', () => requests.push({ method: req.method, path: new URL(req.url, 'http://localhost').pathname,
+          ids: req.method === 'POST' ? JSON.parse(Buffer.concat(chunks).toString('utf8')).ids
+            : new URL(req.url, 'http://localhost').searchParams.getAll('id') }));
+      }
       return result;
     });
   } else {
-    server = createServer((req, res) => {
-      observe(req);
+    server = createServer(async (req, res) => {
+      await observe(req);
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ events: [], backupDue: [], settled: true }));
     });
@@ -105,7 +113,7 @@ test('explicit and legacy wait files select only their saved IDs and preserve du
     const result = await f.run(...args);
     assert.equal(result.code, 0); assert.equal(result.stderr, '');
     assert.deepEqual(JSON.parse(result.stdout), { events: [], backupDue: [], settled: true });
-    assert.deepEqual(f.requests.at(-1), { method: 'GET', path: '/wait', ids });
+    assert.deepEqual(f.requests.at(-1), { method: 'POST', path: '/wait', ids });
   }
   assert.equal(f.requests.length, cases.length);
 });
@@ -118,8 +126,8 @@ test('direct wait IDs do not read a same-named file or become JSON file mode', a
     assert.equal(result.code, 0); assert.equal(result.stderr, '');
   }
   assert.deepEqual(f.requests, [
-    { method: 'GET', path: '/wait', ids: ['null'] },
-    { method: 'GET', path: '/wait', ids: ['null', 'other'] },
+    { method: 'POST', path: '/wait', ids: ['null'] },
+    { method: 'POST', path: '/wait', ids: ['null', 'other'] },
   ]);
 });
 
@@ -130,11 +138,11 @@ test('wait terminator selects literal option-shaped IDs and preserves duplicate 
     const result = await f.run('--', id);
     assert.equal(result.code, 0); assert.equal(result.stderr, '');
     assert.deepEqual(JSON.parse(result.stdout), { events: [], backupDue: [], settled: true });
-    assert.deepEqual(f.requests.at(-1), { method: 'GET', path: '/wait', ids: [id] });
+    assert.deepEqual(f.requests.at(-1), { method: 'POST', path: '/wait', ids: [id] });
   }
   const result = await f.run('--', '--file', '--', '--resume', '--file');
   assert.equal(result.code, 0); assert.equal(result.stderr, '');
-  assert.deepEqual(f.requests.at(-1), { method: 'GET', path: '/wait', ids: ['--file', '--', '--resume'] });
+  assert.deepEqual(f.requests.at(-1), { method: 'POST', path: '/wait', ids: ['--file', '--', '--resume'] });
   assert.equal(f.requests.length, ids.length + 1);
 });
 
@@ -169,13 +177,13 @@ for (const preload of [false, true]) test(`integration: wait file scope uses the
   const accepted = await f.run('--file', 'payload');
   assert.equal(accepted.code, 0); assert.equal(accepted.stderr, '');
   assert.deepEqual(JSON.parse(accepted.stdout), { events: [], backupDue: [], settled: true });
-  assert.deepEqual(f.requests, [{ method: 'GET', path: '/wait', ids: ['chosen'] }]);
+  assert.deepEqual(f.requests, [{ method: 'POST', path: '/wait', ids: ['chosen'] }]);
   const literal = await f.run('--', '--file');
   assert.equal(literal.code, 0); assert.equal(literal.stderr, '');
   assert.deepEqual(JSON.parse(literal.stdout), { events: [], backupDue: [], settled: true });
   assert.deepEqual(f.requests, [
-    { method: 'GET', path: '/wait', ids: ['chosen'] },
-    { method: 'GET', path: '/wait', ids: ['--file'] },
+    { method: 'POST', path: '/wait', ids: ['chosen'] },
+    { method: 'POST', path: '/wait', ids: ['--file'] },
   ]);
   for (const [file, before] of retained) assert.deepEqual(readFileSync(file), before);
 });

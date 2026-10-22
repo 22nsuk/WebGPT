@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { request, retryableControllerError, collectTask } from './client.mjs';
+import { controllerObservation, assertScopedRead } from './test-fixtures/worker-http.mjs';
 
 const busy = { error: 'request body capacity exhausted', code: 'HTTP_BODY_BUSY', retryable: true };
 const send = (res, status, value) => {
@@ -108,9 +109,11 @@ for (const resume of [false, true]) test(`collection${resume ? ' resume' : ''} p
   const calls = [];
   let event, task;
   const config = await fixture(t, async (req, res) => {
-    calls.push(req.url); await drain(req);
-    if (req.url === '/wait?id=capacity') return send(res, 200, { events: [event], backupDue: [], settled: true });
-    if (req.url === '/reconcile?id=capacity') return send(res, 200, { health: { stateVerified: true, issues: [] }, scope: ['capacity'], tasks: [task] });
+    calls.push(req.url);
+    const chunks = []; for await (const chunk of req) chunks.push(chunk);
+    assertScopedRead(controllerObservation(req, Buffer.concat(chunks)), ['capacity']);
+    if (req.url === '/wait') return send(res, 200, { events: [event], backupDue: [], settled: true });
+    if (req.url === '/reconcile') return send(res, 200, { health: { stateVerified: true, issues: [] }, scope: ['capacity'], tasks: [task] });
     if (req.url === '/collect') return send(res, 503, busy);
     assert.fail('unexpected controller action: ' + req.url);
   });
@@ -121,7 +124,7 @@ for (const resume of [false, true]) test(`collection${resume ? ' resume' : ''} p
   task = { ...event, collected: false, discarded: false, recoveryRequired: [], journalIssues: [], pendingResults: [] };
   const before = readdirSync(config.dataDir).sort();
   await rejectsRequest(collectTask('capacity', config, { resume }), rejection(503, 'HTTP_BODY_BUSY', true));
-  assert.deepEqual(calls, [resume ? '/reconcile?id=capacity' : '/wait?id=capacity', '/collect']);
+  assert.deepEqual(calls, [resume ? '/reconcile' : '/wait', '/collect']);
   assert.deepEqual(readFileSync(artifact), bytes);
   assert.deepEqual(readdirSync(config.dataDir).sort(), before);
   assert.equal(task.collected, false);

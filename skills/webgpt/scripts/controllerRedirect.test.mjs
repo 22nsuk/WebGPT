@@ -11,6 +11,7 @@ import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { request, waitForTasks, collectTask, retryableControllerError } from './client.mjs';
 import { start } from './worker.mjs';
+import { controllerObservation, assertScopedRead } from './test-fixtures/worker-http.mjs';
 
 const execute = promisify(execFile);
 const privateText = 'PRIVATE_REDIRECT_FIXTURE';
@@ -77,7 +78,7 @@ test('task-scoped wait does not accept a redirected snapshot or retry the origin
   const dir = directory(t); writeFileSync(join(dir, 'controller.key'), 'fixture-only-key');
   let originals = 0, visits = 0;
   const controller = await server(t, (req, res) => {
-    if (req.url.startsWith('/wait?')) {
+    if (req.url === '/wait') {
       originals++; res.writeHead(302, { location: '/target' }); res.end(); return;
     }
     visits++; json(res, { events: [], backupDue: [], settled: true });
@@ -131,6 +132,7 @@ for (const resume of [false, true]) test(`collection${resume ? ' resume' : ''} r
   const before = readFileSync(join(f.dir, 'state.json')), paths = [];
   const proxy = await server(t, async (req, res, bytes) => {
     paths.push(req.url);
+    assertScopedRead(controllerObservation(req, bytes), ['owned']);
     if (req.url === '/collect') {
       // A 303 would turn POST ack into a successful GET tasks; a 307 would
       // turn it into POST cancel, deliberately discarding the result instead.
@@ -139,7 +141,7 @@ for (const resume of [false, true]) test(`collection${resume ? ' resume' : ''} r
     await f.forward(req, res, bytes);
   });
   await rejectsRequest(collectTask('owned', { ...f.config, controlPort: proxy.port }, { resume }), redirectFailure);
-  assert.deepEqual(paths, [...(resume ? ['/reconcile?id=owned'] : ['/wait?id=owned']), '/collect']);
+  assert.deepEqual(paths, [...(resume ? ['/reconcile'] : ['/wait']), '/collect']);
   assert.deepEqual(readFileSync(join(f.dir, 'state.json')), before);
   assert.equal(f.state().collected, false); assert.equal(f.state().token, f.task.token);
   assert.equal(readFileSync(join(f.dir, 'owned.result.txt'), 'utf8'), resultBytes);

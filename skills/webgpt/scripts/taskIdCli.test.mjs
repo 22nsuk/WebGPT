@@ -27,7 +27,13 @@ async function fixture(t) {
     const result = Reflect.apply(emit, this, [event, ...args]);
     if (event === 'request' && this.address()?.port === worker.controlPort) {
       const url = new URL(args[0].url, 'http://localhost');
-      requests.push({ method: args[0].method, path: url.pathname, ids: url.searchParams.getAll('id') });
+      const req = args[0], entry = { method: req.method, path: url.pathname, ids: url.searchParams.getAll('id') };
+      requests.push(entry);
+      if (req.method === 'POST' && ['/wait', '/reconcile'].includes(url.pathname)) {
+        const chunks = [];
+        req.on('data', chunk => chunks.push(chunk));
+        req.once('end', () => { entry.ids = JSON.parse(Buffer.concat(chunks).toString('utf8')).ids; });
+      }
     }
     return result;
   });
@@ -104,7 +110,7 @@ for (const resume of [false, true]) {
       writeFileSync(join(f.dir, id), '{"id":"decoy"}');
       const before = f.requests.length;
       const collected = await f.run('collect', ...(resume ? ['--resume'] : []), '--', id);
-      assert.deepEqual(f.requests[before], { method: 'GET', path: resume ? '/reconcile' : '/wait', ids: [id] });
+      assert.deepEqual(f.requests[before], { method: 'POST', path: resume ? '/reconcile' : '/wait', ids: [id] });
       assert.equal(collected.id, id); assert.equal(collected.integrity, 'verified');
       if (resume) assert.equal(collected.disposition, 'collected');
       else { assert.equal(collected.collected, true); assert.equal(Object.hasOwn(collected, 'disposition'), false); }

@@ -12,7 +12,7 @@ import { syncBuiltinESMExports } from 'node:module';
 import { start } from './worker.mjs';
 import { request, collectTask, reviewTask, reconcileTasks } from './client.mjs';
 import { changeWorkspace, grantWorkspace, inspectRecovery } from './workspace.mjs';
-import { callTool, controllerProxy, replyJson as json } from './test-fixtures/worker-http.mjs';
+import { callTool, controllerProxy, assertScopedRead, replyJson as json } from './test-fixtures/worker-http.mjs';
 
 const text = 'Guarded result 한국어 🧪\r\nPRIVATE_GUARD_FIXTURE';
 const hash = createHash('sha256').update(text).digest('hex');
@@ -46,8 +46,13 @@ async function fixture(t, { status = 'completed', intercept = async () => false 
   };
   const f = { base, dir, root, direct, admin, task, call, stateFile, artifact, state, payload, post,
     restart: async () => { await worker.close(); await boot(); } };
-  proxy = await controllerProxy(direct, event => intercept({ ...f, ...event }));
-  return { ...f, actions: proxy.actions, config: { ...direct, controlPort: proxy.port } };
+  let expectedIds = ['owned'];
+  proxy = await controllerProxy(direct, event => {
+    assertScopedRead(event.observation, expectedIds);
+    return intercept({ ...f, ...event });
+  });
+  return { ...f, actions: proxy.actions, requests: proxy.requests, expectScope: ids => { expectedIds = ids; },
+    config: { ...direct, controlPort: proxy.port } };
 }
 function inject(f, kind) {
   if (kind === 'result-changed') fs.writeFileSync(f.artifact, 'changed after client verification');
@@ -81,7 +86,7 @@ for (const kind of ['pending-result', 'journal', 'unrecorded-applied', 'result-c
     });
     assert.deepEqual(fs.readFileSync(f.stateFile), before);
     assert.equal(f.state().token, f.task.token); assert.equal(f.state().inputs.sample, text);
-    assert.deepEqual(f.actions, [resume ? '/reconcile?id=owned' : '/wait?id=owned', '/collect']);
+    assert.deepEqual(f.actions, [resume ? '/reconcile' : '/wait', '/collect']);
     assert.equal((await f.call('get_task', { token: f.task.token })).isError, false);
     if (kind === 'unrecorded-applied') {
       const recovery = inspectRecovery(f.dir, 'owned');
@@ -179,7 +184,7 @@ test('an unsupported worker causes no automatic downgrade to unchecked ack', asy
     if (phase === 'before' && req.url === '/collect') { json(res, {}, 404); return true; }
   } }), before = fs.readFileSync(f.stateFile);
   await rejectsRequest(collectTask('owned', f.config), { code: 'COLLECTION_UNSUPPORTED' });
-  assert.deepEqual(f.actions, ['/wait?id=owned', '/collect']);
+  assert.deepEqual(f.actions, ['/wait', '/collect']);
   assert.deepEqual(fs.readFileSync(f.stateFile), before);
 });
 
@@ -201,7 +206,7 @@ for (const kind of ['pending-result', 'unrecorded-applied']) test(`external ${ki
   assert.equal(f.state().collected, true); assert.equal(f.state().token, undefined);
   if (kind === 'pending-result') assert.equal(fs.readFileSync(f.artifact + '.tmp', 'utf8'), text);
   else assert.equal(fs.readFileSync(inspectRecovery(f.dir, 'owned').receipts[0].backup, 'utf8'), text);
-  assert.deepEqual(f.actions, ['/wait?id=owned', '/collect', '/reconcile?id=owned']);
+  assert.deepEqual(f.actions, ['/wait', '/collect', '/reconcile']);
   assert.equal((await collectTask('owned', f.direct, { resume: true })).attention,
     kind === 'pending-result' ? 'inspect_uncommitted_result' : 'inspect_recovery');
 });
@@ -284,6 +289,7 @@ for (const status of ['completed', 'failed', 'cancelled']) for (const phase of [
     assert.equal(fs.existsSync(join(f.root, 'late.txt')), false, 'no replay of the fixture deletion');
     const owned = f.state();
     assert.equal((await f.call('submit_result', { token: other.token, status: 'completed', summary: 'other', result: 'other result' })).isError, false);
+    f.expectScope(['other']);
     assert.equal((await collectTask('other', f.config)).collected, true);
     assert.deepEqual(f.state(), owned, 'unrelated collection must not alter this task');
   });
@@ -336,14 +342,14 @@ test('unrecorded journal after a lost collection reply stays uncertain without a
     assert.equal(error.acknowledgment, 'unknown'); return true;
   });
   assert.equal(injected, 1);
-  assert.deepEqual(f.actions, ['/wait?id=owned', '/collect', '/reconcile?id=owned']);
+  assert.deepEqual(f.actions, ['/wait', '/collect', '/reconcile']);
   const committed = fs.readFileSync(f.stateFile);
   assert.equal(f.state().collected, true); assert.equal(f.state().token, undefined);
   assert.deepEqual(f.state().inputs, {}); assert.deepEqual(f.state().changes, []);
   const resumed = await collectTask('owned', f.config, { resume: true });
   assert.equal(resumed.disposition, 'already_collected'); assert.equal(resumed.attention, 'inspect_recovery');
   assert.deepEqual(resumed.journalIssues, [join(f.dir, 'recovery', 'owned', receipt.operation + '.json')]);
-  assert.deepEqual(f.actions, ['/wait?id=owned', '/collect', '/reconcile?id=owned', '/reconcile?id=owned']);
+  assert.deepEqual(f.actions, ['/wait', '/collect', '/reconcile', '/reconcile']);
   assert.deepEqual(fs.readFileSync(f.stateFile), committed);
   assert.equal(fs.readFileSync(receipt.backup, 'utf8'), text);
   assert.equal(fs.readFileSync(f.artifact, 'utf8'), text);
@@ -389,7 +395,7 @@ for (const mode of ['active-resume', 'retired-resume', 'ordinary-after', 'resume
       const postAck = mode.endsWith('-after'), resume = mode !== 'ordinary-after';
       let altered = 0, resultReads = 0;
       const f = await fixture(t, { intercept: async f => {
-        if (f.phase === 'after' && f.req.url === '/reconcile?id=owned'
+        if (f.phase === 'after' && f.req.url === '/reconcile'
             && (!postAck || f.state().collected)) {
           delete f.data.tasks[0][field]; altered++;
         }
@@ -406,8 +412,8 @@ for (const mode of ['active-resume', 'retired-resume', 'ordinary-after', 'resume
       }));
       assert.equal(altered, 1);
       assert.deepEqual(f.actions, postAck
-        ? [resume ? '/reconcile?id=owned' : '/wait?id=owned', '/collect', '/reconcile?id=owned']
-        : ['/reconcile?id=owned']);
+        ? [resume ? '/reconcile' : '/wait', '/collect', '/reconcile']
+        : ['/reconcile']);
       assert.equal(resultReads, postAck ? 2 : 0, 'incomplete evidence must not trigger another result read');
       if (!postAck) assert.deepEqual(fs.readFileSync(f.stateFile), before);
       else { assert.equal(f.state().collected, true); assert.equal(f.state().token, undefined); }
@@ -437,10 +443,10 @@ const incompleteTaskEvidence = [
 for (const [name, alter] of incompleteTaskEvidence) {
   test(`collection resume rejects ${name} without retiring inputs`, async t => {
     const f = await fixture(t, { intercept: async f => {
-      if (f.phase === 'after' && f.req.url === '/reconcile?id=owned') alter(f.data.tasks[0]);
+      if (f.phase === 'after' && f.req.url === '/reconcile') alter(f.data.tasks[0]);
     } }), before = fs.readFileSync(f.stateFile);
     await rejectsRequest(collectTask('owned', f.config, { resume: true }), { code: 'COLLECTION_UNCONFIRMED' });
-    assert.deepEqual(f.actions, ['/reconcile?id=owned']);
+    assert.deepEqual(f.actions, ['/reconcile']);
     assert.deepEqual(fs.readFileSync(f.stateFile), before);
     assert.equal((await f.call('get_task', { token: f.task.token })).isError, false);
   });
@@ -449,7 +455,7 @@ for (const [name, alter] of incompleteTaskEvidence) {
 test('cancelled resume needs explicit null result metadata, not omitted fields', async t => {
   let omit = true;
   const f = await fixture(t, { status: 'running', intercept: async f => {
-    if (omit && f.phase === 'after' && f.req.url === '/reconcile?id=owned') {
+    if (omit && f.phase === 'after' && f.req.url === '/reconcile') {
       delete f.data.tasks[0].artifact; delete f.data.tasks[0].sha256;
     }
   } });
@@ -460,7 +466,7 @@ test('cancelled resume needs explicit null result metadata, not omitted fields',
   const result = await collectTask('owned', f.config, { resume: true });
   assert.equal(result.disposition, 'cancelled_without_result');
   assert.equal(result.integrity, 'not_expected');
-  assert.deepEqual(f.actions, ['/reconcile?id=owned', '/reconcile?id=owned']);
+  assert.deepEqual(f.actions, ['/reconcile', '/reconcile']);
   assert.deepEqual(fs.readFileSync(f.stateFile), before);
 });
 
@@ -471,7 +477,7 @@ for (const resume of [false, true]) {
       if (f.phase === 'after' && f.req.url === '/collect') {
         receipt = inject(f, 'unrecorded-applied'); f.res.destroy(); return true;
       }
-      if (omit && receipt && f.phase === 'after' && f.req.url === '/reconcile?id=owned') {
+      if (omit && receipt && f.phase === 'after' && f.req.url === '/reconcile') {
         assert.deepEqual(f.data.tasks[0].journalIssues, [join(f.dir, 'recovery', 'owned', receipt.operation + '.json')]);
         delete f.data.tasks[0].journalIssues;
       }
@@ -496,7 +502,7 @@ for (const resume of [false, true]) {
 
 test('collection CLI reports incomplete evidence without success, private data or retirement', async t => {
   const f = await fixture(t, { intercept: async f => {
-    if (f.phase === 'after' && f.req.url === '/reconcile?id=owned') {
+    if (f.phase === 'after' && f.req.url === '/reconcile') {
       delete f.data.tasks[0].journalIssues;
       f.data.privateDiagnostic = text + f.task.token + f.dir;
     }
@@ -519,6 +525,6 @@ test('collection CLI reports incomplete evidence without success, private data o
   assert.ok(Buffer.byteLength(result.stderr) < 1024);
   for (const privateValue of [text, f.task.token, f.dir, fs.readFileSync(join(f.dir, 'controller.key'), 'utf8')])
     assert.equal(result.stderr.includes(privateValue), false);
-  assert.deepEqual(f.actions, ['/reconcile?id=owned']);
+  assert.deepEqual(f.actions, ['/reconcile']);
   assert.deepEqual(fs.readFileSync(f.stateFile), before);
 });

@@ -474,23 +474,35 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
       const url=new URL(req.url,'http://localhost');
       // Admit only supported request shapes before inspecting state or reading a
       // POST body. Scoped reads keep their query support; other routes are exact.
-      const scoped=req.method==='GET'&&['/wait','/reconcile'].includes(url.pathname);
+      const scopedGet=req.method==='GET'&&['/wait','/reconcile'].includes(url.pathname);
+      const scopedPost=req.method==='POST'&&['/wait','/reconcile'].includes(req.url);
+      const scoped=scopedGet||scopedPost;
       if(!(scoped||req.method==='GET'&&['/ready','/status','/tasks'].includes(req.url)
           ||req.method==='POST'&&['/register','/collect','/ack','/checked','/cancel','/shutdown'].includes(req.url))){
         if(!req.complete)res.setHeader('connection','close');
         return json(res,404,{});
       }
+      // Consume an admitted POST once, before stopping/state handling. The body
+      // reader releases its bounded admission before any long poll is parked.
+      const a=req.method==='POST'?await body(req):undefined;
       let ids;
       if(scoped){
-        ids=new Set(url.searchParams.getAll('id'));
-        if([...url.searchParams.keys()].some(key=>key!=='id')
-            ||[...ids].some(id=>!/^[a-zA-Z0-9_-]{1,80}$/.test(id)))
-          throw Error(url.pathname==='/wait'?'invalid wait query':'invalid reconciliation query');
+        const invalid=()=>Error(scopedPost?'invalid task scope'
+          :url.pathname==='/wait'?'invalid wait query':'invalid reconciliation query');
+        if(scopedPost){
+          if(!a||typeof a!=='object'||Array.isArray(a)||Object.keys(a).some(key=>key!=='ids')
+              ||!Array.isArray(a.ids)||!a.ids.length)throw invalid();
+          ids=new Set(a.ids);
+        }else{
+          if([...url.searchParams.keys()].some(key=>key!=='id'))throw invalid();
+          ids=new Set(url.searchParams.getAll('id'));
+        }
+        if([...ids].some(id=>typeof id!=='string'||!/^[a-zA-Z0-9_-]{1,80}$/.test(id)))throw invalid();
       }
       if(req.method==='GET'&&req.url==='/ready'){
         const report=readiness();return json(res,report.ok?200:503,report);
       }
-      if(req.method==='GET'&&url.pathname==='/reconcile'){
+      if(scoped&&url.pathname==='/reconcile'){
         const selected=selectTasks(ids);
         // Health remains global. Only retained-task detail inspection is scoped;
         // full reconcile still audits every journal, original and result candidate.
@@ -500,8 +512,8 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
         return json(res,200,{health,tasks:selected.map(t=>reconciliationTask(t,journalIssues.get(t))),...(ids.size?{scope:[...ids]}:{})});
       }
       if(stopping)return json(res,503,{error:'worker is stopping',code:'SHUTTING_DOWN',retryable:true});
-      if(req.method==='GET'&&['/wait','/status','/tasks'].includes(url.pathname))verifyState();
-      if(req.method==='GET'&&url.pathname==='/wait'){
+      if(scoped&&url.pathname==='/wait'||req.method==='GET'&&['/status','/tasks'].includes(url.pathname))verifyState();
+      if(scoped&&url.pathname==='/wait'){
         const snapshot=()=>{
           const selected=selectTasks(ids);
           let settled=true,nextCheck=Infinity;
@@ -541,8 +553,6 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
             recoveryRequired:Boolean(t.recoveryRequired?.length)}))});
       }
 
-      const a=await body(req);
-      if(stopping)return json(res,503,{error:'worker is stopping',code:'SHUTTING_DOWN',retryable:true});
       if(req.url==='/shutdown'){
         if(!a||typeof a!=='object'||Array.isArray(a)||Object.keys(a).length)throw Error('shutdown requires an empty object');
         stopping=true;wake();

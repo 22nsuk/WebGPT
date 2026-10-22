@@ -60,7 +60,8 @@ function fixture(t) {
     const observed = observeInputs({ mock }, ${JSON.stringify({ ...paths, input: '--file' })}), requests = [];
     const network = mock.method(globalThis, 'fetch', async (url, options) => {
       const selected = new URL(url);
-      requests.push({ path: selected.pathname, ids: selected.searchParams.getAll('id'),
+      requests.push({ path: selected.pathname, ids: options.body && selected.pathname === '/wait'
+        ? JSON.parse(options.body).ids : selected.searchParams.getAll('id'),
         method: options.method, body: options.body ?? null });
       return { ok: true, json: async () => selected.pathname === '/wait'
         ? { events: [], backupDue: [] } : { ok: true } };
@@ -235,12 +236,15 @@ for (const entry of ['wait', 'review', 'collect', 'reconcile']) test(`default ${
     assert.equal(++policyReads, 1, 'capture the caller retry accessor only once');
     return 0;
   } });
-  t.mock.method(globalThis, 'fetch', async url => {
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
     urls.push(url);
+    const action = new URL(url).pathname;
+    assert.equal(options.method, 'POST');
+    if (['/wait', '/reconcile'].includes(action))
+      assert.deepEqual(JSON.parse(options.body), { ids: ['owned'] });
     if (urls.length === 1) process.env.WEBGPT_CONFIG = replacement;
     if (['wait', 'review'].includes(entry) && urls.length === 1)
       throw TypeError('fixture transport failure', { cause: { code: 'ECONNRESET' } });
-    const action = new URL(url).pathname;
     let value;
     if (action === '/wait') value = ['wait', 'review'].includes(entry) && urls.length === 2
       ? { events: [], backupDue: [], settled: false } : done;
@@ -268,9 +272,9 @@ for (const entry of ['wait', 'review', 'collect', 'reconcile']) test(`default ${
       }
     });
   } finally { observed.restore(); }
-  const paths = entry === 'wait' ? Array(3).fill('/wait?id=owned')
-    : entry === 'review' ? [...Array(3).fill('/wait?id=owned'), '/reconcile?id=owned']
-    : entry === 'collect' ? ['/wait?id=owned', '/collect', '/reconcile?id=owned'] : ['/reconcile?id=owned'];
+  const paths = entry === 'wait' ? Array(3).fill('/wait')
+    : entry === 'review' ? [...Array(3).fill('/wait'), '/reconcile']
+    : entry === 'collect' ? ['/wait', '/collect', '/reconcile'] : ['/reconcile'];
   assert.deepEqual(urls, paths.map(path => 'http://127.0.0.1:43139' + path));
   readOnce(observed.evidence.config, Buffer.byteLength(JSON.stringify(f.config)));
   assert.equal(observed.evidence.key.opens, paths.length); assert.equal(observed.evidence.key.closes, paths.length);

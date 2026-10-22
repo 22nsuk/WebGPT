@@ -11,6 +11,7 @@ import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import { configuration, request, collectTask, reconcileTasks } from './client.mjs';
 import { start } from './worker.mjs';
+import { controllerObservation } from './test-fixtures/worker-http.mjs';
 
 const execute = promisify(execFile);
 const invoke = async (s, name, args) => {
@@ -243,21 +244,23 @@ test('restart restores missing applied receipts and surfaces ambiguous crash jou
 // Forward only to the disposable fixture worker; observe/lose responses without
 // replacing controller state or weakening its authentication and persistence rules.
 async function controllerProxy(f, run, intercept = async () => false) {
-  const actions = [];
+  const actions = [], requests = [];
   const server = createServer(async (req, res) => {
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
     actions.push(req.url);
+    const observation = controllerObservation(req, Buffer.concat(chunks));
+    requests.push(observation);
     const response = await fetch(`http://127.0.0.1:${f.config.controlPort}${req.url}`, {
       method: req.method, headers: { authorization: req.headers.authorization, 'content-type': 'application/json' },
       ...(req.method === 'POST' ? { body: Buffer.concat(chunks) } : {}),
     });
     const body = await response.text();
-    if (await intercept({ req, res, body, actions })) return;
+    if (await intercept({ req, res, body, actions, requests, observation })) return;
     res.writeHead(response.status, { 'content-type': 'application/json' }); res.end(body);
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  try { await run({ config: { ...f.config, controlPort: server.address().port }, actions }); }
+  try { await run({ config: { ...f.config, controlPort: server.address().port }, actions, requests }); }
   finally { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
 }
 const retainedEvidence = dir => Object.fromEntries(readdirSync(dir).filter(name => name === 'state.json' || name.endsWith('.result.txt')).map(name => {
@@ -370,8 +373,11 @@ test('resume preserves a concurrent discard and reports unverifiable post-ack re
       assert.match(error.cause.message, /integrity mismatch/); return true;
     });
     assert.equal(actions.filter(action => action === '/collect').length, 2);
-  }, async ({ req, actions }) => {
-    if (req.url === '/reconcile?id=discard' && actions.length === 1) await f.admin('cancel', { id: 'discard' });
+  }, async ({ req, actions, observation }) => {
+    if (req.url === '/reconcile' && actions.length === 1) {
+      assert.deepEqual(observation, { method: 'POST', path: '/reconcile', ids: ['discard'] });
+      await f.admin('cancel', { id: 'discard' });
+    }
     if (req.url === '/collect' && actions.filter(action => action === '/collect').length === 2)
       writeFileSync(join(f.dir, 'changed.result.txt'), 'tampered after acknowledgment');
     return false;

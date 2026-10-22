@@ -10,7 +10,7 @@ import { once } from 'node:events';
 import { syncBuiltinESMExports } from 'node:module';
 import { start } from './worker.mjs';
 import { request, collectTask } from './client.mjs';
-import { callTool } from './test-fixtures/worker-http.mjs';
+import { callTool, afterWaitBody } from './test-fixtures/worker-http.mjs';
 import { observeFileRead } from './test-fixtures/file-read.mjs';
 
 async function fixture(t) {
@@ -27,9 +27,9 @@ async function fixture(t) {
   let accepted;
   const observer = t.mock.method(Server.prototype, 'emit', function(event, ...args) {
     const result = Reflect.apply(emit, this, [event, ...args]);
-    // A GET handler installs the waiter synchronously; do not sleep to guess it.
+    // Observe the post-body state-check boundary, not request arrival.
     if (event === 'request' && this.address()?.port === worker.controlPort && args[0].url.startsWith('/wait'))
-      accepted?.(args[1]);
+      afterWaitBody(args[0], args[1], response => accepted?.(response));
     return result;
   });
   t.after(() => observer.mock.restore());

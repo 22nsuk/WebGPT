@@ -213,7 +213,8 @@ test('checker uses only one owned scoped read and never emits controller secrets
   await request('register', { id: 'unrelated-secret', instructions: 'PRIVATE_INSTRUCTIONS', inputs: {} }, f.config);
   const proxy = await controllerProxy(f.config); t.after(() => proxy.close());
   const before = f.state(), report = await checkVerification(f.run, { ...f.config, controlPort: proxy.port });
-  assert.deepEqual(proxy.actions, ['/reconcile?id=' + f.task.id]); assert.deepEqual(f.state(), before);
+  assert.deepEqual(proxy.actions, ['/reconcile']); assert.deepEqual(f.state(), before);
+  assert.deepEqual(proxy.requests, [{ method: 'POST', path: '/reconcile', ids: [f.task.id] }]);
   assert.equal(report.localVerdict, 'PASS');
   const publicText = JSON.stringify(report);
   for (const secret of [f.base, f.task.token, 'PRIVATE_INSTRUCTIONS', 'unrelated-secret', 'controller.key'])
@@ -271,7 +272,8 @@ test('verification does not trust a result path or an integrity label from the c
   finally { read.restore(); }
   assert.equal(report.checks.result, 'FAIL'); assert.equal(report.localVerdict, 'FAIL'); assertNotLive(report);
   assert.equal(read.evidence.opens, 0); assert.equal(read.evidence.bytes, 0);
-  assert.deepEqual(proxy.actions, ['/reconcile?id=' + f.task.id]); assert.deepEqual(f.state(), before);
+  assert.deepEqual(proxy.actions, ['/reconcile']); assert.deepEqual(f.state(), before);
+  assert.deepEqual(proxy.requests, [{ method: 'POST', path: '/reconcile', ids: [f.task.id] }]);
   assert.equal(JSON.stringify(report).includes(other), false);
 });
 
@@ -583,7 +585,9 @@ test('missing owner proof remains BLOCKED instead of inferring no grant or healt
     assertNotLive(report);
   }
   assert.deepEqual(f.state(), before);
-  assert.ok(proxy.actions.every(action => action === '/reconcile?id=' + f.task.id), 'never widen to /tasks or retry an old endpoint');
+  assert.ok(proxy.actions.every(action => action === '/reconcile'), 'never widen to /tasks or retry an old endpoint');
+  for (const observed of proxy.requests)
+    assert.deepEqual(observed, { method: 'POST', path: '/reconcile', ids: [f.task.id] });
 });
 
 
@@ -638,7 +642,9 @@ test('connection checker rejects wrong receipt sequences without accepting boole
     assert.equal(report.checks.files, 'PASS'); assert.equal(report.checks.result, 'PASS'); assertNotLive(report);
   }
   assert.equal((await f.check()).localVerdict, 'PASS'); assert.deepEqual(f.state(), state);
-  assert.ok(proxy.actions.every(action => action === '/reconcile?id=' + f.task.id));
+  assert.ok(proxy.actions.every(action => action === '/reconcile'));
+  for (const observed of proxy.requests)
+    assert.deepEqual(observed, { method: 'POST', path: '/reconcile', ids: [f.task.id] });
 });
 
 for (const artifact of ['seed', 'temp', 'extra']) test(`connection checker freshly rejects ${artifact} changes without repairing or retiring evidence`, async t => {

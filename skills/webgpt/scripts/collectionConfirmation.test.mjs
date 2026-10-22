@@ -11,7 +11,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { request, waitForTasks, collectTask, retryableControllerError } from './client.mjs';
 import { start } from './worker.mjs';
-import { callTool, controllerProxy, replyJson as reply } from './test-fixtures/worker-http.mjs';
+import { callTool, controllerProxy, assertScopedRead, replyJson as reply } from './test-fixtures/worker-http.mjs';
 
 const execute = promisify(execFile);
 const resultText = 'Retained result 한국어 🧪\r\nPRIVATE_COLLECTION_FIXTURE';
@@ -32,11 +32,16 @@ async function fixture(t, intercept = async () => false, status = 'completed') {
   const stateFile = join(dir, 'state.json'), artifact = join(dir, 'owned.result.txt');
   const state = () => JSON.parse(readFileSync(stateFile)).find(t => t.id === 'owned');
   const f = { dir, direct, admin, task, call, stateFile, artifact, state };
-  proxy = await controllerProxy(direct, event => intercept({ ...f, ...event }));
-  return { ...f, actions: proxy.actions, config: { ...direct, controlPort: proxy.port } };
+  let expectedIds = ['owned'];
+  proxy = await controllerProxy(direct, event => {
+    assertScopedRead(event.observation, expectedIds);
+    return intercept({ ...f, ...event });
+  });
+  return { ...f, actions: proxy.actions, requests: proxy.requests, expectScope: ids => { expectedIds = ids; },
+    config: { ...direct, controlPort: proxy.port } };
 }
-const collectionStart = resume => resume ? ['/reconcile?id=owned'] : ['/wait?id=owned'];
-const expectedCalls = [...collectionStart(false), '/collect', '/reconcile?id=owned'];
+const collectionStart = resume => resume ? ['/reconcile'] : ['/wait'];
+const expectedCalls = [...collectionStart(false), '/collect', '/reconcile'];
 function unconfirmed(error) {
   assert.equal(error.code, 'COLLECTION_UNCONFIRMED');
   assert.equal(retryableControllerError(error), false);
@@ -112,7 +117,7 @@ for (const resume of [false, true]) for (const committed of [false, true])
     } else await rejectsRequest(collectTask('owned', f.config, { resume }), error => {
       unconfirmed(error); assert.equal(error.acknowledgment, 'unknown'); return true;
     });
-    assert.deepEqual(f.actions, [...collectionStart(resume), '/collect', '/reconcile?id=owned']);
+    assert.deepEqual(f.actions, [...collectionStart(resume), '/collect', '/reconcile']);
     assert.deepEqual(readFileSync(f.stateFile), observedState, 'observation must not repeat or undo collection');
     assert.equal(f.state().collected, committed);
     assert.equal(f.state().token, committed ? undefined : f.task.token);
@@ -126,20 +131,20 @@ for (const status of [401, 503]) test(`malformed HTTP ${status} collection rejec
   });
   const before = readFileSync(f.stateFile);
   await rejectsRequest(collectTask('owned', f.config), { statusCode: status, retryable: false });
-  assert.deepEqual(f.actions, ['/wait?id=owned', '/collect']);
+  assert.deepEqual(f.actions, ['/wait', '/collect']);
   assert.deepEqual(readFileSync(f.stateFile), before); assert.equal(f.state().token, f.task.token);
 });
 
 test('malformed successful wait JSON is still not a transport retry', async t => {
   const f = await fixture(t, ({ req, res, phase }) => {
-    if (req.url !== '/wait?id=owned' || phase !== 'before') return;
+    if (req.url !== '/wait' || phase !== 'before') return;
     res.writeHead(200); res.end('{'); return true;
   });
   const before = readFileSync(f.stateFile);
   await rejectsRequest(waitForTasks(['owned'], f.config, { retryDelays: [0, 0, 0] }), error => {
     assert.ok(error instanceof SyntaxError); assert.equal(retryableControllerError(error), false); return true;
   });
-  assert.deepEqual(f.actions, ['/wait?id=owned']); assert.deepEqual(readFileSync(f.stateFile), before);
+  assert.deepEqual(f.actions, ['/wait']); assert.deepEqual(readFileSync(f.stateFile), before);
 });
 
 // Abort reasons are caller-owned values, not decoded controller errors. Reuse
@@ -173,8 +178,8 @@ for (const resume of [false, true]) for (const committed of [false, true])
       // a prior commit or cause a second collection write for a retired task.
       const observed = await collectTask('owned', f.config, { resume: true });
       assert.equal(observed.disposition, committed ? 'already_collected' : 'collected');
-      assert.deepEqual(f.actions, [...collectionStart(resume), '/collect', '/reconcile?id=owned',
-        ...(committed ? [] : ['/collect', '/reconcile?id=owned'])]);
+      assert.deepEqual(f.actions, [...collectionStart(resume), '/collect', '/reconcile',
+        ...(committed ? [] : ['/collect', '/reconcile'])]);
     }
   });
 
@@ -194,7 +199,7 @@ for (const status of [404, 409]) test(`HTTP ${status} without cancellation retai
     }
     return true;
   });
-  assert.deepEqual(f.actions, ['/wait?id=owned', '/collect']);
+  assert.deepEqual(f.actions, ['/wait', '/collect']);
   assert.deepEqual(readFileSync(f.stateFile), before); assert.equal(f.state().token, f.task.token);
 });
 
@@ -220,7 +225,7 @@ for (const issue of ['unavailable', 'missing-task', 'wrong-status', 'wrong-hash'
       if (req.url === '/collect' && phase === 'after') acknowledged = true;
       if (issue === 'invalid-state' && phase === 'after' && req.url === '/collect') writeFileSync(stateFile, '[]');
       // Exercise the post-ack observation, not the new pre-ack recovery check.
-      if (req.url !== '/reconcile?id=owned' || !acknowledged) return;
+      if (req.url !== '/reconcile' || !acknowledged) return;
       if (issue === 'unavailable' && phase === 'before') { reply(res, { error: 'fixture unavailable' }, 503); return true; }
       if (phase !== 'after') return;
       if (issue === 'missing-task') data.tasks = [];
@@ -282,12 +287,12 @@ async function interruptedBodyFixture(t, action, status, { committed = false, ab
 }
 
 test('a disconnected HTTP 401 body preserves rejection and does not consume wait retries', async t => {
-  const f = await interruptedBodyFixture(t, '/wait?id=owned', 401);
+  const f = await interruptedBodyFixture(t, '/wait', 401);
   const before = readFileSync(f.stateFile);
   await rejectsRequest(waitForTasks(['owned'], f.config, { retryDelays: [0, 0, 0] }), error => {
     assert.equal(error.statusCode, 401); assert.equal(retryableControllerError(error), false); return true;
   });
-  assert.deepEqual(f.actions, ['/wait?id=owned']);
+  assert.deepEqual(f.actions, ['/wait']);
   assert.deepEqual(readFileSync(f.stateFile), before);
 });
 
@@ -334,13 +339,13 @@ for (const resume of [false, true]) for (const custom of [false, true]) {
     let committedState;
     const f = await fixture(t, async ({ req, res, phase, stateFile }) => {
       if (phase === 'after' && req.url === '/collect') committedState = readFileSync(stateFile);
-      if (phase === 'before' && req.url === '/reconcile?id=owned' && committedState && !controller.signal.aborted) {
+      if (phase === 'before' && req.url === '/reconcile' && committedState && !controller.signal.aborted) {
         controller.abort(reason); res.destroy(); return true;
       }
     });
     await rejectsRequest(collectTask('owned', f.config, { resume, signal: controller.signal }),
       error => error === controller.signal.reason);
-    assert.deepEqual(f.actions, [...collectionStart(resume), '/collect', '/reconcile?id=owned']);
+    assert.deepEqual(f.actions, [...collectionStart(resume), '/collect', '/reconcile']);
     assert.deepEqual(readFileSync(f.stateFile), committedState);
     assert.equal(f.state().collected, true); assert.equal(f.state().token, undefined);
     assert.equal(readFileSync(f.artifact, 'utf8'), resultText);
@@ -348,7 +353,7 @@ for (const resume of [false, true]) for (const custom of [false, true]) {
     // verifies the retained result without another write.
     const recovered = await collectTask('owned', f.config, { resume: true });
     assert.equal(recovered.disposition, 'already_collected'); assert.equal(recovered.integrity, 'verified');
-    assert.deepEqual(f.actions, [...collectionStart(resume), '/collect', '/reconcile?id=owned', '/reconcile?id=owned']);
+    assert.deepEqual(f.actions, [...collectionStart(resume), '/collect', '/reconcile', '/reconcile']);
     assert.deepEqual(readFileSync(f.stateFile), committedState);
   });
 }
@@ -357,9 +362,9 @@ test('ordinary collection remains strict on already retired results while explic
   const f = await fixture(t); await f.admin('ack', { id: 'owned' });
   const before = readFileSync(f.stateFile);
   await rejectsRequest(collectTask('owned', f.config), /no uncollected result/);
-  assert.deepEqual(f.actions, ['/wait?id=owned']);
+  assert.deepEqual(f.actions, ['/wait']);
   assert.equal((await collectTask('owned', f.config, { resume: true })).disposition, 'already_collected');
-  assert.deepEqual(f.actions, ['/wait?id=owned', '/reconcile?id=owned']);
+  assert.deepEqual(f.actions, ['/wait', '/reconcile']);
   assert.deepEqual(readFileSync(f.stateFile), before);
 });
 
@@ -408,6 +413,7 @@ for (const filename of ['state.json', 'state.initialized']) {
         await f.admin('register', { id, instructions: 'cancel without a result', inputs: {} });
         await f.admin('cancel', { id });
       }
+      f.expectScope([id]);
       const before = readFileSync(f.stateFile), marker = readFileSync(join(f.dir, 'state.initialized'));
       const restore = failStateRead(t, join(f.dir, filename));
       try {
@@ -416,7 +422,7 @@ for (const filename of ['state.json', 'state.initialized']) {
         assert.equal(snapshot.health.storage.code, 'EIO');
         assert.ok(!snapshot.health.issues.includes('STATE_INVALID'), 'read error is not invalid-state evidence');
         await rejectsRequest(collectTask(id, f.config, { resume: true }), unconfirmed);
-        assert.deepEqual(f.actions, ['/reconcile?id=' + id], 'no write, retry or broader observation');
+        assert.deepEqual(f.actions, ['/reconcile'], 'no write, retry or broader observation');
       } finally { restore(); }
       assert.deepEqual(readFileSync(f.stateFile), before);
       assert.deepEqual(readFileSync(join(f.dir, 'state.initialized')), marker);
@@ -446,21 +452,21 @@ for (const malformed of [false, true]) for (const resume of [false, true])
     await rejectsRequest(collectTask('owned', f.config, { resume }), error => {
       unconfirmed(error); assert.equal(error.acknowledgment, malformed ? 'unknown' : 'accepted'); return true;
     });
-    assert.deepEqual(f.actions, [...collectionStart(resume), '/collect', '/reconcile?id=owned']);
+    assert.deepEqual(f.actions, [...collectionStart(resume), '/collect', '/reconcile']);
   } finally { restore(); }
   assert.deepEqual(readFileSync(f.stateFile), committed);
   assert.equal(f.state().collected, true); assert.equal(f.state().token, undefined);
   assert.equal(readFileSync(f.artifact, 'utf8'), resultText);
   const observed = await collectTask('owned', f.config, { resume: true });
   assert.equal(observed.disposition, 'already_collected');
-  assert.deepEqual(f.actions, [...collectionStart(resume), '/collect', '/reconcile?id=owned', '/reconcile?id=owned']);
+  assert.deepEqual(f.actions, [...collectionStart(resume), '/collect', '/reconcile', '/reconcile']);
   assert.deepEqual(readFileSync(f.stateFile), committed, 'observation cannot repeat or roll back the ack');
 });
 
 test('missing or nonboolean current-state proof cannot certify legacy or partial controller replies', async t => {
   let proof;
   const f = await fixture(t, ({ phase, req, data, res }) => {
-    if (phase !== 'after' || req.url !== '/reconcile?id=owned') return;
+    if (phase !== 'after' || req.url !== '/reconcile') return;
     if (proof === undefined) delete data.health.stateVerified; else data.health.stateVerified = proof;
     reply(res, data); return true;
   });
@@ -468,7 +474,7 @@ test('missing or nonboolean current-state proof cannot certify legacy or partial
   const before = readFileSync(f.stateFile);
   for (proof of [undefined, false, null, 'true', 1])
     await rejectsRequest(collectTask('owned', f.config, { resume: true }), unconfirmed);
-  assert.deepEqual(f.actions, Array(5).fill('/reconcile?id=owned'));
+  assert.deepEqual(f.actions, Array(5).fill('/reconcile'));
   assert.deepEqual(readFileSync(f.stateFile), before);
 });
 
@@ -480,7 +486,7 @@ test('unrelated readiness failures do not prevent collection backed by freshly v
   const before = readFileSync(f.stateFile), observed = await collectTask('owned', f.config, { resume: true });
   assert.equal(observed.disposition, 'already_collected');
   assert.equal(observed.health.ok, false); assert.equal(observed.health.stateVerified, true);
-  assert.deepEqual(f.actions, [...expectedCalls, '/reconcile?id=owned']);
+  assert.deepEqual(f.actions, [...expectedCalls, '/reconcile']);
   assert.deepEqual(readFileSync(f.stateFile), before);
   assert.equal(readFileSync(candidate, 'utf8'), 'preserve unrelated evidence');
 });
@@ -501,6 +507,6 @@ test('unverified-state resume CLI fails without a successful disposition or priv
       return true;
     });
   } finally { restore(); }
-  assert.deepEqual(f.actions, ['/reconcile?id=owned']);
+  assert.deepEqual(f.actions, ['/reconcile']);
   assert.deepEqual(readFileSync(f.stateFile), before);
 });
