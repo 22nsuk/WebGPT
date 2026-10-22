@@ -78,12 +78,41 @@ test('directory cursors fail clearly on changed listings and cannot select a dif
   assert.equal(listWorkspace(grant, '.', { limit: 2 }).entries.length, 2);
 }));
 
-test('pagination validates bounds and cursors while keeping ordinary listing compatibility', () => fixture(({ root }) => {
+test('pagination rejects malformed limits and cursors without enumerating the directory', t => fixture(({ root }) => {
   const grant = grantWorkspace({ root, mode: 'read' });
   assert.deepEqual(listWorkspace(grant, '.'), { path: '.', entries: [], truncated: false });
-  for (const limit of [0, 501, -1, 1.5, '10', null]) assert.throws(() => listWorkspace(grant, '.', { limit }), /limit/);
-  for (const cursor of ['', 'not-json', {}, 'x'.repeat(1000)]) assert.throws(() => listWorkspace(grant, '.', { cursor }), /cursor/);
+  const encode = page => Buffer.from(JSON.stringify(page)).toString('base64url');
+  const page = { v: 1, offset: 1, revision: 'a'.repeat(64) };
+  const cursors = ['', '!', 'not-json', {}, null, 'x'.repeat(257), encode(null), encode({}),
+    encode({ ...page, v: 2 }), encode({ ...page, revision: null }), encode({ v: 1, offset: 1 }),
+    ...[0, -1, 1.5, '1', Number.MAX_SAFE_INTEGER + 1].map(offset => encode({ ...page, offset }))];
+  const readdir = fs.readdirSync;
+  const mock = t.mock.method(fs, 'readdirSync', (...args) => readdir(...args));
+  syncBuiltinESMExports();
+  try {
+    for (const limit of [0, 501, -1, 1.5, '10', null]) {
+      assert.throws(() => listWorkspace(grant, '.', { limit }), /limit/);
+      assert.equal(mock.mock.callCount(), 0, `invalid limit: ${JSON.stringify(limit)}`);
+    }
+    for (const cursor of cursors) {
+      assert.throws(() => listWorkspace(grant, '.', { cursor }), { message: 'invalid directory cursor' });
+      assert.equal(mock.mock.callCount(), 0, `invalid cursor: ${JSON.stringify(cursor)}`);
+    }
+  } finally { mock.mock.restore(); syncBuiltinESMExports(); }
   assert.throws(() => listWorkspace(grant, '.GIT', { limit: 2 }), /Git metadata/);
+}));
+
+test('directory cursor offsets remain bounded by the matching listing revision', () => fixture(({ root }) => {
+  for (const name of ['a.txt', 'b.txt', 'c.txt']) writeFileSync(join(root, name), 'x');
+  const grant = grantWorkspace({ root, mode: 'read' });
+  const first = listWorkspace(grant, '.', { limit: 1 });
+  const page = JSON.parse(Buffer.from(first.nextCursor, 'base64url').toString('utf8'));
+  for (const offset of [3, 4, Number.MAX_SAFE_INTEGER]) {
+    const cursor = Buffer.from(JSON.stringify({ ...page, offset })).toString('base64url');
+    assert.throws(() => listWorkspace(grant, '.', { cursor }), { message: 'invalid directory cursor offset' });
+  }
+  assert.deepEqual(listWorkspace(grant, '.', { cursor: first.nextCursor }).entries,
+    [{ name: 'b.txt', type: 'file' }, { name: 'c.txt', type: 'file' }]);
 }));
 
 test('MCP advertises and serves optional pagination without adding privileged tools', () => fixture(async f => {
@@ -373,6 +402,9 @@ test('listing rejects lossy name bytes before returning any page, without silent
   try {
     for (const bytes of [[0xff], [0x80], [0xc0, 0xaf], [0xed, 0xa0, 0x80], [0xe2, 0x82]]) {
       malformed = Buffer.concat([Buffer.from('z-private-'), Buffer.from(bytes), Buffer.from('.txt')]);
+      const invalid = await f.call('list_files', { token, path: '.', cursor: '!' });
+      assert.equal(invalid.isError, true);
+      assert.equal(invalid.content[0].text, 'invalid directory cursor');
       for (const options of [{ limit: 1 }, { limit: 1, cursor: first.nextCursor }]) {
         const result = await f.call('list_files', { token, path: '.', ...options });
         assert.equal(result.isError, true); assert.equal(result.structuredContent, undefined);
