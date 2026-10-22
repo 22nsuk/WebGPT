@@ -194,7 +194,10 @@ test('MCP admission rejects request-only errors before state reads or workspace 
       if (name === 'read_file') {
         assert.ok(workspaceChecks > before[2], 'valid file access still checks its workspace boundary');
         assert.equal(result.structuredContent.text, 'preserved fixture text');
-      } else assert.equal(result.structuredContent.status, 'running');
+      } else {
+        assert.equal(result.structuredContent.status, 'running');
+        assert.deepEqual(result.structuredContent.changes, []);
+      }
     });
   } finally { boundary.mock.restore(); for (const trace of traces.reverse()) trace.restore(); }
   for (const trace of traces) assert.equal(trace.evidence.opens, trace.evidence.closes);
