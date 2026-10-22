@@ -91,6 +91,14 @@ for ordinary test hooks; their failures use `test:fail` instead of `test:complet
 and therefore retain declaration-order timing. Typed test/suite hook failures use
 completion order. This avoids name/path guesses, version checks and duplicate caches.
 It retains at most 12 failure events and 32 KiB total, marks clipped fields and counts omitted failures.
+After unwrapping Node's test-error wrapper, the existing error fields retain their
+meaning. An optional `causes` array records up to three inner causes, nearest first,
+with only `name`, `code` and `message` (at most 64, 128 and 256 UTF-16 units;
+non-string fields become null). Nested stacks and arbitrary properties are excluded.
+`causeOmitted` marks an unreported remainder as `depth`, `cycle` or `unsupported`
+(a non-object cause); null/undefined end the chain normally. `truncated` is true
+when fields are clipped or a cause remainder is omitted. Errors without an inner
+cause retain the original entry shape. These details share the existing byte budget.
 It does not parse unstable TAP presentation, buffer passing-test output, capture
 stdout/stderr/environment variables, or run anything. Nested suite/file completion
 events may describe the same failure cause; `observedFailures` is **not a test count**.
@@ -105,8 +113,8 @@ cancelled and skipped counts, so a successful process does not hide pending test
 
 Failure entries are written as they arrive, inside one bounded JSON document,
 not buffered until the last test finishes. Normal stream exhaustion still produces
-one version-1 JSONL record with the same fields and final counters (including the
-existing `evidence:node-test-failure-events` label); consumers must parse the complete
+one version-1 JSONL record with the existing fields, optional cause details and final
+counters (including the existing `evidence:node-test-failure-events` label); consumers must parse the complete
 document rather than depend on object-key or chunk order.
 If the stream throws, stalls or its process is killed, an already emitted prefix
 may survive but lacks final counters and closing syntax. Treat it as incomplete
