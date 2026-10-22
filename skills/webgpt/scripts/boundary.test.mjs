@@ -148,6 +148,7 @@ test('MCP admission rejects request-only errors before state reads or workspace 
   const { token } = await f.register(), statePath = join(f.dir, 'state.json');
   const state = readFileSync(statePath), workspaceRoot = JSON.parse(state)[0].workspace.root;
   writeFileSync(join(f.root, 'source.txt'), 'preserved fixture text');
+  const sha256 = createHash('sha256').update('preserved fixture text').digest('hex');
   const traces = [statePath, join(f.dir, 'state.initialized')].map(file => observeFileRead(t, file));
   let workspaceChecks = 0;
   const native = fs.realpathSync.native;
@@ -165,6 +166,21 @@ test('MCP admission rejects request-only errors before state reads or workspace 
       ['extra field', 'write_file', { ...mutation(token).params.arguments, overwrite: true }, 'unexpected tool argument'],
       ['field type', 'read_file', { token, path: 123 }, 'invalid tool argument value'],
       ['page modes', 'read_file', { token, path: 'source.txt', charOffset: 0, offset: 1 }, 'charOffset cannot be combined with line window options'],
+      ['read digest syntax', 'read_file', { token, path: 'source.txt', expectedSha256: 'bad' }, 'invalid expectedSha256'],
+      ['write digest syntax', 'write_file', { token, path: 'source.txt', text: 'replacement', expectedSha256: 'bad' }, 'expectedSha256 required (null only for create)'],
+      ['delete digest syntax', 'delete_file', { token, path: 'source.txt', expectedSha256: 'bad' }, 'expectedSha256 required (null only for create)'],
+      ['cursor syntax', 'list_files', { token, path: '.', cursor: '!' }, 'invalid directory cursor'],
+      ['cursor shape', 'list_files', { token, path: '.', cursor: Buffer.from('null').toString('base64url') }, 'invalid directory cursor'],
+      ['list path', 'list_files', { token, path: '../escape' }, 'invalid path or Git metadata'],
+      ['read path', 'read_file', { token, path: '../escape' }, 'invalid path or Git metadata'],
+      ['write path', 'write_file', { token, path: '../escape', text: 'replacement', expectedSha256: null }, 'invalid path or Git metadata'],
+      ['delete path', 'delete_file', { token, path: '../escape', expectedSha256: sha256 }, 'invalid path or Git metadata'],
+      ['write NUL', 'write_file', { token, path: 'forbidden.txt', text: 'before\0after', expectedSha256: null }, 'text must be <=10 MiB'],
+      ['decoded write limit', 'write_file', { token, path: 'forbidden.txt', text: 'x'.repeat(10 * MiB + 1), expectedSha256: null }, 'text must be <=10 MiB'],
+      ['oldText on create', 'write_file', { token, path: 'forbidden.txt', text: 'replacement', oldText: 'before', expectedSha256: null }, 'oldText requires nonempty UTF-8 text and an existing file revision'],
+      ['empty oldText', 'write_file', { token, path: 'source.txt', text: 'replacement', oldText: '', expectedSha256: sha256 }, 'oldText requires nonempty UTF-8 text and an existing file revision'],
+      ['summary limit', 'submit_result', { token, status: 'completed', summary: 'x'.repeat(2049), result: 'not saved' }, 'invalid result'],
+      ['decoded result limit', 'submit_result', { token, status: 'completed', summary: '', result: '\u0001'.repeat(MiB + 1) }, 'invalid result'],
     ]) await t.test(label, async () => {
       const before = snapshot(), response = await f.rpc('tools/call', { name, arguments: args });
       assert.deepEqual(response, { jsonrpc: '2.0', id: 1,
@@ -178,13 +194,51 @@ test('MCP admission rejects request-only errors before state reads or workspace 
       if (name === 'read_file') {
         assert.ok(workspaceChecks > before[2], 'valid file access still checks its workspace boundary');
         assert.equal(result.structuredContent.text, 'preserved fixture text');
-      } else assert.equal(result.structuredContent.status, 'running');
+      } else {
+        assert.equal(result.structuredContent.status, 'running');
+        assert.deepEqual(result.structuredContent.changes, []);
+      }
     });
   } finally { boundary.mock.restore(); for (const trace of traces.reverse()) trace.restore(); }
   for (const trace of traces) assert.equal(trace.evidence.opens, trace.evidence.closes);
   assert.deepEqual(readFileSync(statePath), state);
   assert.equal(readFileSync(join(f.root, 'source.txt'), 'utf8'), 'preserved fixture text');
   assert.equal(existsSync(join(f.root, 'forbidden.txt')), false);
+  assert.equal(existsSync(join(f.dir, 'editor.result.txt')), false);
+  assert.equal(existsSync(join(f.dir, 'editor.result.txt.tmp')), false);
+  assert.equal(existsSync(join(f.dir, 'recovery')), false);
+}));
+
+test('MCP admission preserves semantic request errors without latching a state read failure', t => fixture(async f => {
+  const { token } = await f.register(), statePath = join(f.dir, 'state.json');
+  const state = readFileSync(statePath);
+  let deniedReads = 0;
+  const trace = observeFileRead(t, statePath, { beforeOpen() {
+    deniedReads++;
+    throw Object.assign(Error('fixture state read unavailable'), { code: 'EACCES' });
+  } });
+  try {
+    for (const [label, name, args, message] of [
+      ['digest', 'read_file', { path: 'source.txt', expectedSha256: 'bad' }, 'invalid expectedSha256'],
+      ['cursor', 'list_files', { path: '.', cursor: '!' }, 'invalid directory cursor'],
+      ['path', 'write_file', { path: '../escape', text: 'not written', expectedSha256: null }, 'invalid path or Git metadata'],
+      ['summary', 'submit_result', { status: 'completed', summary: 'x'.repeat(2049), result: 'not saved' }, 'invalid result'],
+    ]) await t.test(label, async () => {
+      assert.deepEqual(await f.call(name, { token, ...args }),
+        { content: [{ type: 'text', text: message }], isError: true });
+    });
+  } finally { trace.restore(); }
+  await t.test('rejected requests leave readiness healthy', async () => {
+    const ready = await f.admin('ready');
+    assert.equal(ready.ok, true, JSON.stringify(ready));
+    assert.equal(ready.stateVerified, true); assert.equal(ready.storage.ok, true);
+    assert.deepEqual(ready.issues, []);
+  });
+  assert.equal(deniedReads, 0, 'semantic rejection must not attempt the unavailable state read');
+  assert.equal(trace.evidence.opens, 0); assert.equal(trace.evidence.closes, 0);
+  assert.deepEqual(readFileSync(statePath), state);
+  assert.equal(existsSync(join(f.dir, 'editor.result.txt')), false);
+  assert.equal(existsSync(join(f.dir, 'recovery')), false);
 }));
 
 test('MCP admission preserves request errors and blocks every valid tool on changed state', t => fixture(async f => {
@@ -197,13 +251,19 @@ test('MCP admission preserves request errors and blocks every valid tool on chan
   await t.test('unknown token precedes an unobserved state failure', async () => {
     assert.deepEqual(await invalid(), { content: [{ type: 'text', text: 'unknown task token' }], isError: true });
   });
-  for (const [name, args] of [
+  // These shape-valid requests also need fresh state before comparing source
+  // revisions, directory contents, exact text matches or the actual line count.
+  for (const [name, args, label = name] of [
     ['get_task', {}], ['read_input', { name: 'source' }], ['list_files', { path: '.' }],
     ['read_file', { path: 'source.txt' }],
     ['write_file', { path: 'source.txt', text: 'must not replace', expectedSha256: sha256 }],
     ['delete_file', { path: 'source.txt', expectedSha256: sha256 }],
     ['submit_result', { status: 'completed', summary: 'must not complete', result: 'must not save' }],
-  ]) await t.test(name, async () => {
+    ['read_file', { path: 'source.txt', expectedSha256: '0'.repeat(64) }, 'file revision mismatch follows state verification'],
+    ['list_files', { path: '.', cursor: Buffer.from(JSON.stringify({ v: 1, offset: 1, revision: '0'.repeat(64) })).toString('base64url') }, 'stale directory revision follows state verification'],
+    ['write_file', { path: 'source.txt', text: 'replacement', oldText: 'absent span', expectedSha256: sha256 }, 'exact text matching follows state verification'],
+    ['read_file', { path: 'source.txt', offset: 2 }, 'EOF checking follows state verification'],
+  ]) await t.test(label, async () => {
     const result = await f.call(name, { token, ...args });
     assert.equal(result.isError, true);
     assert.match(result.content[0].text, /state\.json changed outside this worker/);
@@ -271,18 +331,6 @@ test('escaped 1 MiB results can be submitted and collected without loosening dec
   assert.equal(out.isError, false);
   const collected = await collectTask('editor', f.config);
   assert.equal(readFileSync(collected.artifact, 'utf8'), text);
-}));
-
-test('decoded files above 10 MiB and results above 1 MiB fail before side effects', () => fixture(async f => {
-  const { token } = await f.register();
-  const tooLargeFile = await f.call('write_file', { token, path: 'too-big.txt', text: 'x'.repeat(10 * MiB + 1), expectedSha256: null });
-  assert.equal(tooLargeFile.isError, true);
-  assert.match(tooLargeFile.content[0].text, /<=10 MiB/);
-  assert.equal((await f.call('submit_result', { token, status: 'completed', summary: '', result: '\u0001'.repeat(MiB + 1) })).isError, true);
-  assert.equal(existsSync(join(f.root, 'too-big.txt')), false);
-  const task = (await f.call('get_task', { token })).structuredContent;
-  assert.equal(task.status, 'running');
-  assert.deepEqual(task.changes, []);
 }));
 
 test('lone UTF-16 surrogates are rejected without breaking normal Unicode', () => fixture(async f => {

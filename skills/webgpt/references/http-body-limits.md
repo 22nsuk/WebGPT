@@ -39,12 +39,16 @@ outgoing response longer. This ID bound is not an aggregate response-memory cap;
 large authorized tool results and transport buffers remain separate costs.
 
 For `tools/call`, the worker checks the argument container, in-memory task token,
-tool name, advertised argument schema and incompatible page modes before reading
-runtime state or inspecting workspace paths. These request errors retain their
-tool-error responses even when state is damaged; they do not diagnose storage.
-Requests that pass these checks still verify state before returning task data or
-running a tool. Workspace, revision, recovery and decoded result limits remain
-with their existing operation checks. Enabled audit logging still records refusals.
+tool name, advertised argument schema and incompatible page modes, then validates
+lexical file paths, digest and directory-cursor syntax, write text/`oldText`
+constraints and decoded result/summary limits before reading runtime state or
+inspecting the workspace. These request errors retain their tool-error responses
+even when state is damaged or unavailable; they do not diagnose storage or latch
+a storage-read failure. Requests that pass these checks still verify state before
+returning task data or running a tool. Native workspace checks, actual revisions,
+exact text matching, recovery checks and result persistence remain with their
+existing operation checks. Direct workspace APIs retain the same shared input
+validation. Enabled audit logging still records refusals.
 
 A request exceeding its wire-byte or structure budget receives HTTP 413; malformed JSON or
 UTF-8 receives HTTP 400. Capacity exhaustion returns HTTP 503 (MCP JSON-RPC -32000;
