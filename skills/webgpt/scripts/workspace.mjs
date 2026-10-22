@@ -138,6 +138,14 @@ export function probeWorkspace(grant) {
 }
 export function listWorkspace(grant,path,{cursor,limit=500}={}) {
   if(!Number.isSafeInteger(limit)||limit<1||limit>500)throw Error('limit must be an integer between 1 and 500');
+  let page;
+  if(cursor!==undefined) {
+    try {
+      if(typeof cursor!=='string'||cursor.length>256||!cursor||!/^[A-Za-z0-9_-]+$/.test(cursor))throw Error();
+      page=JSON.parse(Buffer.from(cursor,'base64url').toString('utf8'));
+      if(!page||page.v!==1||!Number.isSafeInteger(page.offset)||page.offset<1||typeof page.revision!=='string')throw Error();
+    } catch {throw Error('invalid directory cursor');}
+  }
   const directory=target(grant,path,false,false,true);
   const entries=readdirSync(directory,{withFileTypes:true,encoding:'buffer'})
     .map(e=>{
@@ -152,12 +160,6 @@ export function listWorkspace(grant,path,{cursor,limit=500}={}) {
   const revision=hash(JSON.stringify([grant.root,grant.device,grant.inode,path,entries]));
   let offset=0;
   if(cursor!==undefined) {
-    let page;
-    try {
-      if(typeof cursor!=='string'||cursor.length>256||!cursor||!/^[A-Za-z0-9_-]+$/.test(cursor))throw Error();
-      page=JSON.parse(Buffer.from(cursor,'base64url').toString('utf8'));
-      if(!page||page.v!==1||!Number.isSafeInteger(page.offset)||page.offset<1||typeof page.revision!=='string')throw Error();
-    } catch {throw Error('invalid directory cursor');}
     if(page.revision!==revision)throw Error('directory changed; restart listing without a cursor');
     if(page.offset>=entries.length)throw Error('invalid directory cursor offset');
     offset=page.offset;
