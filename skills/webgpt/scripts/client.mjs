@@ -151,14 +151,20 @@ export function retryableControllerError(error) {
     'UND_ERR_SOCKET', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT'].includes(error.cause?.code);
 }
 
-export async function waitForTasks(ids, config, { signal, retryDelays = [250, 1000, 3000] } = {}) {
-  ids = taskIds(ids);
+function waitRetryDelays(retryDelays = [250, 1000, 3000]) {
   // Capture at most three indexed values before waiting. Do not retain the
   // caller's mutable budget or skip holes during validation.
   const delays = Array.isArray(retryDelays) && retryDelays.length <= 3
     ? Array.from({ length: retryDelays.length }, (_, index) => retryDelays[index]) : null;
   if (!delays || delays.some(value => !Number.isSafeInteger(value) || value < 0 || value > 10000))
     throw Error('invalid bounded wait retry policy');
+  return delays;
+}
+
+export async function waitForTasks(ids, config, { signal, retryDelays } = {}) {
+  ids = taskIds(ids);
+  const delays = waitRetryDelays(retryDelays);
+  signal?.throwIfAborted();
   // Resolve the default once, after preflight; every poll keeps the same controller.
   if (config === undefined) config = configuration();
   let retries = 0;
@@ -207,17 +213,22 @@ function reviewReadOptions(options) {
     throw Object.assign(Error(reviewUsage), { code: 'REVIEW_USAGE' });
   if (expectedSha256 !== undefined && (typeof expectedSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(expectedSha256)))
     throw Object.assign(Error(reviewUsage), { code: 'REVIEW_USAGE' });
-  try { return { range: readWindowOptions({ offset, limit, maxChars }), expectedSha256, saveResult, signal, retryDelays }; }
+  let range;
+  try { range = readWindowOptions({ offset, limit, maxChars }); }
   catch (cause) { throw Object.assign(Error(reviewUsage, { cause }), { code: 'REVIEW_USAGE' }); }
+  return { range, expectedSha256, saveResult, signal, retryDelays: waitRetryDelays(retryDelays) };
 }
 
 // One parent call waits and reads the verified result, optionally exporting it locally,
 // but never accepts, collects, cancels, clears a backup deadline or hides recovery.
-export async function reviewTask(id, config = configuration(), options = {}) {
+export async function reviewTask(id, config, options = {}) {
   // Reject unknown names rather than silently dropping a bound/pin. Capture this
   // invocation's values before waiting; the caller may reuse its options object.
   const { range, expectedSha256, saveResult, signal, retryDelays } = reviewReadOptions(options);
-  const snapshot = await waitForTasks([id], config, { signal, retryDelays });
+  const ids = taskIds([id]);
+  signal?.throwIfAborted();
+  if (config === undefined) config = configuration();
+  const snapshot = await waitForTasks(ids, config, { signal, retryDelays });
   signal?.throwIfAborted();
   if (snapshot.events.length > 1 || snapshot.events.some(event => !['completed', 'failed', 'cancelled'].includes(event.status)))
     throw Object.assign(Error('worker returned an invalid result event'), { code: 'RESULT_INVALID' });
@@ -261,9 +272,11 @@ export async function reviewTask(id, config = configuration(), options = {}) {
 }
 
 // Verify saved bytes before acknowledgment; this is not a code-quality verdict.
-export async function collectTask(id, config = configuration(), { signal, resume = false } = {}) {
+export async function collectTask(id, config, { signal, resume = false } = {}) {
   taskIds([id]);
   if (typeof resume !== 'boolean') throw Error('invalid collection resume option');
+  signal?.throwIfAborted();
+  if (config === undefined) config = configuration();
   if (resume) return resumeCollection(id, config, { signal });
   const result = await request('wait', { ids: [id] }, config, { signal });
   const event = result.events.find(event => event.id === id);
@@ -402,7 +415,10 @@ function reconciliationAttention(task, integrity) {
 }
 
 // Read-only reconciliation. Never acknowledges, cancels, re-registers or opens a chat.
-export async function reconcileTasks(config = configuration(), { signal, ids } = {}) {
+export async function reconcileTasks(config, { signal, ids } = {}) {
+  if (ids !== undefined) ids = taskIds(ids);
+  signal?.throwIfAborted();
+  if (config === undefined) config = configuration();
   const snapshot = await readReconciliation(config, { signal, ids });
   return { health: snapshot.health, browserChecked: false, ...(ids === undefined ? {} : { scope: snapshot.scope }), tasks: snapshot.tasks.map(task => {
     let integrity = 'not_expected';

@@ -137,6 +137,10 @@ than deriving a fresh expected hash from the file being checked. The original
 The file is created exclusively with mode 0600, flushed and read back with identity
 and byte checks before success. Windows permissions inherit from the private parent;
 no ACL is changed. Existing destinations (including links) are never overwritten.
+The destination is inspected before opening: existing entries, including dangling
+links, and inspection errors other than `ENOENT` are refused before creation.
+Exclusive creation remains required for a destination arriving after that check;
+the absence check is not a filesystem reservation.
 Windows alternate-stream paths are rejected. Native absolute file paths must be
 well-formed, at most 4,096 UTF-16 units and contain no control characters or trailing
 separator. Before creating the packet file, saving checks that the native canonical
