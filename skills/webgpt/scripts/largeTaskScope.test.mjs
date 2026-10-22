@@ -148,8 +148,12 @@ for (const action of ['wait', 'reconcile']) test(`${action} rejects malformed PO
       assert.equal(result.value.error, 'invalid task scope'); assert.equal(result.value.retryable, false);
     }
     for (const suffix of ['?', '?id=x', '?extra=1']) {
-      const result = await f.send('/' + action + suffix, { ids: ['x'] });
-      assert.equal(result.status, 404);
+      // Some fetch versions remove a trailing empty query before transmission.
+      // Test the exact wire target and its early refusal, not URL normalization.
+      const rejected = await f.upload('/' + action + suffix, '{"ids":["x"]}');
+      assert.equal(rejected.incoming.url, '/' + action + suffix);
+      assert.equal((await rejected.outcome).status, 404);
+      rejected.req.destroy();
     }
     assert.equal(trace.evidence.opens, 0);
   } finally { trace.restore(); }
