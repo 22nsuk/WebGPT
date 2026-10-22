@@ -302,13 +302,21 @@ startLine 1, endLine 0, totalLines 0, partial false and nextOffset null.
 
 Selection preserves BOM, Unicode, NUL and CR/LF/CRLF without splitting or dropping
 line tails. An offset beyond EOF or a first requested line longer than maxChars
-fails with `REVIEW_RANGE`; increase bounds within the limits or explicitly choose
-full review. Invalid bounds, duplicate/unknown flags or an invalid SHA produce
+fails with `REVIEW_RANGE`. For an offset beyond EOF, adjust the range. For a long
+line, increase maxChars within its limit or omit `--offset`, `--limit` and
+`--max-chars` and [save the full result](#save-a-verified-full-result-and-bounded-message-files)
+with `review --save-result <new-absolute-directory>`. Then
+[page the saved export](#reopen-and-page-a-saved-export-offline) with `read-export`,
+the same task ID and `review.sha256` from the export response. Follow `nextOffset`
+until null; this also handles a single line longer than 200,000 UTF-16 units.
+The API and CLI give this export guidance specifically for a long-line error.
+
+Invalid bounds, duplicate/unknown flags or an invalid SHA produce
 `REVIEW_USAGE` before the CLI reads configuration or calls the controller. CLI
 flags take separate values, not `--limit=80`. A valid SHA pin that differs from
 the current result produces `REVIEW_REVISION_CONFLICT` before reading the body;
 inspect that change rather than silently following the new revision. No failed
-window request automatically falls back to unbounded output.
+window request automatically falls back to unbounded output or creates an export.
 
 Every page still performs current task/recovery checks and reads, hashes and
 strictly decodes the **entire result once** before selecting lines. Corruption

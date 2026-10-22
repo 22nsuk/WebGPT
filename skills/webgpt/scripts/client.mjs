@@ -190,6 +190,13 @@ export function verifyResult(event, config) {
 }
 
 const reviewUsage = 'usage: client.mjs review <task-id> [--offset N] [--limit N] [--max-chars N] [--expected-sha256 SHA] [--save-result <new-absolute-directory>]';
+function reviewRangeMessage(cause) {
+  return cause?.code === 'READ_LINE_TOO_LONG'
+    ? 'first requested line exceeds maxChars; use review <task-id> --save-result <new-absolute-directory> '
+      + 'without --offset, --limit or --max-chars, then read-export <absolute-directory> '
+      + '--task-id <task-id> --expected-sha256 <review.sha256>; follow nextOffset until null'
+    : 'result range is unavailable; adjust bounds or review the whole result';
+}
 function reviewReadOptions(options) {
   if (!options || typeof options !== 'object' || Array.isArray(options)
       || Object.keys(options).some(key => !['offset', 'limit', 'maxChars', 'expectedSha256', 'saveResult', 'signal', 'retryDelays'].includes(key)))
@@ -246,7 +253,7 @@ export async function reviewTask(id, config = configuration(), options = {}) {
   if (range) {
     let selected;
     try { selected = textWindow(content, range, 'result'); }
-    catch (cause) { throw Object.assign(Error('result range is unavailable; adjust bounds or review the whole result', { cause }), { code: 'REVIEW_RANGE' }); }
+    catch (cause) { throw Object.assign(Error(reviewRangeMessage(cause), { cause }), { code: 'REVIEW_RANGE' }); }
     ({ text: content, ...window } = selected);
   }
   return { ...snapshot, review: { ...event, content, integrity: 'verified', ...window },
@@ -523,7 +530,7 @@ if (executeCli) {
       // Do not echo a controller body, native path, result content or credentials.
       const code = ['REVIEW_USAGE', 'REVIEW_RANGE', 'REVIEW_REVISION_CONFLICT', 'REVIEW_UNCONFIRMED', 'REVIEW_EXPORT', 'RESULT_INVALID', 'STATE_INVALID', 'ENOENT'].includes(error.code) ? error.code : 'REVIEW_FAILED';
       const message = code === 'REVIEW_USAGE' ? reviewUsage
-        : code === 'REVIEW_RANGE' ? 'result range is unavailable; adjust bounds or review the whole result'
+        : code === 'REVIEW_RANGE' ? reviewRangeMessage(error.cause)
         : code === 'REVIEW_REVISION_CONFLICT' ? 'saved result revision differs; inspect before starting a new review'
         : code === 'REVIEW_EXPORT' ? 'result export failed; preserve partial files and inspect the private destination'
         : 'result review failed; preserve evidence and inspect the owned task';
