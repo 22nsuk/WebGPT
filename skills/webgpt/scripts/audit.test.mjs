@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { rejectsRequest } from './test-fixtures/request-error.mjs';
 import fs from 'node:fs';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, rmSync, existsSync, statSync, symlinkSync, linkSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -65,7 +66,7 @@ test('health supports exact GET/HEAD, rejects other methods, preserves origin/au
   assert.equal((await fetch(`http://127.0.0.1:${f.service.controlPort}/ready`)).status, 401);
   await f.register('task');
   writeFileSync(join(f.dir, 'state.json'), '{fixture-corruption');
-  await assert.rejects(f.admin('ready'), e => e.details.issues.includes('STATE_INVALID'));
+  await rejectsRequest(f.admin('ready'), e => e.details.issues.includes('STATE_INVALID'));
   assert.equal((await fetch(f.origin + '/health', { method: 'HEAD' })).status, 200);
   assert.equal(tools.length, 7);
 }));

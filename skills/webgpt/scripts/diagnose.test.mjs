@@ -1,6 +1,7 @@
 // Offline diagnostic recovery uses disposable state and loopback-only integration fixtures.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { rejectsRequest } from './test-fixtures/request-error.mjs';
 import fs from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -220,10 +221,10 @@ test('real controller recovery warnings also appear in offline diagnosis with au
   const config = { dataDir: dir, controlPort: service.controlPort };
   const registered = await request('register', { id: 'owned', instructions: 'fixture', inputs: {} }, config);
   const stage = join(dir, 'owned.result.txt.tmp'); fs.writeFileSync(stage, 'saved partial result');
-  await assert.rejects(request('ready', undefined, config), error => error.details.issues.includes('RESULT_RECOVERY_REQUIRED'));
+  await rejectsRequest(request('ready', undefined, config), error => error.details.issues.includes('RESULT_RECOVERY_REQUIRED'));
   assert.equal(diagnoseTask('owned', config).pendingResults[0].integrity, 'uncommitted');
   fs.writeFileSync(join(dir, 'state.initialized'), 'damaged marker');
-  await assert.rejects(request('ready', undefined, config), error => error.details.issues.includes('STATE_INVALID'));
+  await rejectsRequest(request('ready', undefined, config), error => error.details.issues.includes('STATE_INVALID'));
   const report = diagnoseTask('owned', config);
   assert.equal(report.stateMarker, 'invalid_or_unreadable'); assert.equal(report.pendingResults.length, 1);
   assert.equal(report.task.status, 'running'); assert.equal(report.audit.availability, 'not_observed');

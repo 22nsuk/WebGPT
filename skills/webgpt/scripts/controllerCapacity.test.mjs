@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { rejectsRequest } from './test-fixtures/request-error.mjs';
 import { createServer } from 'node:http';
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -72,7 +73,7 @@ test('controller preserves only explicit known transient HTTP 503 refusals', asy
     const config = await fixture(t, async (req, res) => {
       calls++; await drain(req); send(res, status, body);
     });
-    await assert.rejects(request('register', { id: 'capacity' }, config), error => {
+    await rejectsRequest(request('register', { id: 'capacity' }, config), error => {
       rejection(status, body.code, retryable)(error);
       assert.deepEqual(error.details, body);
       assert.equal(error.message, body.error);
@@ -89,7 +90,7 @@ test('malformed or uninformative HTTP 503 bodies cannot authorize a retry', asyn
       const config = await fixture(t, async (req, res) => {
         calls++; await drain(req); res.writeHead(503); res.end(raw);
       });
-      await assert.rejects(request('register', { id: 'capacity' }, config), rejection(503, undefined, false));
+      await rejectsRequest(request('register', { id: 'capacity' }, config), rejection(503, undefined, false));
       assert.equal(calls, 1);
     });
   }
@@ -119,7 +120,7 @@ for (const resume of [false, true]) test(`collection${resume ? ' resume' : ''} p
     sha256: createHash('sha256').update(bytes).digest('hex') };
   task = { ...event, collected: false, discarded: false, recoveryRequired: [], journalIssues: [], pendingResults: [] };
   const before = readdirSync(config.dataDir).sort();
-  await assert.rejects(collectTask('capacity', config, { resume }), rejection(503, 'HTTP_BODY_BUSY', true));
+  await rejectsRequest(collectTask('capacity', config, { resume }), rejection(503, 'HTTP_BODY_BUSY', true));
   assert.deepEqual(calls, [resume ? '/reconcile?id=capacity' : '/wait?id=capacity', '/collect']);
   assert.deepEqual(readFileSync(artifact), bytes);
   assert.deepEqual(readdirSync(config.dataDir).sort(), before);

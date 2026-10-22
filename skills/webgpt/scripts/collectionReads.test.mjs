@@ -1,6 +1,7 @@
 // Real loopback worker and disposable retained results; no timing thresholds or cache.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { rejectsRequest } from './test-fixtures/request-error.mjs';
 import fs from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
@@ -119,7 +120,7 @@ for (const issue of ['journal', 'pending-result']) test(`target ${issue} attenti
     fs.writeFileSync(join(recovery, 'unresolved.json'), '{}');
   } else fs.writeFileSync(f.path('owned') + '.tmp', text);
   const reads = await observeReads(t, f, async () => {
-    await assert.rejects(collectTask('owned', f.config, { resume: true }), error => {
+    await rejectsRequest(collectTask('owned', f.config, { resume: true }), error => {
       assert.equal(error.code, 'COLLECTION_RECOVERY_REQUIRED');
       assert.equal(error.attention, issue === 'journal' ? 'inspect_recovery' : 'inspect_uncommitted_result');
       return true;
@@ -140,14 +141,14 @@ test('cancelled task without a result requires no result-file reads on resume', 
 
 test('resume rejects invalid shared state before reading result bytes', async t => {
   const f = await fixture(t); fs.writeFileSync(join(f.dir, 'state.json'), '[]');
-  const reads = await observeReads(t, f, () => assert.rejects(collectTask('owned', f.config, { resume: true }), { code: 'STATE_INVALID' }));
+  const reads = await observeReads(t, f, () => rejectsRequest(collectTask('owned', f.config, { resume: true }), { code: 'STATE_INVALID' }));
   assert.deepEqual(reads, []);
 });
 
 test('target verification is fresh on later resume and full reconciliation remains diagnostic', async t => {
   const f = await fixture(t); await collectTask('owned', f.config);
   const before = f.state(); fs.writeFileSync(f.path('owned'), 'changed after collection');
-  await assert.rejects(collectTask('owned', f.config, { resume: true }), { code: 'RESULT_INVALID' });
+  await rejectsRequest(collectTask('owned', f.config, { resume: true }), { code: 'RESULT_INVALID' });
   const snapshot = await reconcileTasks(f.config);
   assert.equal(snapshot.tasks.find(t => t.id === 'owned').integrity, 'mismatch_or_unreadable');
   assert.deepEqual(f.state(), before);
@@ -203,7 +204,7 @@ test('scoped reconciliation rejects invalid requests and missing, widened or dup
   ]) {
     let calls = 0;
     const mock = t.mock.method(globalThis, 'fetch', async () => { calls++; return new Response(JSON.stringify(bad)); });
-    try { await assert.rejects(request('reconcile', { ids: ['owned'] }, f.config), /task-scoped reconciliation/); }
+    try { await rejectsRequest(request('reconcile', { ids: ['owned'] }, f.config), /task-scoped reconciliation/); }
     finally { mock.mock.restore(); }
     assert.equal(calls, 1, 'no automatic full-scope fallback');
   }
@@ -360,7 +361,7 @@ test('candidate presence treats metadata errors as blocking, never as absence', 
     syncBuiltinESMExports();
     try {
       assert.equal(resultFiles.hasPendingResults(f.tasks[0], f.dir), true, code);
-      await assert.rejects(request('ready', undefined, f.config), e => e.details.pendingResultTasks.includes('owned'));
+      await rejectsRequest(request('ready', undefined, f.config), e => e.details.pendingResultTasks.includes('owned'));
       assert.deepEqual(resultFiles.inspectPendingResults(f.tasks[0], f.dir), [{ artifact: file, integrity: 'unreadable', code }]);
     } finally { mock.mock.restore(); syncBuiltinESMExports(); }
   }
@@ -375,7 +376,7 @@ test('candidate health and wait notices read no bodies and observe later appeara
   for (const file of files) fs.writeFileSync(file, text);
   const reads = await observeReads(t, { ...f, files }, async () => {
     for (let repeat = 0; repeat < 2; repeat++) {
-      await assert.rejects(request('ready', undefined, f.config), error => {
+      await rejectsRequest(request('ready', undefined, f.config), error => {
         assert.deepEqual(error.details.pendingResultTasks, f.tasks.map(task => task.id)); return true;
       });
       assert.deepEqual((await request('status', undefined, f.config)).resultRecoveryRequired, f.tasks.map(task => ({ id: task.id })));
@@ -445,11 +446,11 @@ test('candidate absence never replaces the conditional collection result-integri
   const f = await fixture(t, { count: 1 }), task = f.tasks[0], before = f.state();
   fs.writeFileSync(f.path('owned'), 'changed committed bytes');
   assert.equal(resultFiles.hasPendingResults(task, f.dir), false, 'a committed artifact is not a pending candidate');
-  await assert.rejects(request('collect', { id: task.id, expectedStatus: task.status, expectedSha256: task.sha256 }, f.config),
+  await rejectsRequest(request('collect', { id: task.id, expectedStatus: task.status, expectedSha256: task.sha256 }, f.config),
     { code: 'COLLECTION_UNCONFIRMED', statusCode: 409 });
   assert.deepEqual(f.state(), before);
   fs.writeFileSync(f.path('owned'), text); fs.writeFileSync(f.path('owned') + '.tmp', text);
-  await assert.rejects(request('collect', { id: task.id, expectedStatus: task.status, expectedSha256: task.sha256 }, f.config),
+  await rejectsRequest(request('collect', { id: task.id, expectedStatus: task.status, expectedSha256: task.sha256 }, f.config),
     { code: 'COLLECTION_RECOVERY_REQUIRED', statusCode: 409 });
   assert.deepEqual(f.state(), before);
 });

@@ -111,6 +111,19 @@ string reasons still mark those outcomes; explicit false does not. The repositor
 installed-suite summary retains TODO counts separately alongside passed, failed,
 cancelled and skipped counts, so a successful process does not hide pending tests.
 
+WebGPT's request-error tests use `rejectsRequest(promise, expected, message)` from
+`scripts/test-fixtures/request-error.mjs`. Pass an already-created request Promise;
+the helper delegates matching to `assert.rejects`. If matching fails or its
+validator throws a distinct Error that has no cause, it keeps that error and
+attaches a bounded plain snapshot of the original rejection's `name`, `code`,
+`message` and cause chain.
+Numeric codes become strings before Node serializes child-test errors, preserving
+DOMException timeout details. Successful matches and explicitly supplied causes
+are unchanged. If diagnostic fields cannot be read or the failure cannot be
+extended, the original validation failure still propagates. The request runs once;
+no retry, deadline or test verdict is changed, and the reporter retains its
+existing field and byte limits.
+
 Failure entries are written as they arrive, inside one bounded JSON document,
 not buffered until the last test finishes. Normal stream exhaustion still produces
 one version-1 JSONL record with the existing fields, optional cause details and final

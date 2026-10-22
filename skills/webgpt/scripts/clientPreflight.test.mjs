@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { rejectsRequest } from './test-fixtures/request-error.mjs';
 import fs from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 import { join } from 'node:path';
@@ -181,7 +182,7 @@ test('request and scoped-wait API preflight rejects before resolving omitted con
         [() => waitForTasks([]), /nonempty task IDs required/],
         [() => waitForTasks(['owned'], undefined, { retryDelays: [-1] }), /invalid bounded wait retry policy/],
       ];
-      for (const [run, expected] of cases) await assert.rejects(run(), expected);
+      for (const [run, expected] of cases) await rejectsRequest(run(), expected);
     });
   } finally { observed.restore(); }
   noReads(observed.evidence); assert.equal(network.mock.callCount(), 0);

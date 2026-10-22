@@ -213,23 +213,37 @@ test('real Node reporters preserve failing exit status, normal output and compac
     + "test('todo context', t => {t.todo('');throw Error('marked failure');});\n"
     + "test('skip option', {skip:''}, () => {throw Error('marked failure');});\n"
     + "test('skip context', t => {t.skip('');throw Error('marked failure');});\n";
+  const requestAssertionUrl = new URL('./test-fixtures/request-error.mjs', import.meta.url).href;
   writeFileSync(file, "import test from 'node:test'; import assert from 'node:assert/strict';\n"
+    + `import { rejectsRequest } from ${JSON.stringify(requestAssertionUrl)};\n`
     + markedTests + "test('pass',()=>{});test('real assertion',{todo:false,skip:false},()=>assert.equal(1,2));\n"
     + "test('fetch cause',()=>{throw new TypeError('fetch failed',{cause:Object.assign(Error('socket closed'),"
-    + "{code:'ECONNRESET',stack:'private inner stack',request:'private request'})});});\n");
+    + "{code:'ECONNRESET',stack:'private inner stack',request:'private request'})});});\n"
+    // An already aborted fetch supplies a real DOMException rejection without
+    // a network dependency or a race against an elapsed-time timeout.
+    + "const timeoutRequest=()=>{const controller=new AbortController();"
+    + "controller.abort(new DOMException('controlled request timeout','TimeoutError'));"
+    + "return fetch('data:text/plain,unused',{signal:controller.signal});};\n"
+    + "test('request object mismatch',()=>rejectsRequest(timeoutRequest(),{code:'EIO',statusCode:503}));\n"
+    + "test('request false predicate',()=>rejectsRequest(Promise.reject(new TypeError('fetch failed',"
+    + "{cause:Object.assign(Error('socket closed'),{code:'ECONNRESET'})})),()=>false));\n"
+    + "test('request throwing assertion',()=>rejectsRequest(timeoutRequest(),error=>{assert.equal(error.code,'EIO');return true;}));\n"
+    + "test('request validator shape error',()=>rejectsRequest(Promise.reject(new TypeError('fetch failed',"
+    + "{cause:Object.assign(Error('socket closed'),{code:'ECONNRESET'})})),error=>error.details.issues.includes('expected issue')));\n");
   const reporterUrl = new URL('./test-feedback.mjs', import.meta.url).href;
   const env = { ...process.env }; delete env.NODE_TEST_CONTEXT;
   const args = ['--test', '--test-reporter=tap', `--test-reporter=${reporterUrl}`,
     '--test-reporter-destination=stdout', '--test-reporter-destination=stderr', file];
   await assert.rejects(promisify(execFile)(process.execPath, args, { timeout: 15000, env }), error => {
     assert.equal(error.code, 1);
+    assert.equal(error.signal, null); assert.equal(error.killed, false);
     assert.match(error.stdout, /not ok .*real assertion/);
     const value = JSON.parse(error.stderr);
-    assert.equal(value.observedFailures, 3); assert.equal(value.failures.length, 3);
+    assert.equal(value.observedFailures, 7); assert.equal(value.failures.length, 7);
     // Completion events include the file's failed-child summary as well as
     // the assertion. Neither is a second declaration-order test:fail event.
-    assert.equal(value.failures[2].failureType, 'subtestsFailed');
-    assert.equal(realpathSync(value.failures[2].file), realpathSync(file));
+    assert.equal(value.failures.at(-1).failureType, 'subtestsFailed');
+    assert.equal(realpathSync(value.failures.at(-1).file), realpathSync(file));
     assert.equal(value.failures[0].name, 'real assertion');
     // Node reports the resolved source path (e.g. macOS /var -> /private/var).
     assert.equal(value.failures[0].file, realpathSync(file));
@@ -240,6 +254,23 @@ test('real Node reporters preserve failing exit status, normal output and compac
     assert.equal(nested.message, 'fetch failed');
     assert.deepEqual(nested.causes, [{ name: 'Error', code: 'ECONNRESET', message: 'socket closed' }]);
     assert.equal(nested.truncated, false);
+    for (const name of ['request object mismatch', 'request throwing assertion']) {
+      const item = value.failures.find(item => item.name === name);
+      assert.equal(item.code, 'ERR_ASSERTION');
+      assert.deepEqual(item.causes, [{ name: 'TimeoutError', code: '23', message: 'controlled request timeout' }]);
+      assert.equal(item.truncated, false);
+    }
+    const predicate = value.failures.find(item => item.name === 'request false predicate');
+    assert.equal(predicate.code, 'ERR_ASSERTION');
+    const shape = value.failures.find(item => item.name === 'request validator shape error');
+    assert.equal(shape.code, null); assert.match(shape.message, /issues/);
+    for (const item of [predicate, shape]) {
+      assert.deepEqual(item.causes, [
+        { name: 'TypeError', code: null, message: 'fetch failed' },
+        { name: 'Error', code: 'ECONNRESET', message: 'socket closed' },
+      ]);
+    }
+    assert.ok(Buffer.byteLength(error.stderr) <= 32 * 1024);
     assert.doesNotMatch(error.stderr, /private inner stack|private request/);
     return true;
   });

@@ -1,6 +1,7 @@
 // Real loopback requests and disposable state. Work counters are not latency benchmarks.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { rejectsRequest } from './test-fixtures/request-error.mjs';
 import fs from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -177,7 +178,7 @@ for (const field of ['events', 'backupDue', 'recoveryRequired', 'resultRecoveryR
       data[field] = field === 'backupDue' ? ['outside'] : [{ id: 'outside' }]; replyJson(res, data); return true;
     });
     try {
-      await assert.rejects(request('wait', { ids: ['alpha'] }, { ...f.config, controlPort: proxy.port }), /outside the requested task scope/);
+      await rejectsRequest(request('wait', { ids: ['alpha'] }, { ...f.config, controlPort: proxy.port }), /outside the requested task scope/);
       assert.equal(proxy.actions.length, 1); assert.deepEqual(proxy.failures, []);
     } finally { await proxy.close(); }
   });
@@ -194,7 +195,7 @@ for (const problem of ['wrong-scope-order', 'duplicate', 'missing', 'outside'])
       replyJson(res, data); return true;
     });
     try {
-      await assert.rejects(request('reconcile', { ids: ['beta', 'alpha'] }, { ...f.config, controlPort: proxy.port }), /did not confirm task-scoped reconciliation/);
+      await rejectsRequest(request('reconcile', { ids: ['beta', 'alpha'] }, { ...f.config, controlPort: proxy.port }), /did not confirm task-scoped reconciliation/);
       assert.equal(proxy.actions.length, 1); assert.deepEqual(proxy.failures, []);
     } finally { await proxy.close(); }
   });
@@ -239,7 +240,7 @@ test('parked scope checks current state before completion instead of reusing a v
   const f = await fixture(t); await f.register('alpha');
   const wait = await f.park(['alpha']);
   fs.writeFileSync(f.stateFile, 'corrupt evidence');
-  await assert.rejects(f.admin('status'), { code: 'STATE_INVALID', retryable: false });
+  await rejectsRequest(f.admin('status'), { code: 'STATE_INVALID', retryable: false });
   const { error } = await wait.outcome;
   assert.ok(error, 'unverified parked state must reject, not return a healthy snapshot');
   assert.equal(error.code, 'STATE_INVALID'); assert.equal(error.retryable, false);

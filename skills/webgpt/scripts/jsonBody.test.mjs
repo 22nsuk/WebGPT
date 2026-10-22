@@ -1,5 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
+import { rejectsRequest } from './test-fixtures/request-error.mjs';
 import {Readable,PassThrough} from 'node:stream';
 import {setImmediate as tick} from 'node:timers/promises';
 import {createJsonBodyReader} from './json-body.mjs';
@@ -247,7 +248,7 @@ test('worker controller capacity refusal reaches the client without mutation or 
   // Spy only on transport calls; responses and error classification remain real.
   const calls=t.mock.method(globalThis,'fetch');
   const assignment={id:'after-capacity',instructions:'explicit later request',inputs:{}};
-  await assert.rejects(controllerRequest('register',assignment,config),error=>{
+  await rejectsRequest(controllerRequest('register',assignment,config),error=>{
     assert.equal(error.statusCode,503);assert.equal(error.code,'HTTP_BODY_BUSY');
     assert.equal(error.details.retryable,true);assert.equal(error.retryable,true);
     assert.equal(retryableControllerError(error),true);return true;

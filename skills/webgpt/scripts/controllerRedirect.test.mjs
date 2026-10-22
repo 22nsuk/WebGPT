@@ -1,6 +1,7 @@
 // Real HTTP, disposable runtimes and loopback destinations only. No external traffic.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { rejectsRequest } from './test-fixtures/request-error.mjs';
 import { createServer } from 'node:http';
 import { mkdtempSync, readFileSync, writeFileSync, rmSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -65,7 +66,7 @@ for (const status of [301, 302, 303, 307, 308]) for (const scope of ['same-origi
       const location = (scope === 'same-origin' ? '' : destination.url) + '/target?' + privateText;
       res.writeHead(status, { location }); res.end(privateText);
     });
-    await assert.rejects(request(action, action === 'register' ? payload : undefined,
+    await rejectsRequest(request(action, action === 'register' ? payload : undefined,
       { dataDir: dir, controlPort: controller.port }), redirectFailure);
     assert.equal(originals, 1); assert.equal(visits, 0);
     assert.equal(readFileSync(join(dir, 'controller.key'), 'utf8'), key);
@@ -81,7 +82,7 @@ test('task-scoped wait does not accept a redirected snapshot or retry the origin
     }
     visits++; json(res, { events: [], backupDue: [], settled: true });
   });
-  await assert.rejects(waitForTasks(['owned'], { dataDir: dir, controlPort: controller.port },
+  await rejectsRequest(waitForTasks(['owned'], { dataDir: dir, controlPort: controller.port },
     { retryDelays: [0, 0, 0] }), redirectFailure);
   assert.equal(originals, 1); assert.equal(visits, 0);
 });
@@ -119,7 +120,7 @@ test('a redirected backup check cannot become an authenticated cancellation', as
     if (req.url === '/checked') { res.writeHead(307, { location: '/cancel' }); res.end(); return; }
     await f.forward(req, res, bytes);
   });
-  await assert.rejects(request('checked', { id: 'owned' }, { ...f.config, controlPort: proxy.port }), redirectFailure);
+  await rejectsRequest(request('checked', { id: 'owned' }, { ...f.config, controlPort: proxy.port }), redirectFailure);
   assert.deepEqual(paths, ['/checked']);
   assert.deepEqual(readFileSync(join(f.dir, 'state.json')), before);
   assert.equal(f.state().status, 'running'); assert.equal(f.state().token, f.task.token);
@@ -137,7 +138,7 @@ for (const resume of [false, true]) test(`collection${resume ? ' resume' : ''} r
     }
     await f.forward(req, res, bytes);
   });
-  await assert.rejects(collectTask('owned', { ...f.config, controlPort: proxy.port }, { resume }), redirectFailure);
+  await rejectsRequest(collectTask('owned', { ...f.config, controlPort: proxy.port }, { resume }), redirectFailure);
   assert.deepEqual(paths, [...(resume ? ['/reconcile?id=owned'] : ['/wait?id=owned']), '/collect']);
   assert.deepEqual(readFileSync(join(f.dir, 'state.json')), before);
   assert.equal(f.state().collected, false); assert.equal(f.state().token, f.task.token);
@@ -157,7 +158,7 @@ test('a redirect after a committed ack still requires explicit reconciliation, n
     if (req.url === '/target') { targets++; json(res, { ok: true }); return; }
     await f.forward(req, res, bytes);
   });
-  await assert.rejects(collectTask('owned', { ...f.config, controlPort: proxy.port }), redirectFailure);
+  await rejectsRequest(collectTask('owned', { ...f.config, controlPort: proxy.port }), redirectFailure);
   assert.equal(acks, 1); assert.equal(targets, 0);
   assert.equal(f.state().collected, true); assert.equal(f.state().token, undefined);
   const result = await collectTask('owned', f.config, { resume: true });
@@ -199,6 +200,6 @@ test('direct JSON responses and existing HTTP error classification are unchanged
   const config = { dataDir: dir, controlPort: controller.port };
   assert.deepEqual(await request('status', undefined, config), { ok: true });
   assert.deepEqual(await request('checked', { id: 'owned' }, config), { ok: true });
-  await assert.rejects(request('ready', undefined, config), error => error.statusCode === 503 && retryableControllerError(error));
-  await assert.rejects(request('cancel', { id: 'unknown' }, config), error => error.statusCode === 400 && !retryableControllerError(error));
+  await rejectsRequest(request('ready', undefined, config), error => error.statusCode === 503 && retryableControllerError(error));
+  await rejectsRequest(request('cancel', { id: 'unknown' }, config), error => error.statusCode === 400 && !retryableControllerError(error));
 });

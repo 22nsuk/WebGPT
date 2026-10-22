@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { rejectsRequest } from './test-fixtures/request-error.mjs';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync, symlinkSync, statSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -80,14 +81,14 @@ test('client and worker CLIs execute through a symlinked installation path', () 
 
 test('controller authenticates, rejects invalid calls, and returns errors without keys', () => fixture(async ({ service, admin }) => {
   assert.equal((await fetch(`http://127.0.0.1:${service.controlPort}/status`)).status, 401);
-  await assert.rejects(admin('unknown'), /unknown/);
-  await assert.rejects(admin('status', {}), /payload/);
-  await assert.rejects(admin('register'), /payload/);
-  await assert.rejects(admin('ack', { id: 'missing' }), /unknown task/);
+  await rejectsRequest(admin('unknown'), /unknown/);
+  await rejectsRequest(admin('status', {}), /payload/);
+  await rejectsRequest(admin('register'), /payload/);
+  await rejectsRequest(admin('ack', { id: 'missing' }), /unknown task/);
   await admin('register', { id: 'a', instructions: 'Review', inputs: {} });
   assert.equal((await admin('register', { id: 'a', instructions: 'Review', inputs: {} })).duplicate, true);
-  await assert.rejects(admin('register', { id: 'a', instructions: 'Different review', inputs: {} }), /task ID already exists/);
-  await assert.rejects(admin('ack', { id: 'a' }), /not complete/);
+  await rejectsRequest(admin('register', { id: 'a', instructions: 'Different review', inputs: {} }), /task ID already exists/);
+  await rejectsRequest(admin('ack', { id: 'a' }), /not complete/);
   await admin('cancel', { id: 'a' });
 }));
 
@@ -324,14 +325,14 @@ test('resume rechecks retained hashes and preserves integrity/recovery warnings 
   writeFileSync(join(journalDir, 'bad.json'), '{');
   await controllerProxy(f, async ({ config, actions }) => {
     const before = retainedEvidence(f.dir);
-    await assert.rejects(collectTask('retired', config, { resume: true }), /integrity mismatch/);
+    await rejectsRequest(collectTask('retired', config, { resume: true }), /integrity mismatch/);
     assert.equal(actions.filter(action => action === '/collect').length, 0);
     const raw = await request('reconcile', undefined, config);
     assert.equal(raw.tasks.find(task => task.id === 'retired').integrity, undefined);
     const verified = await reconcileTasks(config);
     assert.equal(verified.tasks.find(task => task.id === 'retired').integrity, 'mismatch_or_unreadable');
     assert.deepEqual(retainedEvidence(f.dir), before);
-    await assert.rejects(collectTask('pending', config, { resume: true }), error => {
+    await rejectsRequest(collectTask('pending', config, { resume: true }), error => {
       assert.equal(error.code, 'COLLECTION_RECOVERY_REQUIRED'); assert.equal(error.attention, 'inspect_recovery');
       assert.equal(error.reconciliation.integrity, 'verified');
       assert.equal(error.reconciliation.journalIssues.length, 1); assert.equal(error.reconciliation.pendingResults.length, 1);
@@ -361,10 +362,10 @@ test('resume preserves a concurrent discard and reports unverifiable post-ack re
   await completedTask(f, 'discard'); await completedTask(f, 'changed');
   await controllerProxy(f, async ({ config, actions }) => {
     // The guarded command now rejects the raced discard before any new write.
-    await assert.rejects(collectTask('discard', config, { resume: true }), { code: 'COLLECTION_DISCARDED', statusCode: 409 });
+    await rejectsRequest(collectTask('discard', config, { resume: true }), { code: 'COLLECTION_DISCARDED', statusCode: 409 });
     const discarded = await collectTask('discard', config, { resume: true });
     assert.equal(discarded.disposition, 'discarded'); assert.equal(discarded.discarded, true);
-    await assert.rejects(collectTask('changed', config, { resume: true }), error => {
+    await rejectsRequest(collectTask('changed', config, { resume: true }), error => {
       assert.equal(error.code, 'COLLECTION_UNCONFIRMED'); assert.equal(error.acknowledgment, 'accepted');
       assert.match(error.cause.message, /integrity mismatch/); return true;
     });
@@ -382,7 +383,7 @@ test('resume does not trust diagnostic task snapshots after controller state cor
   await completedTask(f, 'retired'); await collectTask('retired', f.config);
   writeFileSync(join(f.dir, 'state.json'), '[]');
   await controllerProxy(f, async ({ config, actions }) => {
-    await assert.rejects(collectTask('retired', config, { resume: true }), { code: 'STATE_INVALID' });
+    await rejectsRequest(collectTask('retired', config, { resume: true }), { code: 'STATE_INVALID' });
     assert.equal(actions.filter(action => action === '/collect').length, 0);
     assert.equal(readFileSync(join(f.dir, 'state.json'), 'utf8'), '[]');
   });
@@ -392,7 +393,7 @@ test('resume keeps known acknowledgment storage errors and leaves work uncollect
   const task = await completedTask(f, 'blocked');
   mkdirSync(join(f.dir, 'state.json.tmp'));
   await controllerProxy(f, async ({ config, actions }) => {
-    await assert.rejects(collectTask('blocked', config, { resume: true }), error => {
+    await rejectsRequest(collectTask('blocked', config, { resume: true }), error => {
       assert.equal(error.statusCode, 503); assert.notEqual(error.code, 'COLLECTION_UNCONFIRMED'); return true;
     });
     assert.equal(actions.filter(action => action === '/collect').length, 1);

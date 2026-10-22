@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { rejectsRequest } from './test-fixtures/request-error.mjs';
 import fs from 'node:fs';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, unlinkSync, symlinkSync, linkSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -63,7 +64,7 @@ for (const damage of ['missing', 'changed', 'symlink', 'hardlink']) {
       if (damage === 'symlink') { writeFileSync(join(f.base, 'outside.txt'), 'original 한국어'); if (!linkOrSkip(t, join(f.base, 'outside.txt'), receipt.backup)) return; }
     }
     if (restarted) await f.restart();
-    await assert.rejects(f.admin('ready'), error => error.details.issues.includes('RECOVERY_REQUIRED'));
+    await rejectsRequest(f.admin('ready'), error => error.details.issues.includes('RECOVERY_REQUIRED'));
     const result = await reconcileTasks(f.config);
     assert.equal(result.tasks[0].attention, 'inspect_recovery');
     assert.ok(result.tasks[0].journalIssues.includes(journal));
@@ -171,28 +172,28 @@ test('a partial applied-record write preserves the complete prepared journal and
   assert.equal(readFileSync(prepared.backup, 'utf8'), 'old');
   assert.equal(readFileSync(join(folder, journal + '.tmp'), 'utf8'), '{partial applied record');
   assert.equal(readFileSync(join(f.root, 'source.txt'), 'utf8'), 'new');
-  await f.restart(); await assert.rejects(f.admin('ready'), e => e.details.issues.includes('RECOVERY_REQUIRED'));
+  await f.restart(); await rejectsRequest(f.admin('ready'), e => e.details.issues.includes('RECOVERY_REQUIRED'));
 }));
 
 for (const mode of ['read', 'edit']) test(`a project containing the active config cannot receive a ${mode} grant`, () => fixture(async f => {
-  await assert.rejects(f.register('config-access', mode), /workspace overlaps worker configuration/);
+  await rejectsRequest(f.register('config-access', mode), /workspace overlaps worker configuration/);
   assert.equal(readFileSync(join(f.root, 'config.json'), 'utf8'), '{"fixture":true}');
 }, ({ root }) => { const configFile = join(root, 'config.json'); writeFileSync(configFile, '{"fixture":true}'); return { configFile }; }));
 
 test('an absent future config path is protected before a task can create it', () => fixture(async f => {
-  await assert.rejects(f.register(), /workspace overlaps worker configuration/);
+  await rejectsRequest(f.register(), /workspace overlaps worker configuration/);
   assert.equal(existsSync(join(f.root, '.config')), false);
 }, ({ root }) => ({ configFile: join(root, '.config', 'webgpt', 'config.json') })));
 
 test('a config symlink outside the project does not expose its in-project target', t => fixture(async f => {
   const target = join(f.root, 'config.json'); writeFileSync(target, '{}');
   if (!linkOrSkip(t, target, join(f.base, 'active-config.json'))) return;
-  await assert.rejects(f.register(), /workspace overlaps worker configuration/);
+  await rejectsRequest(f.register(), /workspace overlaps worker configuration/);
 }, ({ base }) => ({ configFile: join(base, 'active-config.json') })));
 
 test('an absent config beneath a directory alias is protected by its canonical ancestor', t => fixture(async f => {
   if (!linkOrSkip(t, f.root, join(f.base, 'alias'), process.platform === 'win32' ? 'junction' : 'dir')) return;
-  await assert.rejects(f.register(), /workspace overlaps worker configuration/);
+  await rejectsRequest(f.register(), /workspace overlaps worker configuration/);
 }, ({ base }) => ({ configFile: join(base, 'alias', 'missing', 'config.json') })));
 
 test('restored grants are rechecked against the active config while task evidence stays readable', () => fixture(async f => {
@@ -200,7 +201,7 @@ test('restored grants are rechecked against the active config while task evidenc
   await f.restart({ configFile });
   assert.equal((await f.call('read_file', { token, path: 'config.json' })).isError, true);
   assert.equal((await f.call('get_task', { token })).structuredContent.status, 'running');
-  await assert.rejects(f.admin('ready'), e => e.details.unavailableWorkspaces.includes('a'));
+  await rejectsRequest(f.admin('ready'), e => e.details.unavailableWorkspaces.includes('a'));
 }));
 
 test('an unrelated project config.json remains editable with no new MCP capability', () => fixture(async f => {
@@ -255,12 +256,12 @@ test('failed applied-record rename preserves both prepared and applied candidate
   assert.equal(JSON.parse(readFileSync(journal + '.tmp')).state, 'applied');
   assert.equal(readFileSync(join(f.root, 'source.txt'), 'utf8'), 'new');
   assert.deepEqual(JSON.parse(readFileSync(join(f.dir, 'state.json')))[0].changes, []);
-  await f.restart(); await assert.rejects(f.admin('ready'), e => e.details.issues.includes('RECOVERY_REQUIRED'));
+  await f.restart(); await rejectsRequest(f.admin('ready'), e => e.details.issues.includes('RECOVERY_REQUIRED'));
   // A second loss must not make the surviving applied candidate invisible.
   const candidate = journal + '.tmp', candidateBytes = readFileSync(candidate);
   unlinkSync(journal); await f.restart();
   assert.deepEqual(inspectRecovery(f.dir, 'a').unresolved, [candidate]);
-  await assert.rejects(f.admin('ready'), e => e.details.issues.includes('RECOVERY_REQUIRED'));
+  await rejectsRequest(f.admin('ready'), e => e.details.issues.includes('RECOVERY_REQUIRED'));
   assert.equal((await f.call('write_file', { token, path: 'source.txt', text: 'again', expectedSha256: hash('new') })).isError, true);
   assert.deepEqual(readFileSync(candidate), candidateBytes);
   assert.equal(readFileSync(join(f.root, 'source.txt'), 'utf8'), 'new');
@@ -273,7 +274,7 @@ test('an applied journal with an additional staged candidate requires inspection
   const committed = readFileSync(journal); writeFileSync(candidate, '{conflicting candidate');
   assert.deepEqual(inspectRecovery(f.dir, 'a').unresolved, [candidate]);
   await f.restart();
-  await assert.rejects(f.admin('ready'), e => e.details.issues.includes('RECOVERY_REQUIRED'));
+  await rejectsRequest(f.admin('ready'), e => e.details.issues.includes('RECOVERY_REQUIRED'));
   assert.equal((await f.submit(token)).isError, true);
   assert.deepEqual(readFileSync(journal), committed);
   assert.equal(readFileSync(candidate, 'utf8'), '{conflicting candidate');
@@ -295,7 +296,7 @@ test('the actual worker CLI protects WEBGPT_CONFIG, not only an injected start o
       timeoutMs: 5000, label: 'config boundary worker', diagnostic: observed.diagnostic,
       stopped: () => child.exitCode !== null || child.signalCode !== null,
     });
-    await assert.rejects(request('register', { id: 'unsafe-config', instructions: '', inputs: {}, workspace: { root, mode: 'edit' } }, config), /workspace overlaps worker configuration/);
+    await rejectsRequest(request('register', { id: 'unsafe-config', instructions: '', inputs: {}, workspace: { root, mode: 'edit' } }, config), /workspace overlaps worker configuration/);
     assert.deepEqual(JSON.parse(readFileSync(file)), savedConfig);
     const safeRoot = join(base, 'other-project'); mkdirSync(safeRoot);
     assert.ok((await request('register', { id: 'safe', instructions: '', inputs: {}, workspace: { root: safeRoot, mode: 'read' } }, config)).token);

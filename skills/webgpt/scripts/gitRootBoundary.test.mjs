@@ -1,6 +1,7 @@
 // Disposable metadata-shaped directories only. No real repository hooks or Git commands execute.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { rejectsRequest } from './test-fixtures/request-error.mjs';
 import fs from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -138,7 +139,7 @@ for (const mode of ['read', 'edit']) for (const nested of [false, true]) {
   test(`controller rejects ${mode} registration at Git ${nested ? 'descendant' : 'root'} without persistence`, async t => {
     const f = await httpFixture(t, { mode, nested });
     try {
-      await assert.rejects(f.register('owned', f.root), error => error.statusCode === 400 && denied.test(error.message));
+      await rejectsRequest(f.register('owned', f.root), error => error.statusCode === 400 && denied.test(error.message));
       assert.equal(fs.existsSync(join(f.dir, 'state.json')), false);
       assert.equal(fs.existsSync(join(f.dir, 'recovery')), false);
       assert.deepEqual(await f.admin('tasks'), { running: 0, uncollected: 0, tasks: [] });
@@ -159,7 +160,7 @@ for (const mode of ['read', 'edit']) for (const nested of [false, true]) {
       }
       assert.equal((await f.call('get_task', { token })).structuredContent.status, 'running');
       assert.equal((await f.call('read_input', { token, name: 'example' })).structuredContent.text, 'supplied fixture');
-      await assert.rejects(f.admin('ready'), e => e.details.unavailableWorkspaces.includes('owned'));
+      await rejectsRequest(f.admin('ready'), e => e.details.unavailableWorkspaces.includes('owned'));
       const other = await f.register('independent');
       assert.equal((await f.call('submit_result', { token: other.token, status: 'completed', summary: 'done', result: 'fixture result' })).isError, false);
       assert.equal((await collectTask('independent', f.config)).integrity, 'verified');
