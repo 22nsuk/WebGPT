@@ -1,6 +1,6 @@
 // Optional Node test reporter: bounded failure evidence, not a test/acceptance verdict.
 // Run alongside the normal reporter. No filesystem, subprocess, network or task access.
-const MAX_BYTES = 32 * 1024, MAX_FAILURES = 12;
+const MAX_BYTES = 32 * 1024, MAX_FAILURES = 12, MAX_CAUSES = 3;
 const integer = value => Number.isSafeInteger(value) && value >= 0 ? value : null;
 // A string is a reason, including an empty one; false/undefined are not marks.
 const marked = value => value === true || typeof value === 'string';
@@ -32,8 +32,23 @@ export default async function* testFeedback(source) {
       line: integer(data.line), column: integer(data.column),
       failureType: text(wrapper?.failureType, 128),
       code: text(error?.code, 128), message: text(error?.message ?? wrapper?.message, 1024),
-      stack: text(error?.stack, 1536), truncated,
+      stack: text(error?.stack, 1536),
     };
+    const causes = [], seen = new Set([error]);
+    let cause = error?.cause, causeOmitted;
+    while (cause != null) {
+      if (typeof cause !== 'object') { causeOmitted = 'unsupported'; break; }
+      if (seen.has(cause)) { causeOmitted = 'cycle'; break; }
+      if (causes.length === MAX_CAUSES) { causeOmitted = 'depth'; break; }
+      seen.add(cause);
+      // Keep the first failure within the byte budget even when every field
+      // needs JSON escaping. Do not copy nested stacks or arbitrary properties.
+      causes.push({ name: text(cause.name, 64), code: text(cause.code, 128), message: text(cause.message, 256) });
+      cause = cause.cause;
+    }
+    if (causes.length || causeOmitted) failure.causes = causes;
+    if (causeOmitted) failure.causeOmitted = causeOmitted;
+    failure.truncated = truncated || causeOmitted !== undefined;
     const serialized = JSON.stringify(failure), size = Buffer.byteLength(serialized) + 1;
     // Reserve room for fixed metadata/counters. Do not accumulate stdout/stderr,
     // diagnostic payloads, arbitrary Error properties or passing test events.

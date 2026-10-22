@@ -75,19 +75,37 @@ test('hook failures retain standalone events and count completion mirrors once',
 });
 
 test('feedback bounds entries and bytes with explicit omission/truncation, including Unicode escaping', async () => {
+  const causes = Array.from({ length: 3 }, () => ({
+    name: '\0'.repeat(10000), code: '\0'.repeat(10000), message: '\0'.repeat(10000),
+  }));
+  causes[0].cause = causes[1]; causes[1].cause = causes[2];
   const events = Array.from({ length: 1000 }, () => {
     const event = failure('\0'.repeat(10000));
+    event.data.file = '\0'.repeat(10000);
+    event.data.details.error.failureType = '\0'.repeat(10000);
+    event.data.details.error.cause.code = '\0'.repeat(10000);
     event.data.details.error.cause.message = '🧪한국어\0'.repeat(10000);
     event.data.details.error.cause.stack = '\0'.repeat(10000);
+    event.data.details.error.cause.cause = causes[0];
     return event;
   });
   const output = await report(events), value = JSON.parse(output);
   assert.ok(Buffer.byteLength(output) <= 32 * 1024);
   assert.ok(value.failures.length > 0 && value.failures.length <= 12);
+  assert.ok(value.failures[0].message.includes('🧪한국어'), 'retain Unicode failure evidence');
+  assert.deepEqual(value.failures[0].causes, Array.from({ length: 3 }, () => ({
+    name: '\0'.repeat(64), code: '\0'.repeat(128), message: '\0'.repeat(256),
+  })));
   assert.equal(value.observedFailures, 1000);
   assert.equal(value.omittedFailures, 1000 - value.failures.length);
   assert.ok(value.failures.every(item => item.truncated));
   assert.ok(output.isWellFormed());
+  // Even the first event's maximum-size, JSON-escaped fields must fit together.
+  events[0].data.details.error.cause.message = '\0'.repeat(10000);
+  const worst = await report([events[0]]), retained = JSON.parse(worst).failures;
+  assert.ok(Buffer.byteLength(worst) <= 32 * 1024);
+  assert.equal(retained.length, 1, 'cause detail must not crowd out the first failure');
+  assert.equal(retained[0].message, '\0'.repeat(1024));
 });
 
 test('wrapper-only and missing error metadata stay explicit', async () => {
@@ -99,10 +117,56 @@ test('wrapper-only and missing error metadata stay explicit', async () => {
   assert.equal(value.failures[1].message, null);
 });
 
+test('feedback preserves only allowlisted cause fields in immediate-to-deepest order', async () => {
+  const event = failure(), error = event.data.details.error.cause;
+  error.cause = {
+    name: 'TypeError', message: 'fetch failed', stack: 'private inner stack', request: 'private request',
+    toJSON() { throw Error('must not serialize the original cause'); },
+    cause: { name: 'Error', code: 'ECONNRESET', message: 'socket closed' },
+  };
+  const output = await report([event]), item = JSON.parse(output).failures[0];
+  assert.equal(item.code, 'ERR_ASSERTION'); assert.equal(item.message, 'expected 1, got 2');
+  assert.deepEqual(item.causes, [
+    { name: 'TypeError', code: null, message: 'fetch failed' },
+    { name: 'Error', code: 'ECONNRESET', message: 'socket closed' },
+  ]);
+  assert.equal(item.truncated, false); assert.equal(Object.hasOwn(item, 'causeOmitted'), false);
+  assert.doesNotMatch(output, /private inner stack|private request|toJSON/);
+  error.cause = { message: '🧪한국어'.repeat(100) };
+  const clipped = JSON.parse(await report([event])).failures[0];
+  assert.equal(clipped.causes[0].message.length, 256);
+  assert.ok(clipped.causes[0].message.isWellFormed());
+  assert.equal(clipped.truncated, true, 'cause-only clipping must mark the failure');
+});
+
+test('feedback marks depth, cycle and unsupported cause omissions without following them', async () => {
+  const event = failure(), error = event.data.details.error.cause;
+  const causes = Array.from({ length: 4 }, (_, index) => ({ name: 'Error', message: `cause ${index}` }));
+  for (let index = 0; index < causes.length - 1; index++) causes[index].cause = causes[index + 1];
+  error.cause = causes[0];
+  const deep = JSON.parse(await report([event])).failures[0];
+  assert.deepEqual(deep.causes.map(cause => cause.message), ['cause 0', 'cause 1', 'cause 2']);
+  assert.equal(deep.causeOmitted, 'depth'); assert.equal(deep.truncated, true);
+  for (const indirect of [false, true]) {
+    error.cause = indirect ? { name: 'Error', message: 'inner', cause: error } : error;
+    const cyclic = JSON.parse(await report([event])).failures[0];
+    assert.equal(cyclic.causes.length, indirect ? 1 : 0);
+    assert.equal(cyclic.causeOmitted, 'cycle'); assert.equal(cyclic.truncated, true);
+  }
+  for (const cause of [false, 0, 'private primitive', 1n, Symbol('private symbol'), () => {}]) {
+    error.cause = cause;
+    const output = await report([event]), item = JSON.parse(output).failures[0];
+    assert.deepEqual(item.causes, []); assert.equal(item.causeOmitted, 'unsupported');
+    assert.equal(item.truncated, true); assert.doesNotMatch(output, /private primitive|private symbol/);
+  }
+});
+
 test('feedback emits the first failure before requesting another source event', async () => {
   const advanced = Promise.withResolvers(), release = Promise.withResolvers();
+  const event = failure();
+  event.data.details.error.cause.cause = { name: 'Error', code: 'ECONNRESET', message: 'early cause' };
   async function* waiting() {
-    yield failure();
+    yield event;
     advanced.resolve();
     await release.promise;
   }
@@ -114,6 +178,7 @@ test('feedback emits the first failure before requesting another source event', 
     ]);
     assert.equal(observed.advanced, undefined, 'failure evidence must not wait for a later test');
     assert.match(observed.chunk.value, /expected 1, got 2/);
+    assert.match(observed.chunk.value, /ECONNRESET/);
     assert.throws(() => JSON.parse(observed.chunk.value), SyntaxError, 'an unfinished stream is not a complete report');
     release.resolve();
     let complete = observed.chunk.value;
@@ -149,7 +214,9 @@ test('real Node reporters preserve failing exit status, normal output and compac
     + "test('skip option', {skip:''}, () => {throw Error('marked failure');});\n"
     + "test('skip context', t => {t.skip('');throw Error('marked failure');});\n";
   writeFileSync(file, "import test from 'node:test'; import assert from 'node:assert/strict';\n"
-    + markedTests + "test('pass',()=>{});test('real assertion',{todo:false,skip:false},()=>assert.equal(1,2));\n");
+    + markedTests + "test('pass',()=>{});test('real assertion',{todo:false,skip:false},()=>assert.equal(1,2));\n"
+    + "test('fetch cause',()=>{throw new TypeError('fetch failed',{cause:Object.assign(Error('socket closed'),"
+    + "{code:'ECONNRESET',stack:'private inner stack',request:'private request'})});});\n");
   const reporterUrl = new URL('./test-feedback.mjs', import.meta.url).href;
   const env = { ...process.env }; delete env.NODE_TEST_CONTEXT;
   const args = ['--test', '--test-reporter=tap', `--test-reporter=${reporterUrl}`,
@@ -158,16 +225,22 @@ test('real Node reporters preserve failing exit status, normal output and compac
     assert.equal(error.code, 1);
     assert.match(error.stdout, /not ok .*real assertion/);
     const value = JSON.parse(error.stderr);
-    assert.equal(value.observedFailures, 2); assert.equal(value.failures.length, 2);
+    assert.equal(value.observedFailures, 3); assert.equal(value.failures.length, 3);
     // Completion events include the file's failed-child summary as well as
     // the assertion. Neither is a second declaration-order test:fail event.
-    assert.equal(value.failures[1].failureType, 'subtestsFailed');
-    assert.equal(realpathSync(value.failures[1].file), realpathSync(file));
+    assert.equal(value.failures[2].failureType, 'subtestsFailed');
+    assert.equal(realpathSync(value.failures[2].file), realpathSync(file));
     assert.equal(value.failures[0].name, 'real assertion');
     // Node reports the resolved source path (e.g. macOS /var -> /private/var).
     assert.equal(value.failures[0].file, realpathSync(file));
     assert.equal(value.failures[0].code, 'ERR_ASSERTION');
     assert.match(value.failures[0].message, /1 !== 2/);
+    const nested = value.failures[1];
+    assert.equal(nested.name, 'fetch cause'); assert.equal(nested.code, null);
+    assert.equal(nested.message, 'fetch failed');
+    assert.deepEqual(nested.causes, [{ name: 'Error', code: 'ECONNRESET', message: 'socket closed' }]);
+    assert.equal(nested.truncated, false);
+    assert.doesNotMatch(error.stderr, /private inner stack|private request/);
     return true;
   });
   writeFileSync(file, "import test from 'node:test'; test('pass',()=>{});\n" + markedTests);
