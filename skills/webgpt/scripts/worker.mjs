@@ -17,6 +17,7 @@ import { boundedTextPage, TEXT_PAGE_MAX_CHARS } from './bounded-text-page.mjs';
 import { createJsonBodyReader } from './json-body.mjs';
 import { readBoundedFile } from './bounded-read.mjs';
 import { normalizeWorkspaceIdentity } from './workspace-identity.mjs';
+import { validateWorkspaceRead, validateWorkspaceList, validateWorkspaceChange } from './workspace.mjs';
 
 const schema = properties => ({type:'object',properties,required:Object.keys(properties),additionalProperties:false});
 const str = {type:'string'};
@@ -316,13 +317,17 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
   const body=createJsonBodyReader(),mcpBody=createJsonBodyReader(128*1024*1024);
   const call=(name,args)=>{
     if(stopping)throw fault('SHUTTING_DOWN','worker is stopping');
-    // Reject request-only errors before state reads or workspace inspection.
+    // Authenticate and check request syntax/limits before state or workspace I/O.
     if(!args||typeof args!=='object'||Array.isArray(args))throw Error('tool arguments must be an object');
     const t=typeof args.token==='string'&&tasks.find(t=>t.token&&t.token===args.token);if(!t)throw Error('unknown task token');
     const tool=tools.find(tool=>tool.name===name);if(!tool)throw Error('unknown tool');
     validateArguments(tool,args);
     if(args.charOffset!==undefined && ['offset','limit','maxChars'].some(key=>args[key]!==undefined))
       throw Error('charOffset cannot be combined with line window options');
+    if(name==='list_files')validateWorkspaceList(args.path,{cursor:args.cursor,limit:args.limit});
+    if(name==='read_file')validateWorkspaceRead(args.path,{offset:args.offset,limit:args.limit,maxChars:args.maxChars,expectedSha256:args.expectedSha256});
+    if(['write_file','delete_file'].includes(name))validateWorkspaceChange(args,name==='delete_file');
+    if(name==='submit_result'&&(!['completed','failed','cancelled'].includes(args.status)||typeof args.result!=='string'||typeof args.summary!=='string'||args.summary.length>2048||Buffer.byteLength(args.result)>1024*1024))throw Error('invalid result');
     verifyState();
     if(['list_files','read_file','write_file','delete_file'].includes(name))checkDataBoundary(t.workspace);
     if(name==='get_task'){
@@ -364,7 +369,6 @@ export async function start({dir,port=43137,controlPort=43139,publicMcp=false,ba
       }
     }
     if(name!=='submit_result')throw Error('unknown tool');
-    if(!['completed','failed','cancelled'].includes(args.status)||typeof args.result!=='string'||typeof args.summary!=='string'||args.summary.length>2048||Buffer.byteLength(args.result)>1024*1024)throw Error('invalid result');
     flagUnrecordedChanges(t);
     if(args.status==='completed'&&t.recoveryRequired?.length)throw Error('supervisor recovery required; preserve partial output with failed status');
     const sha=createHash('sha256').update(args.result).digest('hex');

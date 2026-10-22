@@ -67,7 +67,7 @@ export function grantWorkspace(input) {
   return {root, device:stat.dev.toString(), inode:stat.ino.toString(), mode:input.mode};
 }
 function target(grant,path,writing=false,createParents=false,directory=false) {
-  if (!(directory && path === '.')) relativeFile(path);
+  // Operation preflight owns lexical paths; this boundary rechecks the native grant.
   if (!grant || !['read','edit'].includes(grant.mode) || writing && grant.mode!=='edit') throw Error('workspace absent or read-only');
   if ('read' in grant || 'write' in grant) throw Error('legacy file grant; register a project workspace');
   const rootStat = lstatSync(grant.root,{bigint:true}), identity = normalizeWorkspaceIdentity(grant);
@@ -115,14 +115,20 @@ function originalMatches(path, expectedSha256) {
   decoder.decode();
   return digest.digest('hex')===expectedSha256;
 }
-// Optional bounded reads keep the original whole-file snapshot/revision contract.
-// Return complete lines (including their original endings); never silently drop a long-line tail.
-export function readWorkspace(grant,path,options={}) {
+// Share request-only checks with MCP admission while retaining direct API validation.
+export function validateWorkspaceRead(path,options={}) {
   if(!options || typeof options!=='object' || Array.isArray(options))throw Error('invalid read options');
   const {expectedSha256,...window}=options;
   if(expectedSha256!==undefined && (typeof expectedSha256!=='string' || !/^[0-9a-f]{64}$/.test(expectedSha256)))
     throw Error('invalid expectedSha256');
   const range=readWindowOptions(window);
+  relativeFile(path);
+  return {expectedSha256,range};
+}
+// Optional bounded reads keep the original whole-file snapshot/revision contract.
+// Return complete lines (including their original endings); never silently drop a long-line tail.
+export function readWorkspace(grant,path,options={}) {
+  const {expectedSha256,range}=validateWorkspaceRead(path,options);
   const result={path,...snapshot(target(grant,path))};
   // Bind subsequent windows to one whole-file revision without a snapshot cache.
   if(expectedSha256!==undefined && result.sha256!==expectedSha256)throw Error('file revision conflict; read again');
@@ -136,7 +142,7 @@ export function probeWorkspace(grant) {
   const directory=opendirSync(target(grant,'.',false,false,true),{bufferSize:1});
   try {directory.readSync();} finally {directory.closeSync();}
 }
-export function listWorkspace(grant,path,{cursor,limit=500}={}) {
+export function validateWorkspaceList(path,{cursor,limit=500}={}) {
   if(!Number.isSafeInteger(limit)||limit<1||limit>500)throw Error('limit must be an integer between 1 and 500');
   let page;
   if(cursor!==undefined) {
@@ -146,6 +152,11 @@ export function listWorkspace(grant,path,{cursor,limit=500}={}) {
       if(!page||page.v!==1||!Number.isSafeInteger(page.offset)||page.offset<1||typeof page.revision!=='string')throw Error();
     } catch {throw Error('invalid directory cursor');}
   }
+  if(path!=='.')relativeFile(path);
+  return {page,limit};
+}
+export function listWorkspace(grant,path,options={}) {
+  const {page,limit}=validateWorkspaceList(path,options);
   const directory=target(grant,path,false,false,true);
   const entries=readdirSync(directory,{withFileTypes:true,encoding:'buffer'})
     .map(e=>{
@@ -159,7 +170,7 @@ export function listWorkspace(grant,path,{cursor,limit=500}={}) {
     .sort((a,b)=>a.name<b.name?-1:a.name>b.name?1:0);
   const revision=hash(JSON.stringify([grant.root,grant.device,grant.inode,path,entries]));
   let offset=0;
-  if(cursor!==undefined) {
+  if(page!==undefined) {
     if(page.revision!==revision)throw Error('directory changed; restart listing without a cursor');
     if(page.offset>=entries.length)throw Error('invalid directory cursor offset');
     offset=page.offset;
@@ -216,7 +227,7 @@ export function inspectRecovery(dir, taskId) {
   return {receipts,unresolved:[...unresolved]};
 }
 
-export function changeWorkspace(grant,dir,taskId,{path,text,expectedSha256,oldText},deleting=false) {
+export function validateWorkspaceChange({path,text,expectedSha256,oldText},deleting=false) {
   if(expectedSha256!==null && (typeof expectedSha256!=='string' || !/^[0-9a-f]{64}$/.test(expectedSha256))) throw Error('expectedSha256 required (null only for create)');
   if(!deleting && (typeof text!=='string' || !text.isWellFormed() || text.includes('\0') || Buffer.byteLength(text)>MAX_BYTES)) throw Error('text must be <=10 MiB');
   if(oldText!==undefined && (deleting || expectedSha256===null || typeof oldText!=='string' || !oldText
@@ -224,6 +235,10 @@ export function changeWorkspace(grant,dir,taskId,{path,text,expectedSha256,oldTe
     throw Error('oldText requires nonempty UTF-8 text and an existing file revision');
   // Validate scope before creating any directory.
   relativeFile(path);
+  return {path,text,expectedSha256,oldText};
+}
+export function changeWorkspace(grant,dir,taskId,args,deleting=false) {
+  let {path,text,expectedSha256,oldText}=validateWorkspaceChange(args,deleting);
   if(!grant || grant.mode!=='edit') throw Error('workspace absent or read-only');
   const file=target(grant,path,true,!deleting && expectedSha256===null), before=snapshot(file);
   if(before.sha256!==expectedSha256 || deleting && !before.exists) throw Error('file revision conflict; read before changing');
