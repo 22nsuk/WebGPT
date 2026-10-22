@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { rejectsRequest } from './test-fixtures/request-error.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import { join } from 'node:path';
@@ -169,7 +170,7 @@ for (const link of ['hardlink', 'symlink']) test(`configuration keeps ${link} co
   assert.equal(configuration({ WEBGPT_CONFIG: file }).publicMcp, true);
   fs.renameSync(file, join(dir, 'controller.key'));
   const network = denyNetwork(t);
-  await assert.rejects(request('status', undefined, { dataDir: dir, controlPort: 1 }), invalidFile);
+  await rejectsRequest(request('status', undefined, { dataDir: dir, controlPort: 1 }), invalidFile);
   assert.equal(network.mock.callCount(), 0);
   assert.equal(fs.readFileSync(target, 'utf8'), bytes);
   assert.equal(fs.readFileSync(join(dir, 'controller.key'), 'utf8'), bytes);
@@ -177,7 +178,7 @@ for (const link of ['hardlink', 'symlink']) test(`configuration keeps ${link} co
 
 test('a missing parent key is ENOENT, not a request or permission to create a key', async t => {
   const dir = readFixture(t), network = denyNetwork(t);
-  await assert.rejects(request('status', undefined, { dataDir: dir, controlPort: 1 }), { code: 'ENOENT' });
+  await rejectsRequest(request('status', undefined, { dataDir: dir, controlPort: 1 }), { code: 'ENOENT' });
   assert.equal(network.mock.callCount(), 0);
   assert.deepEqual(fs.readdirSync(dir), []);
 });

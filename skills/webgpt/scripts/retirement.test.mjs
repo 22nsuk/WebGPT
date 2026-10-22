@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { rejectsRequest } from './test-fixtures/request-error.mjs';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, existsSync, rmdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative, resolve, isAbsolute, sep } from 'node:path';
@@ -61,7 +62,7 @@ for (const status of ['completed', 'failed', 'cancelled']) {
     if (status === 'failed') unlinkSync(before.artifact);
     const artifactBefore = existsSync(before.artifact) ? readFileSync(before.artifact) : null;
     if (status !== 'cancelled') {
-      await assert.rejects(collectTask(id, f.config), status === 'completed' ? /integrity mismatch/ : /ENOENT/);
+      await rejectsRequest(collectTask(id, f.config), status === 'completed' ? /integrity mismatch/ : /ENOENT/);
       assert.equal(f.state(id).collected, false);
     }
     assert.deepEqual(await f.admin('cancel', { id }), { ok: true });
@@ -81,7 +82,7 @@ for (const status of ['completed', 'failed', 'cancelled']) {
       assert.equal((await f.call('read_input', { token, name: 'sample' })).isError, true, phase);
       assert.deepEqual(await f.admin('tasks'), { running: 0, uncollected: 0, tasks: [] }, phase);
       assert.deepEqual(await f.admin('wait', { ids: [id] }), { events: [], backupDue: [], settled: true }, phase);
-      await assert.rejects(collectTask(id, f.config), /no uncollected result/);
+      await rejectsRequest(collectTask(id, f.config), /no uncollected result/);
       assert.deepEqual(existsSync(before.artifact) ? readFileSync(before.artifact) : null, artifactBefore, phase);
       assert.deepEqual(readFileSync(journal), journalBefore, phase);
       assert.equal(readFileSync(join(f.root, 'work.txt'), 'utf8'), 'preserved project edit', phase);
@@ -128,7 +129,7 @@ test('failed terminal retirement preserves access and pending evidence until a d
   const blocked = join(f.dir, 'state.json.tmp');
   mkdirSync(blocked);
   try {
-    await assert.rejects(f.admin('cancel', { id }), {
+    await rejectsRequest(f.admin('cancel', { id }), {
       code: 'STATE_STAGING_CONFLICT', statusCode: 503, retryable: false,
     });
     assert.equal(readFileSync(join(f.dir, 'state.json')).equals(savedState), true);

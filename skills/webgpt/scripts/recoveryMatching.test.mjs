@@ -1,6 +1,7 @@
 // Indexing may narrow candidates, never replace byte checks or full receipt equality.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { rejectsRequest } from './test-fixtures/request-error.mjs';
 import fs from 'node:fs';
 import util from 'node:util';
 import { createHash, randomUUID } from 'node:crypto';
@@ -113,7 +114,7 @@ test('a 64-record history validates every field of its last receipt and preserve
     const before = fs.readFileSync(f.state), actual = await f.inspect();
     const expected = mismatch === 'invalid' ? [f.recovery] : [f.journal(mismatch === 'missing' ? f.task.changes.at(-1) : f.receipts.at(-1))];
     assert.deepEqual(actual.journalIssues, expected, mismatch);
-    await assert.rejects(collectTask('owned', f.config), { code: 'COLLECTION_RECOVERY_REQUIRED' });
+    await rejectsRequest(collectTask('owned', f.config), { code: 'COLLECTION_RECOVERY_REQUIRED' });
     assert.deepEqual(fs.readFileSync(f.state), before); await f.close();
   }
 });
@@ -150,7 +151,7 @@ for (const damage of ['backup', 'journal', 'directory']) test(`fresh recovery in
   else { fs.renameSync(f.recovery, f.recovery + '-saved'); fs.writeFileSync(f.recovery, 'not a directory'); }
   const actual = await f.inspect(), expected = damage === 'directory' ? f.recovery : f.journal(f.receipts[0]);
   assert.deepEqual(actual.journalIssues, [expected]); assert.deepEqual(actual.recoveryRequired, [expected]);
-  await assert.rejects(f.admin('ready'), error => error.details.issues.includes('RECOVERY_REQUIRED'));
+  await rejectsRequest(f.admin('ready'), error => error.details.issues.includes('RECOVERY_REQUIRED'));
   assert.deepEqual(fs.readFileSync(f.state), before);
 });
 
@@ -167,7 +168,7 @@ for (const phase of ['startup', 'live']) test(`64-record ${phase} check quaranti
   }
   const state = fs.readFileSync(f.state), journal = fs.readFileSync(path), backup = fs.readFileSync(last.backup);
   if (phase === 'startup') assert.deepEqual(JSON.parse(state)[0].recoveryRequired, [path]);
-  await assert.rejects(f.admin('ready'), error => {
+  await rejectsRequest(f.admin('ready'), error => {
     assert.deepEqual(error.details.recoveryRequired, ['owned']); return true;
   });
   const inspected = await f.inspect();

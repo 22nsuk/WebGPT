@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { rejectsRequest } from './test-fixtures/request-error.mjs';
 import { createServer } from 'node:http';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, existsSync, linkSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -90,10 +91,10 @@ test('quiet waits return due checks and recovery notices without retrying them',
 test('unknown IDs and malformed wait queries fail instead of silently widening scope', () => fixture(async f => {
   await f.register('a');
   for (const ids of [[], [''], ['../a'], ['a&other'], [null], 'a'])
-    await assert.rejects(waitForTasks(ids, f.config), /task IDs/);
-  await assert.rejects(f.admin('wait', { ids: ['missing'] }), /unknown task/);
-  await assert.rejects(f.admin('wait', { ids: ['a'], extra: true }), /payload/);
-  await assert.rejects(f.admin('status', { ids: ['a'] }), /payload/);
+    await rejectsRequest(waitForTasks(ids, f.config), /task IDs/);
+  await rejectsRequest(f.admin('wait', { ids: ['missing'] }), /unknown task/);
+  await rejectsRequest(f.admin('wait', { ids: ['a'], extra: true }), /payload/);
+  await rejectsRequest(f.admin('status', { ids: ['a'] }), /payload/);
   for (const query of ['?id=', '?id=missing', '?other=a']) {
     const response = await fetch(`http://127.0.0.1:${f.config.controlPort}/wait${query}`, { headers: { authorization: 'Bearer ' + readFileSync(join(f.dir, 'controller.key'), 'utf8') } });
     assert.equal(response.status, 400);
@@ -104,7 +105,7 @@ test('unknown IDs and malformed wait queries fail instead of silently widening s
 test('old or malformed worker responses fail promptly instead of causing an endless wait', async () => {
   for (const result of [null, snapshot, { ...snapshot, settled: 'no' }, { ...snapshot, settled: false, recoveryRequired: {} }])
     await controllerFixture([result], async ({ config, requests }) => {
-      await assert.rejects(waitForTasks(['a'], config), /does not support task-scoped waits/);
+      await rejectsRequest(waitForTasks(['a'], config), /does not support task-scoped waits/);
       assert.equal(requests.length, 1);
     });
   for (const result of [
@@ -112,17 +113,17 @@ test('old or malformed worker responses fail promptly instead of causing an endl
     { events: [], backupDue: ['other'], settled: false },
     { ...snapshot, recoveryRequired: [{ id: 'other' }], settled: false },
   ]) await controllerFixture([result], async ({ config, requests }) => {
-    await assert.rejects(waitForTasks(['a'], config), /outside the requested task scope/);
+    await rejectsRequest(waitForTasks(['a'], config), /outside the requested task scope/);
     assert.equal(requests.length, 1);
   });
 });
 
 test('waiting can be aborted without cancelling a registered task', () => fixture(async f => {
   const a = await f.register('a');
-  await assert.rejects(waitForTasks(['a'], f.config, { signal: AbortSignal.timeout(50) }), { name: 'TimeoutError' });
+  await rejectsRequest(waitForTasks(['a'], f.config, { signal: AbortSignal.timeout(50) }), { name: 'TimeoutError' });
   assert.equal((await f.call('get_task', { token: a.token })).structuredContent.status, 'running');
   const stop = new AbortController(); stop.abort(new Error('stop this wait'));
-  await assert.rejects(waitForTasks(['a'], f.config, { signal: stop.signal }), /stop this wait/);
+  await rejectsRequest(waitForTasks(['a'], f.config, { signal: stop.signal }), /stop this wait/);
   await f.admin('cancel', { id: 'a' });
   assert.deepEqual(await waitForTasks(['a'], f.config), { ...snapshot, settled: true });
 }));
@@ -145,7 +146,7 @@ test('collection verifies saved bytes, retires only the selected token, and pres
   assert.equal((await f.call('get_task', { token: a.token })).isError, true);
   assert.equal((await f.call('get_task', { token: b.token })).isError, false);
   assert.deepEqual((await f.admin('status')).events.map(e => e.id), ['b']);
-  await assert.rejects(collectTask('a', f.config), /no uncollected result/);
+  await rejectsRequest(collectTask('a', f.config), /no uncollected result/);
   await collectTask('b', f.config);
   assert.deepEqual(await f.admin('wait'), snapshot);
 }));
@@ -155,13 +156,13 @@ test('tampered, missing or multiply linked artifacts are not acknowledged', () =
   const path = join(f.dir, 'a.result.txt');
   const original = readFileSync(path);
   writeFileSync(path, 'tampered');
-  await assert.rejects(collectTask('a', f.config), /integrity mismatch/);
+  await rejectsRequest(collectTask('a', f.config), /integrity mismatch/);
   assert.equal((await f.call('get_task', { token: a.token })).isError, false);
   unlinkSync(path);
-  await assert.rejects(collectTask('a', f.config), /ENOENT/);
+  await rejectsRequest(collectTask('a', f.config), /ENOENT/);
   writeFileSync(path, original);
   linkSync(path, join(f.dir, 'alias.txt'));
-  await assert.rejects(collectTask('a', f.config), /single-link/);
+  await rejectsRequest(collectTask('a', f.config), /single-link/);
   unlinkSync(join(f.dir, 'alias.txt'));
   assert.equal((await f.admin('status')).events.length, 1);
   await collectTask('a', f.config);
@@ -190,7 +191,7 @@ test('failed and cancelled results keep their status after integrity-checked col
 
 test('collecting running work does not invent a result or revoke access', () => fixture(async f => {
   const a = await f.register('a');
-  await assert.rejects(collectTask('a', f.config), /no uncollected result/);
+  await rejectsRequest(collectTask('a', f.config), /no uncollected result/);
   assert.equal((await f.call('get_task', { token: a.token })).structuredContent.status, 'running');
 }));
 
@@ -226,7 +227,7 @@ test('stdin module imports do not treat the dash as a filename or launch either 
 test('upstream terminal and open registration cannot silently change the fork authority model', () => fixture(async f => {
   assert.deepEqual(tools.map(t => t.name), ['list_files', 'read_file', 'write_file', 'delete_file', 'get_task', 'read_input', 'submit_result']);
   for (const extra of [{ terminal: { cwd: f.dir } }, { terminal: null }, { mode: 'open' }, { mode: null }]) {
-    await assert.rejects(f.admin('register', { id: 'bad', instructions: '', inputs: {}, ...extra }), /not supported/);
+    await rejectsRequest(f.admin('register', { id: 'bad', instructions: '', inputs: {}, ...extra }), /not supported/);
   }
   assert.deepEqual(await f.admin('status'), snapshot);
   const root = join(f.base, 'project'); mkdirSync(root);

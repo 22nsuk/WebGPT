@@ -1,6 +1,7 @@
 // Disposable loopback workers only. Never repair, restart or mutate an installed runtime.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { rejectsRequest } from './test-fixtures/request-error.mjs';
 import fs from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -70,7 +71,7 @@ for (const previous of ['checked-owned', 'checked-other', 'ack-other']) for (con
     await patched(t, 'renameSync', (from, to) => {
       if (from === f.stage) throw Object.assign(Error('fixture publication failure'), { code: 'EIO' });
       return rename(from, to);
-    }, () => assert.rejects(f.admin(action, payload), { statusCode: 503, code: 'EIO' }));
+    }, () => rejectsRequest(f.admin(action, payload), { statusCode: 503, code: 'EIO' }));
     const candidate = fs.readFileSync(f.stage);
     assert.notDeepEqual(candidate, committed, 'real uncommitted state was produced');
     rejected(await f.mutate(operation), f);
@@ -79,7 +80,7 @@ for (const previous of ['checked-owned', 'checked-other', 'ack-other']) for (con
     const task = (await f.call('get_task', { token: f.token })).structuredContent;
     assert.deepEqual(task.changes, []); assert.deepEqual(task.recoveryRequired ?? [], []);
     assert.equal((await waitForTasks(['owned'], f.config)).interrupted, true);
-    await assert.rejects(f.admin('ready'), e => e.details.storage.code === 'STATE_STAGING_CONFLICT'
+    await rejectsRequest(f.admin('ready'), e => e.details.storage.code === 'STATE_STAGING_CONFLICT'
       && e.details.automaticRestartRecommended === false);
     if (action === 'checked') {
       // Each now() advances: repeating the same payload proposes a later deadline,
@@ -87,12 +88,12 @@ for (const previous of ['checked-owned', 'checked-other', 'ack-other']) for (con
       const deadline = bytes => JSON.parse(bytes).find(task => task.id === payload.id).nextCheck;
       assert.ok(deadline(candidate) > deadline(committed));
       for (let attempt = 0; attempt < 2; attempt++) {
-        await assert.rejects(f.admin(action, payload), { statusCode: 503, code: 'STATE_STAGING_CONFLICT' });
+        await rejectsRequest(f.admin(action, payload), { statusCode: 503, code: 'STATE_STAGING_CONFLICT' });
         rejected(await f.mutate(operation), f);
         unchanged(f, committed);
         assert.deepEqual(fs.readFileSync(f.stage), candidate);
         assert.equal((await f.call('get_task', { token: f.token })).structuredContent.status, 'running');
-        await assert.rejects(f.admin('ready'), e => e.details.storage.code === 'STATE_STAGING_CONFLICT');
+        await rejectsRequest(f.admin('ready'), e => e.details.storage.code === 'STATE_STAGING_CONFLICT');
       }
       // Restart cannot resolve the failed transition either. Preserve both files
       // for the documented, deliberate offline disposition by the supervisor.
@@ -156,7 +157,7 @@ for (const code of ['EACCES', 'EIO']) test(`an unreadable stage check (${code}) 
   });
   assert.equal(fs.existsSync(f.stage), false);
   assert.equal((await waitForTasks(['owned'], f.config)).interrupted, true);
-  await assert.rejects(f.admin('ready'), e => e.details.storage.code === code);
+  await rejectsRequest(f.admin('ready'), e => e.details.storage.code === code);
   await f.admin('checked', { id: 'owned' });
   assert.equal((await f.admin('ready')).ok, true);
   assert.equal((await f.mutate('edit')).isError, false);

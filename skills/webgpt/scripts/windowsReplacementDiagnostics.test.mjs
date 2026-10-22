@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { rejectsRequest } from './test-fixtures/request-error.mjs';
 import fs from 'node:fs';
 import childProcess from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -215,7 +216,7 @@ for(const failure of ['reported_failure','partial_move','diagnostic_failure','sp
       assert.deepEqual(reconciliation.tasks.find(task=>task.id==='b').recoveryRequired,[]);
       const submitted=await call('submit_result',{token:a.token,status:'failed',summary:'fixture',result:'preserved partial result'});
       assert.equal(submitted.isError,false);
-      await assert.rejects(admin('collect',{id:'a',expectedStatus:'failed',expectedSha256:submitted.structuredContent.sha256}),/recovery/i);
+      await rejectsRequest(admin('collect',{id:'a',expectedStatus:'failed',expectedSha256:submitted.structuredContent.sha256}),/recovery/i);
       assert.equal((await call('write_file',{token:b.token,path:'other.txt',text:'other',expectedSha256:null})).isError,false);
       const normal=await call('submit_result',{token:b.token,status:'completed',summary:'fixture',result:'normal result'});
       assert.equal(normal.isError,false);

@@ -1,6 +1,7 @@
 // Real parked HTTP requests; filesystem faults affect only disposable state files.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { rejectsRequest } from './test-fixtures/request-error.mjs';
 import fs from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -63,7 +64,7 @@ for (const count of [1, 8, 32]) test(`persistent storage error visits each of ${
   const before = fs.readFileSync(f.stateFile);
   let reads = 0;
   await withStateReads(t, f.stateFile, () => { reads++; throw ioError(); }, async () => {
-    await assert.rejects(f.admin('status'), { code: 'EIO', statusCode: 503 });
+    await rejectsRequest(f.admin('status'), { code: 'EIO', statusCode: 503 });
     assert.ok(waits.every(wait => wait.response.writableEnded), 'all responses end during notification, not at their timers');
     for (const { outcome } of waits) {
       const { error } = await outcome;
@@ -74,7 +75,7 @@ for (const count of [1, 8, 32]) test(`persistent storage error visits each of ${
   assert.deepEqual(fs.readFileSync(f.stateFile), before);
   assert.equal((await callTool(f.worker, 'read_input', { token: task.token, name: 'sample' })).isError, false);
   // A successful canary does not erase a failed real read/write observation.
-  await assert.rejects(f.admin('ready'), error => error.details.issues.includes('STORAGE_UNAVAILABLE'));
+  await rejectsRequest(f.admin('ready'), error => error.details.issues.includes('STORAGE_UNAVAILABLE'));
   await f.admin('checked', { id: 'owned' });
   assert.equal((await f.admin('ready')).ok, true);
   const fresh = await f.park(['owned']);
@@ -138,7 +139,7 @@ test('a disconnected wait is removed before a later storage notification', async
   assert.ok((await cancelled.outcome).error); await closed;
   let reads = 0;
   await withStateReads(t, f.stateFile, () => { reads++; throw ioError(); }, async () => {
-    await assert.rejects(f.admin('status'), { code: 'EIO' });
+    await rejectsRequest(f.admin('status'), { code: 'EIO' });
     assert.equal((await remaining.outcome).error?.code, 'EIO');
     assert.equal(reads, 2, 'no fresh observation for the disconnected waiter');
   });

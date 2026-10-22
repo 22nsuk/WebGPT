@@ -1,6 +1,7 @@
 // Actual loopback workers and disposable recovery evidence; no operational runtime.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { rejectsRequest } from './test-fixtures/request-error.mjs';
 import fs from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -76,7 +77,7 @@ for (const kind of ['pending-result', 'unresolved-journal', 'missing-backup']) {
     test(`${resume ? 'resume' : 'ordinary'} ${status} collection preserves ${kind} evidence before ack`, async t => {
       const f = await fixture(t, { status }), candidate = f.evidence(kind), before = fs.readFileSync(f.state);
       const bytes = candidate ? fs.readFileSync(candidate) : null;
-      await assert.rejects(collectTask('owned', f.config, { resume }), recoveryError(kind));
+      await rejectsRequest(collectTask('owned', f.config, { resume }), recoveryError(kind));
       unchanged(f, before, candidate);
       assert.deepEqual(f.actions, refused(resume));
       if (candidate) assert.deepEqual(fs.readFileSync(candidate), bytes);
@@ -89,7 +90,7 @@ for (const kind of ['pending-result', 'unresolved-journal', 'missing-backup']) {
     const f = await fixture(t, { intercept: async ({ req, phase, evidence }) => {
       if (req.url === '/collect' && phase === 'after') candidate = evidence(kind);
     } });
-    await assert.rejects(collectTask('owned', f.config, { resume }), error => {
+    await rejectsRequest(collectTask('owned', f.config, { resume }), error => {
       assert.equal(error.code, 'COLLECTION_UNCONFIRMED');
       assert.equal(error.acknowledgment, 'accepted');
       assert.equal(error.cause.code, 'COLLECTION_RECOVERY_REQUIRED');
@@ -130,7 +131,7 @@ for (const issue of ['unavailable', 'changed-identity', 'aborted']) test(`ordina
     if (issue === 'unavailable') { reply(res, { error: 'fixture unavailable' }, 503); return true; }
   } });
   const before = fs.readFileSync(f.state);
-  await assert.rejects(collectTask('owned', f.config, { signal: controller.signal }), error => {
+  await rejectsRequest(collectTask('owned', f.config, { signal: controller.signal }), error => {
     if (issue === 'aborted') assert.equal(error, reason);
     else if (issue === 'unavailable') assert.equal(error.statusCode, 503);
     else { assert.equal(error.code, 'COLLECTION_UNCONFIRMED'); assert.equal(error.acknowledgment, undefined); }
@@ -161,7 +162,7 @@ for (const resume of [false, true]) test(`${resume ? 'resume' : 'ordinary'} coll
   assert.equal(stored.changes.length, 0); assert.equal(stored.recoveryRequired.length, 1);
   const journal = stored.recoveryRequired[0], journalBytes = fs.readFileSync(journal);
   const backup = JSON.parse(journalBytes).backup, backupBytes = fs.readFileSync(backup);
-  await assert.rejects(collectTask('owned', f.config, { resume }), recoveryError('unresolved-journal'));
+  await rejectsRequest(collectTask('owned', f.config, { resume }), recoveryError('unresolved-journal'));
   unchanged(f, before, journal);
   assert.deepEqual(fs.readFileSync(journal), journalBytes); assert.deepEqual(fs.readFileSync(backup), backupBytes);
   assert.deepEqual(f.actions, refused(resume));

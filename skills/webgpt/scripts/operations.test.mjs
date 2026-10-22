@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import { withStateWriteFailure } from './test-fixtures/state-write-failure.mjs';
 import { untilFixture } from './test-fixtures/worker-process.mjs';
 import assert from 'node:assert/strict';
+import { rejectsRequest } from './test-fixtures/request-error.mjs';
 import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, readdirSync, existsSync, unlinkSync, renameSync } from 'node:fs';
 import { tmpdir, hostname } from 'node:os';
 import { join } from 'node:path';
@@ -178,8 +179,8 @@ for (const tamper of ['delete', 'corrupt']) test(`initialization marker ${tamper
   const before = readFileSync(join(f.dir, 'state.json'));
   const marker = join(f.dir, 'state.initialized');
   if (tamper === 'delete') unlinkSync(marker); else writeFileSync(marker, 'corrupt evidence');
-  await assert.rejects(f.admin('ready'), e => e.details.issues.includes('STATE_INVALID'));
-  await assert.rejects(f.register('b'), { code: 'STATE_INVALID' });
+  await rejectsRequest(f.admin('ready'), e => e.details.issues.includes('STATE_INVALID'));
+  await rejectsRequest(f.register('b'), { code: 'STATE_INVALID' });
   assert.deepEqual(readFileSync(join(f.dir, 'state.json')), before);
   if (tamper === 'corrupt') {
     await f.service.close();
@@ -215,10 +216,10 @@ test('public liveness is not private readiness and never exposes task or key dat
 test('external state corruption leaves liveness up, readiness down, and blocks new mutations without replacing evidence', () => fixture(async f => {
   const a = await f.register('a', 'edit'); const bytes = '{corrupt evidence';
   writeFileSync(join(f.dir, 'state.json'), bytes);
-  await assert.rejects(f.admin('ready'), e => e.statusCode === 503 && e.details.issues.includes('STATE_INVALID'));
+  await rejectsRequest(f.admin('ready'), e => e.statusCode === 503 && e.details.issues.includes('STATE_INVALID'));
   assert.equal((await fetch(`http://127.0.0.1:${f.service.mcpPort}/health`)).status, 200);
   assert.equal((await f.call('write_file', { token: a.token, path: 'no.txt', text: 'no', expectedSha256: null })).isError, true);
-  await assert.rejects(f.register('b'), e => e.code === 'STATE_INVALID' && !e.retryable);
+  await rejectsRequest(f.register('b'), e => e.code === 'STATE_INVALID' && !e.retryable);
   assert.equal(existsSync(join(f.root, 'no.txt')), false);
   assert.equal(readFileSync(join(f.dir, 'state.json'), 'utf8'), bytes);
 }));
@@ -227,10 +228,10 @@ test('storage failure interrupts waits, does not falsely accept completion, and 
   const a = await f.register('a'); mkdirSync(join(f.dir, 'state.json.tmp'));
   assert.equal((await f.complete(a.token)).isError, true);
   assert.equal((await f.call('get_task', { token: a.token })).structuredContent.status, 'running');
-  await assert.rejects(f.admin('ready'), e => e.statusCode === 503 && e.details.issues.includes('STORAGE_UNAVAILABLE'));
+  await rejectsRequest(f.admin('ready'), e => e.statusCode === 503 && e.details.issues.includes('STORAGE_UNAVAILABLE'));
   const waiting = await waitForTasks(['a'], f.config); assert.equal(waiting.interrupted, true);
   rmSync(join(f.dir, 'state.json.tmp'), { recursive: true });
-  await assert.rejects(f.admin('ready'), e => e.statusCode === 503); // A canary alone does not clear a failed real write.
+  await rejectsRequest(f.admin('ready'), e => e.statusCode === 503); // A canary alone does not clear a failed real write.
   assert.equal((await f.complete(a.token)).isError, false);
   assert.equal((await f.admin('ready')).ok, true);
   assert.equal((await collectTask('a', f.config)).integrity, 'verified');
@@ -240,7 +241,7 @@ test('corrupt journal blocks the affected task without replay or stopping unrela
   const a = await f.register('a', 'edit'), b = await f.register('b', 'edit');
   const recovery = join(f.dir, 'recovery', 'a'); mkdirSync(recovery, { recursive: true });
   const path = join(recovery, randomUUID() + '.json'); writeFileSync(path, '{evidence');
-  await assert.rejects(f.admin('ready'), e => e.details.recoveryRequired.includes('a'));
+  await rejectsRequest(f.admin('ready'), e => e.details.recoveryRequired.includes('a'));
   assert.equal((await f.call('write_file', { token: a.token, path: 'no.txt', text: 'no', expectedSha256: null })).isError, true);
   assert.equal((await f.complete(a.token)).isError, true);
   assert.equal((await f.call('write_file', { token: b.token, path: 'yes.txt', text: 'yes', expectedSha256: null })).isError, false);
@@ -274,14 +275,14 @@ test('an applied but unrecorded mutation is restored from its receipt after rest
 
 test('workspace unavailability is diagnosed independently of worker liveness', () => fixture(async f => {
   await f.register('a', 'read'); renameSync(f.root, f.root + '-moved');
-  await assert.rejects(f.admin('ready'), e => e.details.unavailableWorkspaces.includes('a'));
+  await rejectsRequest(f.admin('ready'), e => e.details.unavailableWorkspaces.includes('a'));
   assert.equal((await fetch(`http://127.0.0.1:${f.service.mcpPort}/health`)).status, 200);
 }));
 
 test('shutdown is authenticated, drains an in-flight wait, is idempotent, and preserves running tasks', t => fixture(async f => {
   const a = await f.register('a');
   assert.equal((await fetch(`http://127.0.0.1:${f.service.controlPort}/shutdown`, { method: 'POST', body: '{}' })).status, 401);
-  await assert.rejects(f.admin('shutdown', { extra: true }), /empty object/);
+  await rejectsRequest(f.admin('shutdown', { extra: true }), /empty object/);
   // The GET handler installs its waiter synchronously. Observe its real request
   // after that handler returns, instead of guessing acceptance from elapsed time.
   let accepted;
@@ -455,7 +456,7 @@ test('grants cannot include the running scripts that an unattended restart would
   for (const path of ['.', '..']) {
     const root = fileURLToPath(new URL(path + '/', import.meta.url));
     for (const mode of ['read', 'edit'])
-      await assert.rejects(f.admin('register', { id: 'self-edit', instructions: '', inputs: {}, workspace: { root, mode } }), /workspace overlaps running worker code/);
+      await rejectsRequest(f.admin('register', { id: 'self-edit', instructions: '', inputs: {}, workspace: { root, mode } }), /workspace overlaps running worker code/);
   }
   assert.equal((await f.admin('tasks')).tasks.length, 0);
 }));

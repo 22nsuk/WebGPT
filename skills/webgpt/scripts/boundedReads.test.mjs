@@ -2,6 +2,7 @@
 // Only disposable fixtures are mutated; no timing assumptions or large-memory stress.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { rejectsRequest } from './test-fixtures/request-error.mjs';
 import fs from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -133,7 +134,7 @@ test('collection rejects a growing result without acknowledgment or token retire
   assert.equal((await f.call('submit_result', { status: 'completed', summary: 'done', result: 'original' })).isError, false);
   const before = fs.readFileSync(join(f.dir, 'state.json'));
   const file = join(f.dir, 'owned.result.txt');
-  await growAfterStat(t, file, () => assert.rejects(collectTask('owned', f.config), { code: 'RESULT_INVALID' }));
+  await growAfterStat(t, file, () => rejectsRequest(collectTask('owned', f.config), { code: 'RESULT_INVALID' }));
   assert.deepEqual(fs.readFileSync(join(f.dir, 'state.json')), before);
   assert.equal((await f.call('get_task', {})).isError, false);
   assert.equal((await request('status', undefined, f.config)).events.length, 1);

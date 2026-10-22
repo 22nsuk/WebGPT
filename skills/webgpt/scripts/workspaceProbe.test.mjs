@@ -1,6 +1,7 @@
 // Bound work by observed directory reads, not a machine-dependent time threshold.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { rejectsRequest } from './test-fixtures/request-error.mjs';
 import fs from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -119,7 +120,7 @@ test('readiness uses bounded probes, preserves global diagnostics and never cach
       assert.equal((await request('ready', undefined, config)).ok, true);
       assert.equal(opened, 2); assert.equal(listed, 0);
       denied = true;
-      await assert.rejects(request('ready', undefined, config), error => {
+      await rejectsRequest(request('ready', undefined, config), error => {
         assert.equal(error.statusCode, 503);
         assert.deepEqual(error.details.unavailableWorkspaces, ['read', 'edit']); return true;
       });
@@ -137,7 +138,7 @@ test('readiness uses bounded probes, preserves global diagnostics and never cach
     });
     assert.deepEqual(fs.readFileSync(join(dir, 'state.json')), before);
     fs.writeFileSync(join(dir, 'state.json'), '[]');
-    await assert.rejects(request('ready', undefined, config), error => {
+    await rejectsRequest(request('ready', undefined, config), error => {
       assert.ok(error.details.issues.includes('STATE_INVALID')); return true;
     });
   } finally { await worker.close(); }

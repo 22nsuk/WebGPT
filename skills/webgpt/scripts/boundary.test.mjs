@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { rejectsRequest } from './test-fixtures/request-error.mjs';
 import fs from 'node:fs';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, existsSync, renameSync, symlinkSync, linkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -494,7 +495,7 @@ for (const field of ['instructions', 'name', 'value']) test(`registration reject
     // JSON.stringify escapes these code units, so the transport bytes are valid UTF-8.
     const wire = Buffer.from(JSON.stringify(payload));
     assert.equal(new TextDecoder('utf-8', { fatal: true }).decode(wire), wire.toString());
-    await assert.rejects(f.admin('register', payload), error => {
+    await rejectsRequest(f.admin('register', payload), error => {
       assert.equal(error.statusCode, 400); assert.match(error.message, /well-formed Unicode/); return true;
     });
     assert.equal(existsSync(join(f.dir, 'state.json')), false);
@@ -506,7 +507,7 @@ for (const field of ['instructions', 'name', 'value']) test(`registration reject
   const accepted = await f.admin('register', valid), before = readFileSync(join(f.dir, 'state.json'));
   const retry = await f.admin('register', valid);
   assert.equal(retry.duplicate, true); assert.equal(retry.token, accepted.token);
-  await assert.rejects(f.admin('register', { ...valid, instructions: '\ud800' }), /well-formed Unicode/);
+  await rejectsRequest(f.admin('register', { ...valid, instructions: '\ud800' }), /well-formed Unicode/);
   assert.deepEqual(readFileSync(join(f.dir, 'state.json')), before);
 }));
 
@@ -515,7 +516,7 @@ test('workspace roots reject lossy Unicode before resolving a replacement-charac
   for (const bad of ['\ud800', '\udfff']) {
     const workspace = { root: join(f.base, 'project-' + bad), mode: 'edit' };
     assert.throws(() => grantWorkspace(workspace), /workspace/);
-    await assert.rejects(f.admin('register', { id: 'bad-root', instructions: '', inputs: {}, workspace }), error => {
+    await rejectsRequest(f.admin('register', { id: 'bad-root', instructions: '', inputs: {}, workspace }), error => {
       assert.equal(error.statusCode, 400); return true;
     });
     assert.equal(existsSync(join(f.dir, 'state.json')), false);

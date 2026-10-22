@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { rejectsRequest } from './test-fixtures/request-error.mjs';
 import { createServer } from 'node:http';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -34,7 +35,7 @@ test('ready fixture preserves a storage rejection without repeating the probe', 
   res.writeHead(503);
   res.end(JSON.stringify({ ok: false, issues: ['STORAGE_UNAVAILABLE'], storage: { ok: false, code: 'EPERM' } }));
 }, async (config, calls) => {
-  await assert.rejects(readyFixture(config, options), error => {
+  await rejectsRequest(readyFixture(config, options), error => {
     assert.match(error.message, /STORAGE_UNAVAILABLE/);
     assert.match(error.message, /EPERM/);
     assert.equal(error.cause.statusCode, 503); return true;
@@ -45,21 +46,21 @@ test('ready fixture preserves a storage rejection without repeating the probe', 
 test('ready fixture rejects a negative successful HTTP response', () => controller((_req, res) => {
   res.end(JSON.stringify({ ok: false }));
 }, async (config, calls) => {
-  await assert.rejects(readyFixture(config, options), /controller readiness failed/);
+  await rejectsRequest(readyFixture(config, options), /controller readiness failed/);
   assert.equal(calls(), 1);
 }));
 
 test('ready fixture does not reset the budget after listening consumes the deadline', () => controller((_req, res) => {
   res.end(JSON.stringify({ ok: true }));
 }, async (config, calls) => {
-  await assert.rejects(readyFixture(config, { ...options, timeoutMs: 40,
+  await rejectsRequest(readyFixture(config, { ...options, timeoutMs: 40,
     listening: async () => { await delay(70); return true; },
   }), /fixture deadline/);
   assert.equal(calls(), 0);
 }));
 
 test('ready fixture times out one nonresponsive request without retrying', () => controller(() => {}, async (config, calls) => {
-  await assert.rejects(readyFixture(config, { ...options, timeoutMs: 2000 }), error => {
+  await rejectsRequest(readyFixture(config, { ...options, timeoutMs: 2000 }), error => {
     assert.match(error.message, /controller readiness failed/);
     assert.equal(error.cause.name, 'TimeoutError'); return true;
   });

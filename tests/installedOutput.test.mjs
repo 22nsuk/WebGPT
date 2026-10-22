@@ -70,9 +70,15 @@ await test('unrelated output', () => console.log('tests 2\\nsuites 0\\npass 2\\n
 for (const symbol of ['한', '😀']) {
   test(`installed UTF-8 tails stay within 64 KiB with ${symbol} output`, async t => {
     const root = await fixture(t, `import test from 'node:test';
+import { rejectsRequest } from './scripts/test-fixtures/request-error.mjs';
 await test('early failure', () => { throw Error('early error must survive'); });
+await test('early request assertion', () => rejectsRequest(
+  Promise.reject(new DOMException('early request timeout must survive', 'TimeoutError')), { code: 'EIO', statusCode: 503 }));
 await test('large Unicode output', t => t.diagnostic(${JSON.stringify(symbol)}.repeat(100000)));
 `);
+    await fs.mkdir(join(root, 'scripts/test-fixtures'));
+    await fs.copyFile(new URL('../skills/webgpt/scripts/test-fixtures/request-error.mjs', import.meta.url),
+      join(root, 'scripts/test-fixtures/request-error.mjs'));
     const messages = [];
     await assert.rejects(runner.runInstalledSuite(root, { progress: line => messages.push(line) }), error => {
       assert.match(error.cause.message, /code=1, signal=null/);
@@ -86,7 +92,13 @@ await test('large Unicode output', t => t.diagnostic(${JSON.stringify(symbol)}.r
     assert.ok(stdout.isWellFormed());
     assert.ok(!stdout.includes('\ufffd'), 'clipping must not synthesize replacement characters');
     assert.doesNotMatch(stdout, /early error must survive/, 'large output really displaces the early detail');
-    assert.equal(JSON.parse(stderr).failures[0].message, 'early error must survive');
+    assert.doesNotMatch(stdout, /early request assertion/);
+    const feedback = JSON.parse(stderr);
+    assert.equal(feedback.failures[0].message, 'early error must survive');
+    const request = feedback.failures.find(item => item.name === 'early request assertion');
+    assert.equal(request.code, 'ERR_ASSERTION');
+    assert.deepEqual(request.causes, [{ name: 'TimeoutError', code: '23', message: 'early request timeout must survive' }]);
+    assert.ok(Buffer.byteLength(stderr) <= 32 * 1024);
   });
 }
 

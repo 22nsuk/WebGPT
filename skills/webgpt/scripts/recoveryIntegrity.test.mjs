@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { rejectsRequest } from './test-fixtures/request-error.mjs';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync, rmdirSync, unlinkSync, existsSync, renameSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -95,7 +96,7 @@ for (const restart of [false, true]) test(`a missing committed journal blocks on
   const receipt = (await f.call('write_file', { token, 'path': 'evidence.txt', text: 'v1', expectedSha256: null })).structuredContent;
   unlinkSync(join(f.dir, 'recovery', 'a', receipt.operation + '.json'));
   if (restart) await f.restart();
-  await assert.rejects(f.admin('ready'), error => error.details.issues.includes('RECOVERY_REQUIRED'));
+  await rejectsRequest(f.admin('ready'), error => error.details.issues.includes('RECOVERY_REQUIRED'));
   assert.equal((await f.call('write_file', { token, path: 'evidence.txt', text: 'v2', expectedSha256: receipt.afterSha256 })).isError, true);
   assert.equal(readFileSync(join(f.root, 'evidence.txt'), 'utf8'), 'v1');
   assert.equal((await f.submit(token)).isError, true);
@@ -105,7 +106,7 @@ for (const restart of [false, true]) test(`a missing committed journal blocks on
 
 for (const action of ['wait', 'tasks', 'status']) test(`${action} does not return a healthy stale snapshot after state loss`, () => fixture(async f => {
   await f.register(); writeFileSync(join(f.dir, 'state.json'), '{corrupt evidence');
-  await assert.rejects(f.admin(action, action === 'wait' ? { ids: ['a'] } : undefined), { code: 'STATE_INVALID' });
+  await rejectsRequest(f.admin(action, action === 'wait' ? { ids: ['a'] } : undefined), { code: 'STATE_INVALID' });
   assert.equal(readFileSync(join(f.dir, 'state.json'), 'utf8'), '{corrupt evidence');
   assert.equal((await reconcileTasks(f.config)).health.ok, false);
 }));
@@ -123,7 +124,7 @@ test('an already parked wait verifies state again before sending its timeout res
     renameSync(statePath, original); writeFileSync(statePath, '{corrupt while waiting'); checked = true;
   } });
   try {
-    await assert.rejects(f.admin('wait', { ids: ['a'] }), { code: 'STATE_INVALID' });
+    await rejectsRequest(f.admin('wait', { ids: ['a'] }), { code: 'STATE_INVALID' });
   } finally { trace.restore(); }
   assert.equal(checked, true);
   assert.ok(trace.evidence.opens >= 2, 'the initial observation is followed by a fresh state check');
@@ -201,7 +202,7 @@ test('cancellation preserves an uncommitted result and includes it on reconcilia
 test('pending result readiness and scoped wait require inspection, not automatic restart or unrelated wakeups', () => fixture(async f => {
   const { token } = await f.register(); await f.register('other');
   await leaveUncommittedResult(f, token); await f.restart();
-  await assert.rejects(f.admin('ready'), error => error.details.issues.includes('RESULT_RECOVERY_REQUIRED')
+  await rejectsRequest(f.admin('ready'), error => error.details.issues.includes('RESULT_RECOVERY_REQUIRED')
     && error.details.pendingResultTasks.join() === 'a' && error.details.automaticRestartRecommended === false);
   const { waitForTasks } = await import('./client.mjs');
   const notice = await waitForTasks(['a'], f.config, { signal: AbortSignal.timeout(1000) });
@@ -239,7 +240,7 @@ for (const value of ['invalid', [{ id: 'outside-scope' }]]) test(`new result rec
   const server = createServer((req, res) => { calls++; res.end(JSON.stringify({ events: [], backupDue: [], settled: false, resultRecoveryRequired: value })); });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   try {
-    await assert.rejects(waitForTasks(['a'], { dataDir: dir, controlPort: server.address().port }, { signal: AbortSignal.timeout(1000) }),
+    await rejectsRequest(waitForTasks(['a'], { dataDir: dir, controlPort: server.address().port }, { signal: AbortSignal.timeout(1000) }),
       /does not support task-scoped waits|outside the requested task scope/);
     assert.equal(calls, 1);
   } finally { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); rmSync(dir, { recursive: true, force: true }); }

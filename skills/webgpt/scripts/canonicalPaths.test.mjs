@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { rejectsRequest } from './test-fixtures/request-error.mjs';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -47,7 +48,7 @@ test('Windows project/runtime overlap is rejected regardless of which path uses 
     const service = await start({ dir, port: 0, controlPort: 0 });
     const config = { dataDir: dir, controlPort: service.controlPort };
     try {
-      await assert.rejects(request('register', { id: 'overlap', instructions: 'Fixture only.', inputs: {}, workspace: { root: workspaceRoot, mode: 'read' } }, config), /private worker data/);
+      await rejectsRequest(request('register', { id: 'overlap', instructions: 'Fixture only.', inputs: {}, workspace: { root: workspaceRoot, mode: 'read' } }, config), /private worker data/);
       assert.equal((await request('tasks', undefined, config)).running, 0);
     } finally { await service.close(); }
   }
@@ -62,7 +63,7 @@ test('Windows active and future config paths cannot hide behind native short ali
     try {
       for (const workspaceRoot of [root, alias]) {
         for (const mode of ['read', 'edit']) {
-          await assert.rejects(request('register', {
+          await rejectsRequest(request('register', {
             id: 'config-overlap', instructions: '', inputs: {}, workspace: { root: workspaceRoot, mode },
           }, config), /workspace overlaps worker configuration/);
         }

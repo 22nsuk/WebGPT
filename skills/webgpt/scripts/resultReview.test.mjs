@@ -1,6 +1,7 @@
 // Read-only parent UX: real client, loopback HTTP and owned files. No browser proof.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { rejectsRequest } from './test-fixtures/request-error.mjs';
 import fs from 'node:fs';
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
@@ -92,11 +93,11 @@ test('export reads source once and refuses window combinations before controller
   const f = await fixture(t), destination = join(f.dir, 'export');
   for (const options of [{ saveResult: 'relative' }, { saveResult: null },
     { saveResult: destination, offset: 1 }, { saveResult: destination, maxChars: 8000 }, { saveResult: destination, limit: 1 }])
-    await assert.rejects(reviewTask('owned', f.config, options), { code: 'REVIEW_USAGE' });
+    await rejectsRequest(reviewTask('owned', f.config, options), { code: 'REVIEW_USAGE' });
   assert.equal(f.calls.length, 0);
   const reads = await observeResultReads(t, f, () => reviewTask('owned', f.config, { saveResult: destination }));
   assert.equal(reads.opens, 1); assert.equal(reads.bytes, Buffer.byteLength(text));
-  await assert.rejects(reviewTask('owned', f.config, { saveResult: destination }), error => {
+  await rejectsRequest(reviewTask('owned', f.config, { saveResult: destination }), error => {
     assert.equal(error.code, 'REVIEW_EXPORT'); assert.equal(error.cause, undefined);
     for (const diagnostic of [error.message, JSON.stringify(error), inspect(error)]) {
       assert.ok(!diagnostic.includes(destination)); assert.ok(!diagnostic.includes('mkdir'));
@@ -111,11 +112,11 @@ test('export reads source once and refuses window combinations before controller
 
 test('export creates nothing on SHA mismatch, source damage or recovery notice', async t => {
   const f = await fixture(t), destination = join(f.dir, 'export');
-  await assert.rejects(reviewTask('owned', f.config, { saveResult: destination, expectedSha256: '0'.repeat(64) }),
+  await rejectsRequest(reviewTask('owned', f.config, { saveResult: destination, expectedSha256: '0'.repeat(64) }),
     { code: 'REVIEW_REVISION_CONFLICT' });
   assert.equal(fs.existsSync(destination), false);
   fs.writeFileSync(f.artifact, 'damaged');
-  await assert.rejects(reviewTask('owned', f.config, { saveResult: destination }), { code: 'RESULT_INVALID' });
+  await rejectsRequest(reviewTask('owned', f.config, { saveResult: destination }), { code: 'RESULT_INVALID' });
   assert.equal(fs.existsSync(destination), false);
   f.reconcile(value => { value.tasks[0].pendingResults = ['inspect']; return value; });
   assert.equal((await reviewTask('owned', f.config, { saveResult: destination })).review, null);
@@ -188,13 +189,13 @@ test('review rejects symlink results before following the target', async t => {
   const f = await fixture(t); fs.unlinkSync(f.artifact);
   try { fs.symlinkSync(join(f.dir, 'controller.key'), f.artifact); }
   catch (error) { if (process.platform === 'win32' && error.code === 'EPERM') { t.skip('file symlinks require Windows privilege'); return; } throw error; }
-  await assert.rejects(reviewTask('owned', f.config), { code: 'RESULT_INVALID' });
+  await rejectsRequest(reviewTask('owned', f.config), { code: 'RESULT_INVALID' });
   assert.equal(fs.readFileSync(join(f.dir, 'controller.key'), 'utf8'), 'fixture-only-key');
 });
 
 test('review rejects invalid UTF-8 even with a matching SHA and supports the exact size limit', async t => {
   const f = await fixture(t, { content: Buffer.from([0xff]) });
-  await assert.rejects(reviewTask('owned', f.config), { code: 'RESULT_INVALID' });
+  await rejectsRequest(reviewTask('owned', f.config), { code: 'RESULT_INVALID' });
   const large = '\u0000'.repeat(1024 * 1024); fs.writeFileSync(f.artifact, large); f.event.sha256 = digest(large);
   const value = await reviewTask('owned', f.config);
   assert.equal(value.review.content, large); assert.equal(value.review.sha256, digest(large));
@@ -213,7 +214,7 @@ test('review display uses the bytes it verified rather than reopening after veri
   syncBuiltinESMExports();
   try { assert.equal(readVerifiedResult(f.event, f.dir), text); }
   finally { for (const mock of mocks) mock.mock.restore(); syncBuiltinESMExports(); }
-  await assert.rejects(reviewTask('owned', f.config), { code: 'RESULT_INVALID' }, 'later review must reverify, not cache');
+  await rejectsRequest(reviewTask('owned', f.config), { code: 'RESULT_INVALID' }, 'later review must reverify, not cache');
 });
 
 test('review bounds growth after stat and closes the failed read', async t => {
@@ -223,7 +224,7 @@ test('review bounds growth after stat and closes the failed read', async t => {
   const observed = observeFileRead(t, f.artifact, {
     afterStat: () => fs.writeFileSync(f.artifact, grown),
   });
-  try { await assert.rejects(reviewTask('owned', f.config), { code: 'RESULT_INVALID' }); }
+  try { await rejectsRequest(reviewTask('owned', f.config), { code: 'RESULT_INVALID' }); }
   finally { observed.restore(); }
   assert.equal(observed.evidence.opens, 1); assert.equal(observed.evidence.closes, 1);
   assert.equal(observed.evidence.bytes, 1024 * 1024 + 1);
@@ -235,11 +236,11 @@ test('review bounds growth after stat and closes the failed read', async t => {
 test('review propagates explicit cancellation without another request or a task mutation', async t => {
   const f = await fixture(t), controller = new AbortController(), reason = Error('owned cancellation');
   controller.abort(reason);
-  await assert.rejects(reviewTask('owned', f.config, { signal: controller.signal }), error => error === reason);
+  await rejectsRequest(reviewTask('owned', f.config, { signal: controller.signal }), error => error === reason);
   assert.equal(f.calls.length, 0);
   const during = new AbortController();
   f.respond((_req, res) => { during.abort(reason); res.end(JSON.stringify({ ...empty(), events: [f.event] })); });
-  await assert.rejects(reviewTask('owned', f.config, { signal: during.signal }), error => error === reason);
+  await rejectsRequest(reviewTask('owned', f.config, { signal: during.signal }), error => error === reason);
   assert.equal(f.calls.length, 1);
 });
 
@@ -304,8 +305,8 @@ for (const problem of ['none', 'pending-result', 'journal', 'changed-result']) t
   assert.equal((await callTool(worker, 'get_task', { token }))?.isError, false);
   if (problem === 'changed-result') {
     fs.writeFileSync(join(dir, 'owned.result.txt'), 'changed after parent review');
-    await assert.rejects(reviewTask('owned', config, { limit: 1 }), { code: 'RESULT_INVALID' });
-    await assert.rejects(collectTask('owned', config), { code: 'RESULT_INVALID' });
+    await rejectsRequest(reviewTask('owned', config, { limit: 1 }), { code: 'RESULT_INVALID' });
+    await rejectsRequest(collectTask('owned', config), { code: 'RESULT_INVALID' });
     assert.deepEqual(fs.readFileSync(join(dir, 'state.json')), state);
   } else if (problem !== 'none') {
     if (problem === 'pending-result') fs.writeFileSync(join(dir, 'owned.result.txt.tmp'), 'candidate evidence');
@@ -316,7 +317,7 @@ for (const problem of ['none', 'pending-result', 'journal', 'changed-result']) t
     assert.equal(review.review, null);
     assert.equal(review.attention, problem === 'journal' ? 'inspect_recovery' : 'inspect_uncommitted_result');
     assert.deepEqual(await reviewTask('owned', config, { limit: 1 }), review);
-    await assert.rejects(collectTask('owned', config), { code: 'COLLECTION_RECOVERY_REQUIRED' });
+    await rejectsRequest(collectTask('owned', config), { code: 'COLLECTION_RECOVERY_REQUIRED' });
     assert.deepEqual(fs.readFileSync(join(dir, 'state.json')), state);
   } else {
     assert.equal((await collectTask('owned', config)).collected, true);
@@ -417,12 +418,12 @@ test('review windows validate options before I/O and never silently widen an imp
   const f = await fixture(t, { content: '1234\n5678\nlast' });
   for (const options of [{ offset: 0 }, { offset: Number.MAX_SAFE_INTEGER + 1 }, { limit: 5001 }, { limit: '1' },
     { maxChars: 0 }, { maxChars: 200001 }, { maxChars: 1.5 }, { expectedSha256: null }, { expectedSha256: 'private-invalid-pin' }])
-    await assert.rejects(reviewTask('owned', f.config, options), { code: 'REVIEW_USAGE' });
+    await rejectsRequest(reviewTask('owned', f.config, options), { code: 'REVIEW_USAGE' });
   assert.equal(f.calls.length, 0);
   const page = (await reviewTask('owned', f.config, { maxChars: 5 })).review;
   assert.equal(page.content, '1234\n'); assert.equal(page.nextOffset, 2);
   for (const options of [{ maxChars: 4 }, { offset: 4 }])
-    await assert.rejects(reviewTask('owned', f.config, options), { code: 'REVIEW_RANGE' });
+    await rejectsRequest(reviewTask('owned', f.config, options), { code: 'REVIEW_RANGE' });
   assert.equal((await reviewTask('owned', f.config)).review.content, '1234\n5678\nlast');
   const many = 'a\n'.repeat(450); fs.writeFileSync(f.artifact, many); f.event.sha256 = digest(many);
   const defaults = (await reviewTask('owned', f.config, { offset: 1 })).review;
@@ -437,7 +438,7 @@ test('review long-line errors guide export paging while other ranges retain thei
     [{ offset: 2 }, ['--offset', '2'], false],
   ]) {
     let message;
-    await assert.rejects(reviewTask('owned', f.config, options), error => {
+    await rejectsRequest(reviewTask('owned', f.config, options), error => {
       assert.equal(error.code, 'REVIEW_RANGE'); message = error.message;
       if (longLine) {
         assert.equal(error.cause?.code, 'READ_LINE_TOO_LONG');
@@ -487,14 +488,14 @@ test('review windows pin the whole revision and reject corruption outside the vi
   const first = (await reviewTask('owned', f.config, { limit: 1 })).review;
   assert.equal(first.content, 'same first line\n');
   const changed = 'same first line\nnew tail\n'; fs.writeFileSync(f.artifact, changed); f.event.sha256 = digest(changed);
-  const reads = await observeResultReads(t, f, () => assert.rejects(
+  const reads = await observeResultReads(t, f, () => rejectsRequest(
     reviewTask('owned', f.config, { limit: 1, expectedSha256: pin }), { code: 'REVIEW_REVISION_CONFLICT' }));
   assert.equal(reads.opens, 0);
   f.event.sha256 = pin;
-  await assert.rejects(reviewTask('owned', f.config, { limit: 1 }), { code: 'RESULT_INVALID' });
+  await rejectsRequest(reviewTask('owned', f.config, { limit: 1 }), { code: 'RESULT_INVALID' });
   const invalid = Buffer.concat([Buffer.from('same first line\n'), Buffer.from([0xff])]);
   fs.writeFileSync(f.artifact, invalid); f.event.sha256 = digest(invalid);
-  await assert.rejects(reviewTask('owned', f.config, { limit: 1 }), { code: 'RESULT_INVALID' });
+  await rejectsRequest(reviewTask('owned', f.config, { limit: 1 }), { code: 'RESULT_INVALID' });
   assert.equal(fs.readFileSync(join(f.dir, 'state.json'), 'utf8'), 'owned-evidence');
 });
 
@@ -541,9 +542,9 @@ test('review windows retain recovery, current-state and abort gates before any r
       assert.equal(result.attention, field === 'pendingResults' ? 'inspect_uncommitted_result' : 'inspect_recovery');
     }
     f.reconcile(value => { value.health.stateVerified = false; return value; });
-    await assert.rejects(reviewTask('owned', f.config, options), { code: 'REVIEW_UNCONFIRMED' });
+    await rejectsRequest(reviewTask('owned', f.config, options), { code: 'REVIEW_UNCONFIRMED' });
     const before = f.calls.length, controller = new AbortController(), reason = Error('owned stop'); controller.abort(reason);
-    await assert.rejects(reviewTask('owned', f.config, { ...options, signal: controller.signal }), error => error === reason);
+    await rejectsRequest(reviewTask('owned', f.config, { ...options, signal: controller.signal }), error => error === reason);
     assert.equal(f.calls.length, before);
     f.respond((_req, res) => res.end(JSON.stringify({ ...empty(), resultRecoveryRequired: [{ id: 'owned' }] })));
     assert.equal((await reviewTask('owned', f.config, options)).review, null);
@@ -556,7 +557,7 @@ test('review API rejects unknown option names before any controller or result ac
   const reads = await observeResultReads(t, f, async () => {
     for (const options of [{ maxchars: 6 }, { 'max-chars': 6 }, { expectedSHA256: '0'.repeat(64) },
       { limit: 1, maxBytes: 6 }, { limit: 1, unexpected: undefined }, { timeoutMs: 1 }])
-      await assert.rejects(reviewTask('owned', f.config, options), { code: 'REVIEW_USAGE' });
+      await rejectsRequest(reviewTask('owned', f.config, options), { code: 'REVIEW_USAGE' });
   });
   assert.deepEqual(reads, { opens: 0, bytes: 0 }); assert.equal(f.calls.length, 0);
   const options = Object.freeze({ offset: 2, limit: 1, maxChars: 7, expectedSha256: f.event.sha256,
@@ -576,7 +577,7 @@ test('review API retains the initially validated pin and bounds while caller opt
       // Reuse by the caller must not rewrite this invocation after it starts waiting.
       if (later === undefined) delete options.expectedSha256; else options.expectedSha256 = later;
       options.limit = 2; options.maxChars = 20;
-      if (conflict) await assert.rejects(pending, { code: 'REVIEW_REVISION_CONFLICT' });
+      if (conflict) await rejectsRequest(pending, { code: 'REVIEW_REVISION_CONFLICT' });
       else {
         const result = await pending;
         assert.equal(result.review.content, 'first\n'); assert.equal(result.review.nextOffset, 2);
@@ -598,7 +599,7 @@ test('review API retains its original live abort signal through reconciliation',
     const reads = await observeResultReads(t, f, async () => {
       const pending = reviewTask('owned', f.config, options);
       if (replace) options.signal = new AbortController().signal; else delete options.signal;
-      await assert.rejects(pending, error => error === reason);
+      await rejectsRequest(pending, error => error === reason);
     });
     assert.deepEqual(reads, { opens: 0, bytes: 0 });
   }
@@ -622,7 +623,7 @@ for (const entry of ['wait', 'review']) {
     const reads = await observeResultReads(t, f, async () => {
       for (const retryDelays of [Array(1), [0, , 0], [undefined], [null], [-1], [10001], [0.5],
         [NaN], [Infinity], ['0'], [0, 0, 0, 0], null, '0', new Uint8Array([0])])
-        await assert.rejects(run(f, { retryDelays }), /invalid bounded wait retry policy/);
+        await rejectsRequest(run(f, { retryDelays }), /invalid bounded wait retry policy/);
     });
     assert.deepEqual(reads, { opens: 0, bytes: 0 }); assert.equal(f.calls.length, 0);
   });
@@ -636,7 +637,7 @@ for (const entry of ['wait', 'review']) {
         if (f.calls.length % 2) { retryDelays.push(0); req.socket.destroy(); }
         else res.end(JSON.stringify(empty()));
       });
-      const reads = await observeResultReads(t, f, () => assert.rejects(run(f, { retryDelays }), retryableControllerError));
+      const reads = await observeResultReads(t, f, () => rejectsRequest(run(f, { retryDelays }), retryableControllerError));
       assert.equal(f.calls.length, 2 * budget + 1);
       assert.ok(f.calls.every(call => call.method === 'GET' && call.path === '/wait?id=owned'));
       assert.deepEqual(reads, { opens: 0, bytes: 0 });
@@ -686,7 +687,7 @@ for (const entry of ['wait', 'review']) {
         assert.equal(f.calls.length, expected.length + (entry === 'review' ? 2 : 1));
         const before = f.calls.length; observed.length = 0;
         f.respond((_req, res) => { res.writeHead(401); res.end('{}'); });
-        await assert.rejects(run(f, { retryDelays: policy }), { statusCode: 401 });
+        await rejectsRequest(run(f, { retryDelays: policy }), { statusCode: 401 });
         assert.equal(f.calls.length, before + 1); assert.deepEqual(observed, []);
       }
     } finally { mock.mock.restore(); syncBuiltinESMExports(); }
@@ -735,7 +736,7 @@ for (const entry of ['wait', 'review']) {
       for (const signal of [undefined, new AbortController().signal]) {
         const f = await fixture(t); f.respond(req => req.socket.destroy());
         const reads = await observeResultReads(t, f, () =>
-          assert.rejects(run(f, { signal, retryDelays: [0, 0, 0] }), error => error === failure));
+          rejectsRequest(run(f, { signal, retryDelays: [0, 0, 0] }), error => error === failure));
         assert.deepEqual(reads, { opens: 0, bytes: 0 });
         assert.deepEqual(f.calls, [{ method: 'GET', path: '/wait?id=owned' }]);
         assert.equal(fs.readFileSync(join(f.dir, 'state.json'), 'utf8'), 'owned-evidence');

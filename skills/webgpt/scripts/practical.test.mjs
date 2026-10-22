@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import { withStateWriteFailure } from './test-fixtures/state-write-failure.mjs';
 import assert from 'node:assert/strict';
+import { rejectsRequest } from './test-fixtures/request-error.mjs';
 import fs, { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, existsSync, rmdirSync } from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
@@ -187,7 +188,7 @@ test('an applied file change with unsaved task state blocks later edits until re
 
 test('private runtime data cannot be granted through an enclosing project root', () => fixture(async f => {
   for (const root of [f.dir, f.base]) for (const mode of ['read', 'edit']) {
-    await assert.rejects(f.register('unsafe', { workspace: { root, mode } }), /private worker data/);
+    await rejectsRequest(f.register('unsafe', { workspace: { root, mode } }), /private worker data/);
   }
   const safe = await f.register('safe', { workspace: { root: f.root, mode: 'read' } });
   assert.equal((await f.call('list_files', { token: safe.token, path: '.' })).isError, false);
@@ -199,7 +200,7 @@ test('private runtime descendants cannot be registered as read or edit workspace
   const backup = join(backupRoot, 'private.before.txt');
   writeFileSync(backup, 'private recovery fixture');
   for (const root of [recovery, backupRoot]) for (const mode of ['read', 'edit'])
-    await assert.rejects(f.register('unsafe-child', { workspace: { root, mode } }), /private worker data/);
+    await rejectsRequest(f.register('unsafe-child', { workspace: { root, mode } }), /private worker data/);
   assert.equal(readFileSync(backup, 'utf8'), 'private recovery fixture');
   assert.deepEqual(await f.admin('tasks'), { running: 0, uncollected: 0, tasks: [] });
   const sibling = join(f.base, 'runtime-copy'); mkdirSync(sibling);
@@ -251,12 +252,12 @@ test('identical running registrations retry safely without widening scope or res
   const second = await f.admin('register', { ...payload, inputs: { b: 'two', a: 'one' } });
   assert.equal(second.token, first.token); assert.equal(second.duplicate, true);
   assert.equal(JSON.parse(readFileSync(statePath, 'utf8'))[0].nextCheck, before);
-  await assert.rejects(f.admin('register', { ...payload, instructions: 'Different task' }), /task ID already exists/);
-  await assert.rejects(f.admin('register', { ...payload, workspace: { root: f.root, mode: 'edit' } }), /task ID already exists/);
+  await rejectsRequest(f.admin('register', { ...payload, instructions: 'Different task' }), /task ID already exists/);
+  await rejectsRequest(f.admin('register', { ...payload, workspace: { root: f.root, mode: 'edit' } }), /task ID already exists/);
   await f.restart();
   assert.equal((await f.admin('register', payload)).token, first.token);
   await f.complete(first.token);
-  await assert.rejects(f.admin('register', payload), /task ID already exists/);
+  await rejectsRequest(f.admin('register', payload), /task ID already exists/);
 }));
 
 test('task inventory distinguishes running work from an idle event queue without leaking credentials', () => fixture(async f => {
@@ -293,17 +294,17 @@ test('task IDs take precedence over same-named files; explicit --file retains JS
 }));
 
 test('non-string task IDs are rejected before creating state or results', () => fixture(async f => {
-  for (const id of [123, true, ['task']]) await assert.rejects(f.register(id), /invalid task/);
+  for (const id of [123, true, ['task']]) await rejectsRequest(f.register(id), /invalid task/);
   assert.equal(existsSync(join(f.dir, 'state.json')), false);
 }));
 
 test('portable registration prevents case-alias collisions and Windows device-name artifacts', () => fixture(async f => {
   for (const id of ['CON', 'prn', 'Aux', 'NUL', 'COM1', 'com9', 'Lpt1', 'LPT9'])
-    await assert.rejects(f.register(id), /reserved Windows filename/);
+    await rejectsRequest(f.register(id), /reserved Windows filename/);
   const { token } = await f.register('Review');
-  await assert.rejects(f.register('review'), /case-insensitive/);
+  await rejectsRequest(f.register('review'), /case-insensitive/);
   await f.complete(token); await collectTask('Review', f.config);
-  await assert.rejects(f.register('REVIEW'), /case-insensitive/);
+  await rejectsRequest(f.register('REVIEW'), /case-insensitive/);
   assert.equal(readFileSync(join(f.dir, 'Review.result.txt'), 'utf8'), 'Saved evidence 한국어');
   assert.ok((await f.register('review-2')).token);
 }));
@@ -505,7 +506,7 @@ test('native root alias cannot register a replacement-character sibling as the s
     assert.equal(Buffer.from(fs.realpathSync.native(alias)).equals(fs.realpathSync.native(alias, { encoding: 'buffer' })), false);
     for (const mode of ['read', 'edit']) {
       assert.throws(() => grantWorkspace({ root: alias, mode }), /workspace path must be UTF-8/);
-      await assert.rejects(f.register('rejected-' + mode, { workspace: { root: alias, mode } }), error => {
+      await rejectsRequest(f.register('rejected-' + mode, { workspace: { root: alias, mode } }), error => {
         assert.equal(error.statusCode, 400); assert.match(error.message, /workspace path must be UTF-8/);
         assert.ok(!error.message.includes(f.base)); return true;
       });

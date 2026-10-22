@@ -1,6 +1,7 @@
 // Exercise a disposable installation, never the active checkout or a real service.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { rejectsRequest } from './test-fixtures/request-error.mjs';
 import fs from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -90,7 +91,7 @@ for (const [name, location, expectedError] of [
     }
     await f.boot();
     for (const project of projects) {
-      await assert.rejects(f.register('linked-file', project, mode), expectedError);
+      await rejectsRequest(f.register('linked-file', project, mode), expectedError);
       assert.equal(fs.readFileSync(join(project, name), 'utf8'), f.original);
     }
     assert.equal(fs.existsSync(join(f.dir, 'state.json')), false);
@@ -132,8 +133,8 @@ for (const [name, location, expectedError] of [
       const result = await f.call(tool, { token, ...extra });
       assert.equal(result.isError, true); assert.match(result.content[0].text, expectedError);
     }
-    await assert.rejects(f.register('linked-file', project), expectedError);
-    await assert.rejects(f.admin('ready'), error => error.details.unavailableWorkspaces.includes('linked-file'));
+    await rejectsRequest(f.register('linked-file', project), expectedError);
+    await rejectsRequest(f.admin('ready'), error => error.details.unavailableWorkspaces.includes('linked-file'));
     assert.equal(fs.readFileSync(installedFile, 'utf8'), f.original);
     assert.equal(fs.existsSync(join(project, 'new.txt')), false);
     assert.deepEqual(fs.readFileSync(join(f.dir, 'state.json')), state);
@@ -154,7 +155,7 @@ for (const mode of ['read', 'edit']) for (const location of ['deployment', 'wind
   test(`registration rejects ${mode} access to the installed ${location} directory`, async t => {
     const f = await fixture(t); await f.boot();
     const root = location === 'nested' ? join(f.windows, 'nested') : f[location];
-    await assert.rejects(f.register('self', root, mode), denied);
+    await rejectsRequest(f.register('self', root, mode), denied);
     assert.equal(fs.existsSync(join(f.dir, 'state.json')), false);
     assert.equal(fs.existsSync(join(f.dir, 'recovery')), false);
     assert.equal(fs.readFileSync(join(f.windows, 'run-worker-task.ps1'), 'utf8'), f.original);
@@ -180,8 +181,8 @@ for (const mode of ['read', 'edit']) {
       const result = await f.call(name, { token, ...extra });
       assert.equal(result.isError, true); assert.match(result.content[0].text, denied);
     }
-    await assert.rejects(f.register('legacy', f.windows, mode), denied);
-    await assert.rejects(f.admin('ready'), error => error.details.unavailableWorkspaces.includes('legacy'));
+    await rejectsRequest(f.register('legacy', f.windows, mode), denied);
+    await rejectsRequest(f.admin('ready'), error => error.details.unavailableWorkspaces.includes('legacy'));
     assert.equal((await f.admin('reconcile')).tasks[0].collected, false);
     assert.equal(fs.readFileSync(join(f.windows, 'run-worker-task.ps1'), 'utf8'), f.original);
     assert.equal(fs.existsSync(join(f.windows, 'new.txt')), false);
@@ -202,7 +203,7 @@ for (const mode of ['read', 'edit']) {
     const f = await fixture(t), link = join(f.base, 'deployment-alias');
     if (!alias(t, f.deployment, link)) return;
     await f.boot();
-    await assert.rejects(f.register('alias', join(link, 'windows'), mode), denied);
+    await rejectsRequest(f.register('alias', join(link, 'windows'), mode), denied);
     assert.equal(fs.existsSync(join(f.dir, 'state.json')), false);
   });
 
@@ -213,7 +214,7 @@ for (const mode of ['read', 'edit']) {
     if (!alias(t, root, f.deployment)) return;
     await f.boot();
     for (const grant of [project, root, join(root, 'windows')])
-      await assert.rejects(f.register('alias-target', grant, mode), denied);
+      await rejectsRequest(f.register('alias-target', grant, mode), denied);
     assert.equal(fs.existsSync(join(f.dir, 'state.json')), false);
   });
 }
@@ -224,7 +225,7 @@ for (const mode of ['read', 'edit']) test(`a linked Windows launcher directory p
   fs.writeFileSync(join(root, 'run-worker-task.ps1'), f.original);
   if (!alias(t, root, f.windows)) return;
   await f.boot();
-  await assert.rejects(f.register('windows-alias', root, mode), denied);
+  await rejectsRequest(f.register('windows-alias', root, mode), denied);
   assert.equal(fs.readFileSync(join(root, 'run-worker-task.ps1'), 'utf8'), f.original);
   assert.equal(fs.existsSync(join(f.dir, 'state.json')), false);
 });
@@ -278,9 +279,9 @@ for (const mode of ['read', 'edit']) {
     fs.mkdirSync(nativeDeploy);
     await f.boot();
     for (const root of [f.installed, f.scripts, f.nativeScripts])
-      await assert.rejects(f.register('code', root, mode), /workspace overlaps running worker code/);
+      await rejectsRequest(f.register('code', root, mode), /workspace overlaps running worker code/);
     for (const root of [f.deployment, f.windows, join(f.windows, 'nested'), nativeDeploy])
-      await assert.rejects(f.register('deployment', root, mode), denied);
+      await rejectsRequest(f.register('deployment', root, mode), denied);
     const independent = join(f.base, 'independent'); fs.mkdirSync(independent);
     await f.register('independent', independent, mode);
     assert.equal((await f.admin('ready')).ok, true);
@@ -300,7 +301,7 @@ for (const mode of ['read', 'edit']) {
       const result = await f.call(name, { token, ...extra });
       assert.equal(result.isError, true); assert.match(result.content[0].text, denied);
     }
-    await assert.rejects(f.admin('ready'), error => error.details.unavailableWorkspaces.includes('legacy'));
+    await rejectsRequest(f.admin('ready'), error => error.details.unavailableWorkspaces.includes('legacy'));
     assert.equal(fs.readFileSync(join(f.windows, 'run-worker-task.ps1'), 'utf8'), f.original);
     assert.equal(fs.existsSync(join(f.windows, 'new.txt')), false);
     await f.admin('cancel', { id: 'legacy' });
@@ -339,7 +340,7 @@ test('an entrypoint file alias also protects its logical scripts directory', asy
   const worker = await f.start({ dir: f.dir, configFile: f.configFile, port: 0, controlPort: 0, entryPath });
   try {
     f.config.controlPort = worker.controlPort;
-    await assert.rejects(f.register('alias-directory', scripts), /workspace overlaps running worker code/);
+    await rejectsRequest(f.register('alias-directory', scripts), /workspace overlaps running worker code/);
   } finally { await worker.close(); }
 });
 
@@ -359,7 +360,7 @@ for (const entry of ['worker', 'service']) test(`${entry} CLI retains scripts-ju
       stopped: () => observed.child.exitCode !== null || observed.child.signalCode !== null,
     });
     f.config.controlPort = observed.listening.controlPort;
-    await assert.rejects(f.register('deployment', f.windows), denied);
+    await rejectsRequest(f.register('deployment', f.windows), denied);
     const project = join(f.base, 'separate-project'); fs.mkdirSync(project);
     await f.register('independent', project);
     assert.equal((await f.admin('ready')).ok, true);

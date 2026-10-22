@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { rejectsRequest } from './test-fixtures/request-error.mjs';
 import fs from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -118,7 +119,7 @@ for (const values of [[0n, BigInt(Number.MAX_SAFE_INTEGER)], [BigInt(Number.MAX_
     assert.deepEqual(state(f)[0].workspace, workspace);
     current.inode++;
     assert.throws(() => readWorkspace(workspace, 'note.txt'), /workspace root changed/);
-    await assert.rejects(f.admin('register', f.spec), /task ID already exists/);
+    await rejectsRequest(f.admin('register', f.spec), /task ID already exists/);
     assert.deepEqual(state(f)[0].workspace, workspace);
   });
 }
@@ -136,7 +137,7 @@ for (const field of ['device', 'inode']) test(`imprecise retained ${field} block
   assert.equal(snapshot.health.stateVerified, true);
   assert.deepEqual(snapshot.health.unavailableWorkspaces, ['owned']);
   assert.deepEqual(snapshot.tasks[0].workspace, workspace);
-  await assert.rejects(f.admin('ready'), error => error.statusCode === 503 && error.details.issues.includes('WORKSPACE_UNAVAILABLE'));
+  await rejectsRequest(f.admin('ready'), error => error.statusCode === 503 && error.details.issues.includes('WORKSPACE_UNAVAILABLE'));
   const assigned = await tool(f, saved.token, 'get_task');
   assert.equal(assigned.isError, false); assert.deepEqual(assigned.structuredContent.workspace, workspace);
   const input = await tool(f, saved.token, 'read_input', { name: 'sample' });
@@ -151,7 +152,7 @@ for (const field of ['device', 'inode']) test(`imprecise retained ${field} block
     const response = await tool(f, saved.token, name, args);
     assert.equal(response.isError, true); assert.match(response.content[0].text, /workspace identity is imprecise/);
   }
-  await assert.rejects(f.admin('register', f.spec), /workspace identity is imprecise/);
+  await rejectsRequest(f.admin('register', f.spec), /workspace identity is imprecise/);
   assert.deepEqual(fs.readFileSync(join(f.dir, 'state.json')), before);
   assert.deepEqual(fs.readFileSync(journal), evidence);
   assert.deepEqual(fs.readdirSync(join(f.dir, 'recovery', 'owned')), [receipt.operation + '.json']);

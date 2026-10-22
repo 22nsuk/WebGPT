@@ -1,6 +1,7 @@
 // Owned loopback fixtures only. The guarded command is not an OS transaction.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { rejectsRequest } from './test-fixtures/request-error.mjs';
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
@@ -73,7 +74,7 @@ for (const kind of ['pending-result', 'journal', 'unrecorded-applied', 'result-c
     const f = await fixture(t, { intercept: async f => {
       if (f.phase === 'before' && isCommit(f.req)) inject(f, kind);
     } }), before = fs.readFileSync(f.stateFile);
-    await assert.rejects(collectTask('owned', f.config, { resume }), error => {
+    await rejectsRequest(collectTask('owned', f.config, { resume }), error => {
       assert.equal(error.statusCode, 409);
       assert.equal(error.code, kind.startsWith('result-') ? 'COLLECTION_UNCONFIRMED' : 'COLLECTION_RECOVERY_REQUIRED');
       assert.equal(error.acknowledgment, undefined); return true;
@@ -177,7 +178,7 @@ test('an unsupported worker causes no automatic downgrade to unchecked ack', asy
   const f = await fixture(t, { intercept: async ({ req, res, phase }) => {
     if (phase === 'before' && req.url === '/collect') { json(res, {}, 404); return true; }
   } }), before = fs.readFileSync(f.stateFile);
-  await assert.rejects(collectTask('owned', f.config), { code: 'COLLECTION_UNSUPPORTED' });
+  await rejectsRequest(collectTask('owned', f.config), { code: 'COLLECTION_UNSUPPORTED' });
   assert.deepEqual(f.actions, ['/wait?id=owned', '/collect']);
   assert.deepEqual(fs.readFileSync(f.stateFile), before);
 });
@@ -196,7 +197,7 @@ for (const kind of ['pending-result', 'unrecorded-applied']) test(`external ${ki
   await patched(t, 'renameSync', (from, to) => {
     if (to === f.stateFile) inject(f, kind);
     return rename(from, to);
-  }, () => assert.rejects(collectTask('owned', f.config), { code: 'COLLECTION_UNCONFIRMED' }));
+  }, () => rejectsRequest(collectTask('owned', f.config), { code: 'COLLECTION_UNCONFIRMED' }));
   assert.equal(f.state().collected, true); assert.equal(f.state().token, undefined);
   if (kind === 'pending-result') assert.equal(fs.readFileSync(f.artifact + '.tmp', 'utf8'), text);
   else assert.equal(fs.readFileSync(inspectRecovery(f.dir, 'owned').receipts[0].backup, 'utf8'), text);
@@ -272,7 +273,7 @@ for (const status of ['completed', 'failed', 'cancelled']) for (const phase of [
     assert.equal(reply.status, 409); assert.equal(reply.data.code, 'COLLECTION_RECOVERY_REQUIRED');
     assert.deepEqual(reply.data.reconciliation.journalIssues, [journal]);
     for (const resume of [false, true])
-      await assert.rejects(collectTask('owned', f.config, { resume }), { code: 'COLLECTION_RECOVERY_REQUIRED' });
+      await rejectsRequest(collectTask('owned', f.config, { resume }), { code: 'COLLECTION_RECOVERY_REQUIRED' });
     assert.deepEqual(fs.readFileSync(f.stateFile), before);
     assert.deepEqual(f.state().changes, [recorded]); assert.equal(f.state().token, f.task.token);
     assert.equal((await f.call('read_input', { token: f.task.token, name: 'sample' })).structuredContent.text, text);
@@ -290,7 +291,7 @@ for (const status of ['completed', 'failed', 'cancelled']) for (const phase of [
 
 test('running-task startup still adopts valid unrecorded receipts before normal completion and collection', async t => {
   const f = await fixture(t, { status: 'running' }), receipt = inject(f, 'unrecorded-applied');
-  await assert.rejects(f.admin('ready'), error => error.details.issues.includes('RECOVERY_REQUIRED'));
+  await rejectsRequest(f.admin('ready'), error => error.details.issues.includes('RECOVERY_REQUIRED'));
   await f.restart();
   assert.deepEqual(f.state().changes, [receipt]); assert.deepEqual(f.state().recoveryRequired, []);
   assert.equal((await f.admin('ready')).ok, true);
@@ -330,7 +331,7 @@ test('unrecorded journal after a lost collection reply stays uncertain without a
       f.res.destroy(); return true;
     }
   } });
-  await assert.rejects(collectTask('owned', f.config), error => {
+  await rejectsRequest(collectTask('owned', f.config), error => {
     assert.equal(error.code, 'COLLECTION_UNCONFIRMED');
     assert.equal(error.acknowledgment, 'unknown'); return true;
   });
@@ -398,7 +399,7 @@ for (const mode of ['active-resume', 'retired-resume', 'ordinary-after', 'resume
       await patched(t, 'openSync', (path, ...args) => {
         if (path === f.artifact) resultReads++;
         return open(path, ...args);
-      }, () => assert.rejects(collectTask('owned', f.config, { resume }), error => {
+      }, () => rejectsRequest(collectTask('owned', f.config, { resume }), error => {
         assert.equal(error.code, 'COLLECTION_UNCONFIRMED');
         assert.equal(error.acknowledgment, postAck ? 'accepted' : undefined);
         return true;
@@ -438,7 +439,7 @@ for (const [name, alter] of incompleteTaskEvidence) {
     const f = await fixture(t, { intercept: async f => {
       if (f.phase === 'after' && f.req.url === '/reconcile?id=owned') alter(f.data.tasks[0]);
     } }), before = fs.readFileSync(f.stateFile);
-    await assert.rejects(collectTask('owned', f.config, { resume: true }), { code: 'COLLECTION_UNCONFIRMED' });
+    await rejectsRequest(collectTask('owned', f.config, { resume: true }), { code: 'COLLECTION_UNCONFIRMED' });
     assert.deepEqual(f.actions, ['/reconcile?id=owned']);
     assert.deepEqual(fs.readFileSync(f.stateFile), before);
     assert.equal((await f.call('get_task', { token: f.task.token })).isError, false);
@@ -454,7 +455,7 @@ test('cancelled resume needs explicit null result metadata, not omitted fields',
   } });
   await f.admin('cancel', { id: 'owned' });
   const before = fs.readFileSync(f.stateFile);
-  await assert.rejects(collectTask('owned', f.config, { resume: true }), { code: 'COLLECTION_UNCONFIRMED' });
+  await rejectsRequest(collectTask('owned', f.config, { resume: true }), { code: 'COLLECTION_UNCONFIRMED' });
   omit = false;
   const result = await collectTask('owned', f.config, { resume: true });
   assert.equal(result.disposition, 'cancelled_without_result');
@@ -475,7 +476,7 @@ for (const resume of [false, true]) {
         delete f.data.tasks[0].journalIssues;
       }
     } });
-    await assert.rejects(collectTask('owned', f.config, { resume }), {
+    await rejectsRequest(collectTask('owned', f.config, { resume }), {
       code: 'COLLECTION_UNCONFIRMED', acknowledgment: 'unknown',
     });
     assert.equal(f.actions.filter(action => action === '/collect').length, 1);
