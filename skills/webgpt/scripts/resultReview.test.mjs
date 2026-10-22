@@ -429,6 +429,42 @@ test('review windows validate options before I/O and never silently widen an imp
   assert.equal(defaults.endLine, 400); assert.equal(defaults.nextOffset, 401);
 });
 
+test('review long-line errors guide export paging while other ranges retain their advice and evidence', async t => {
+  const content = 'private-long-result:'.padEnd(200001, 'x'), f = await fixture(t, { content });
+  const files = fs.readdirSync(f.dir).sort(), state = fs.readFileSync(join(f.dir, 'state.json'));
+  for (const [options, flags, longLine] of [
+    [{ maxChars: 200000 }, ['--max-chars', '200000'], true],
+    [{ offset: 2 }, ['--offset', '2'], false],
+  ]) {
+    let message;
+    await assert.rejects(reviewTask('owned', f.config, options), error => {
+      assert.equal(error.code, 'REVIEW_RANGE'); message = error.message;
+      if (longLine) {
+        assert.equal(error.cause?.code, 'READ_LINE_TOO_LONG');
+        assert.match(message, /review .*--save-result/); assert.match(message, /read-export/);
+        assert.match(message, /without --offset, --limit or --max-chars/);
+        assert.match(message, /--task-id/); assert.match(message, /--expected-sha256/);
+        assert.match(message, /nextOffset/);
+      } else assert.equal(message, 'result range is unavailable; adjust bounds or review the whole result');
+      return true;
+    });
+    await assert.rejects(f.runCli(['review', 'owned', ...flags]), error => {
+      assert.equal(error.code, 1); assert.equal(error.signal, null); assert.equal(error.killed, false);
+      assert.equal(error.stdout, ''); assert.ok(error.stderr.startsWith('WebGPT: '));
+      assert.deepEqual(JSON.parse(error.stderr.slice('WebGPT: '.length)), { code: 'REVIEW_RANGE', message });
+      for (const secret of [f.dir, 'private-long-result:', 'fixture-only-key', f.event.sha256])
+        assert.ok(!error.stderr.includes(secret));
+      return true;
+    });
+  }
+  assert.deepEqual(fs.readdirSync(f.dir).sort(), files);
+  assert.equal(fs.readFileSync(f.artifact, 'utf8'), content);
+  assert.deepEqual(fs.readFileSync(join(f.dir, 'state.json')), state);
+  assert.deepEqual(f.calls, Array.from({ length: 4 }, () => [
+    { method: 'GET', path: '/wait?id=owned' }, { method: 'GET', path: '/reconcile?id=owned' },
+  ]).flat());
+});
+
 test('review windows reduce returned bytes while still reading and verifying the entire result once', async t => {
   const line = 'x'.repeat(63) + '\n', content = line.repeat(16384);
   const f = await fixture(t, { content });
