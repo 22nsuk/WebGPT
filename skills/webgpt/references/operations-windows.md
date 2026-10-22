@@ -139,6 +139,14 @@ ownership contract and interrupted-result handling.
 | `GET /ready` / `client.mjs ready` | Authenticated controller only | 200 when checks pass, otherwise 503 and reason categories. CLI exits nonzero on failure. |
 | `GET /reconcile` / `client.mjs reconcile` | Authenticated controller only | Read-only inventory including collected/cancelled tasks, recovery warnings and local artifact hash verification. |
 
+After Origin and bearer checks, the controller rejects unsupported methods/routes
+with 404 and malformed queries or action arguments with 400 before inspecting
+state. Accepted POST routes retain the bounded JSON body reader. Workspace input
+syntax is checked early; native grant checks and task comparisons follow fresh
+state verification. Readiness/reconciliation still diagnose storage failures, and
+shutdown retains its path without a state check. Request-only rejections do not
+enter the storage-failure path or leave a readiness fault behind.
+
 Readiness verifies that state bytes still match the worker's last owned commit,
 performs an isolated write/flush/rename/delete canary in the private runtime, and
 checks active recovery journals, their original backups, and workspace identity/access. Issues distinguish

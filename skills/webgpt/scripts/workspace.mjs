@@ -57,11 +57,16 @@ function gitSafeRoot(root) {
   check(canonical);
   return canonical;
 }
-export function grantWorkspace(input) {
-  if (input == null) return null;
+// Controller preflight shares the input checks without resolving native paths.
+export function validateWorkspaceInput(input) {
+  if (input == null) return;
   if (!input || typeof input.root !== 'string' || !isAbsolute(input.root)
       || !['read','edit'].includes(input.mode) || 'read' in input || 'write' in input) throw Error('use workspace root and mode only');
   if (!input.root.isWellFormed()) throw Error('workspace root must be well-formed Unicode');
+}
+export function grantWorkspace(input) {
+  validateWorkspaceInput(input);
+  if (input == null) return null;
   const root = gitSafeRoot(input.root), stat = lstatSync(root,{bigint:true});
   if (!stat.isDirectory() || root === parse(root).root || root === realpathSync.native(homedir())) throw Error('project root required');
   return {root, device:stat.dev.toString(), inode:stat.ino.toString(), mode:input.mode};
