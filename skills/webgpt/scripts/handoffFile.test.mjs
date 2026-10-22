@@ -12,7 +12,7 @@ import { boundedTextPage } from './bounded-text-page.mjs';
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 function fixture(t, delivery = 'named input') {
-  const dir = fs.mkdtempSync(join(tmpdir(), 'webgpt-handoff-file-'));
+  const dir = fs.realpathSync.native(fs.mkdtempSync(join(tmpdir(), 'webgpt-handoff-file-')));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const source = join(dir, 'brief.txt'), specPath = join(dir, 'spec.json'), file = join(dir, '인계 # %.json');
   fs.writeFileSync(source, 'real brief\r\n🧪');
@@ -82,6 +82,73 @@ test('directory links cannot be used as an output file or input packet', t => {
   assert.throws(() => saveHandoffPacket(f.packet, link), { code: 'HANDOFF_FILE_INVALID' });
   assert.throws(() => readHandoffPacket(link, { expectedSha256: hash(f.content) }), { code: 'HANDOFF_FILE_INVALID' });
   assert.ok(fs.lstatSync(link).isSymbolicLink());
+});
+
+for (const kind of ['regular', 'dangling', 'unreadable']) {
+  test(`handoff refuses a known ${kind} destination before creation`, t => {
+    const f = fixture(t), stat = fs.lstatSync, open = fs.openSync;
+    if (kind === 'regular') fs.writeFileSync(f.file, 'keep');
+    let attempts = 0;
+    t.mock.method(fs, 'lstatSync', (file, ...args) => {
+      if (file === f.file && kind !== 'regular') {
+        if (kind === 'unreadable') throw Object.assign(Error('private-path-secret'), { code: 'EACCES' });
+        // Observe a known dangling leaf without requiring Windows link privilege.
+        return { isSymbolicLink: () => true, isFile: () => false };
+      }
+      return stat(file, ...args);
+    });
+    t.mock.method(fs, 'openSync', (file, ...args) => {
+      if (file === f.file) {
+        attempts++;
+        // Do not simulate successful native creation or mutate a target.
+        throw Object.assign(Error('private-path-secret'), { code: 'EEXIST' });
+      }
+      return open(file, ...args);
+    });
+    assert.throws(() => saveHandoffPacket(f.packet, f.file), error =>
+      error.code === 'HANDOFF_FILE_INVALID' && !error.message.includes('private-path-secret') && !error.cause);
+    assert.equal(attempts, 0, 'known entries and inspection errors must stop before open');
+    if (kind === 'regular') assert.equal(fs.readFileSync(f.file, 'utf8'), 'keep');
+    else assert.equal(fs.existsSync(f.file), false);
+  });
+}
+
+for (const dangling of [false, true]) {
+  test(`handoff preserves a real ${dangling ? 'dangling' : 'existing-target'} file symlink`, t => {
+    const f = fixture(t), target = join(f.dir, 'link-target.txt');
+    if (!dangling) fs.writeFileSync(target, 'keep');
+    try { fs.symlinkSync(target, f.file, 'file'); }
+    catch (error) {
+      if (['EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) return t.skip('file symlink creation unavailable');
+      throw error;
+    }
+    const before = fs.readlinkSync(f.file), open = fs.openSync;
+    let attempts = 0;
+    t.mock.method(fs, 'openSync', (file, ...args) => {
+      if (file === f.file) attempts++;
+      return open(file, ...args);
+    });
+    assert.throws(() => saveHandoffPacket(f.packet, f.file), { code: 'HANDOFF_FILE_INVALID' });
+    assert.equal(attempts, 0);
+    assert.ok(fs.lstatSync(f.file).isSymbolicLink());
+    assert.equal(fs.readlinkSync(f.file), before);
+    if (dangling) assert.equal(fs.existsSync(target), false);
+    else assert.equal(fs.readFileSync(target, 'utf8'), 'keep');
+  });
+}
+
+test('exclusive handoff creation preserves a file arriving after the absence check', t => {
+  const f = fixture(t), open = fs.openSync;
+  t.mock.method(fs, 'openSync', (file, ...args) => {
+    if (file === f.file) {
+      // Use the original descriptor API so this cooperative arrival does not recurse.
+      const fd = open(file, 'wx');
+      try { fs.writeFileSync(fd, 'other creator'); } finally { fs.closeSync(fd); }
+    }
+    return open(file, ...args);
+  });
+  assert.throws(() => saveHandoffPacket(f.packet, f.file), { code: 'HANDOFF_FILE_INVALID' });
+  assert.equal(fs.readFileSync(f.file, 'utf8'), 'other creator');
 });
 
 test('Windows alternate streams cannot bypass new-file-only storage', { skip: process.platform !== 'win32' }, t => {

@@ -44,6 +44,12 @@ export function saveHandoffPacket(packet, destination) {
       if (!now.isDirectory() || now.isSymbolicLink() || !sameFile(owner, now)) throw failure();
     };
     checkParent();
+    // A known dangling Windows link can have side effects even when exclusive
+    // creation fails. Reject every existing leaf before opening; keep wx for races.
+    let existing;
+    try { existing = fs.lstatSync(file); }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+    if (existing) throw failure();
     const fd = fs.openSync(file, 'wx', 0o600);
     let written;
     try {

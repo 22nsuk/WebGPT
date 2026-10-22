@@ -6,8 +6,9 @@ import { syncBuiltinESMExports } from 'node:module';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { promisify } from 'node:util';
-import { request, waitForTasks } from './client.mjs';
+import { request, waitForTasks, reviewTask, collectTask, reconcileTasks } from './client.mjs';
 import { readFixture, observeFileRead } from './test-fixtures/file-read.mjs';
 
 const execute = promisify(execFile), cli = fileURLToPath(new URL('./client.mjs', import.meta.url));
@@ -165,8 +166,10 @@ test('valid ordinary CLI commands retain their wire shape and positively exercis
   }
 });
 
-test('request and scoped-wait API preflight rejects before resolving omitted configuration', async t => {
-  const f = fixture(t), observed = observeInputs(t, f.paths);
+for (const present of [false, true]) test(`public client API preflight rejects before resolving ${present ? 'present' : 'missing'} omitted configuration`, async t => {
+  const f = fixture(t);
+  if (!present) fs.unlinkSync(f.paths.config);
+  const observed = observeInputs(t, f.paths);
   const network = t.mock.method(globalThis, 'fetch', () => { throw Error('unexpected controller request'); });
   const reason = Error('preflight cancellation'), signal = AbortSignal.abort(reason);
   try {
@@ -181,33 +184,96 @@ test('request and scoped-wait API preflight rejects before resolving omitted con
         [() => request('status', undefined, undefined, { signal }), error => error === reason],
         [() => waitForTasks([]), /nonempty task IDs required/],
         [() => waitForTasks(['owned'], undefined, { retryDelays: [-1] }), /invalid bounded wait retry policy/],
+        [() => reviewTask('bad/id'), /nonempty task IDs required/],
+        [() => reviewTask('owned', undefined, { maxchars: 1 }), { code: 'REVIEW_USAGE' }],
+        [() => reviewTask('owned', undefined, { limit: 0 }), { code: 'REVIEW_USAGE' }],
+        [() => reviewTask('owned', undefined, { retryDelays: [-1] }), /invalid bounded wait retry policy/],
+        [() => reviewTask('owned', undefined, { retryDelays: Array(1) }), /invalid bounded wait retry policy/],
+        [() => collectTask('bad/id'), /nonempty task IDs required/],
+        [() => collectTask('owned', undefined, { resume: 'yes' }), /invalid collection resume option/],
+        [() => reconcileTasks(undefined, { ids: ['bad/id'] }), /nonempty task IDs required/],
+        [() => reconcileTasks(undefined, { ids: [] }), /nonempty task IDs required/],
+        [() => waitForTasks([], undefined, { signal }), /nonempty task IDs required/],
+        [() => reviewTask('bad/id', undefined, { signal }), /nonempty task IDs required/],
+        [() => reviewTask('owned', undefined, { limit: 0, signal }), { code: 'REVIEW_USAGE' }],
+        [() => reviewTask('owned', undefined, { retryDelays: [-1], signal }), /invalid bounded wait retry policy/],
+        [() => collectTask('bad/id', undefined, { signal }), /nonempty task IDs required/],
+        [() => collectTask('owned', undefined, { resume: 'yes', signal }), /invalid collection resume option/],
+        [() => reconcileTasks(undefined, { ids: [], signal }), /nonempty task IDs required/],
+        [() => waitForTasks(['owned'], undefined, { signal }), error => error === reason],
+        [() => reviewTask('owned', undefined, { signal }), error => error === reason],
+        [() => collectTask('owned', undefined, { signal }), error => error === reason],
+        [() => collectTask('owned', undefined, { resume: true, signal }), error => error === reason],
+        [() => reconcileTasks(undefined, { signal }), error => error === reason],
       ];
       for (const [run, expected] of cases) await rejectsRequest(run(), expected);
+      for (const abortReason of [null, { stopped: true }]) {
+        const stopped = AbortSignal.abort(abortReason), options = { signal: stopped };
+        for (const run of [
+          () => waitForTasks(['owned'], undefined, options),
+          () => reviewTask('owned', undefined, options),
+          () => collectTask('owned', undefined, options),
+          () => reconcileTasks(undefined, options),
+        ]) await rejectsRequest(run(), error => error === abortReason);
+      }
     });
   } finally { observed.restore(); }
   noReads(observed.evidence); assert.equal(network.mock.callCount(), 0);
 });
 
-test('default wait configuration is captured once across renewal and transport retry', async t => {
+for (const entry of ['wait', 'review', 'collect', 'reconcile']) test(`default ${entry} configuration is captured once through the complete API flow`, async t => {
   const f = fixture(t), replacement = join(f.config.dataDir, 'replacement-config.json'), urls = [];
   fs.writeFileSync(replacement, JSON.stringify({ ...f.config, controlPort: 43140 }));
-  const observed = observeInputs(t, f.paths);
-  const done = { events: [{ id: 'owned', status: 'completed' }], backupDue: [], settled: true };
+  const observed = observeInputs(t, { ...f.paths, replacement });
+  const content = 'verified preflight fixture', artifact = join(f.config.dataDir, 'owned.result.txt');
+  const sha256 = createHash('sha256').update(content).digest('hex');
+  fs.writeFileSync(artifact, content);
+  const event = { id: 'owned', status: 'completed', summary: 'done', artifact, sha256 };
+  const done = { events: [event], backupDue: [], settled: true };
+  let collected = false, policyReads = 0;
+  const retries = Object.defineProperty([0], '0', { get() {
+    assert.equal(++policyReads, 1, 'capture the caller retry accessor only once');
+    return 0;
+  } });
   t.mock.method(globalThis, 'fetch', async url => {
     urls.push(url);
-    if (urls.length === 1) {
-      process.env.WEBGPT_CONFIG = replacement;
+    if (urls.length === 1) process.env.WEBGPT_CONFIG = replacement;
+    if (['wait', 'review'].includes(entry) && urls.length === 1)
       throw TypeError('fixture transport failure', { cause: { code: 'ECONNRESET' } });
+    const action = new URL(url).pathname;
+    let value;
+    if (action === '/wait') value = ['wait', 'review'].includes(entry) && urls.length === 2
+      ? { events: [], backupDue: [], settled: false } : done;
+    else if (action === '/collect') { collected = true; value = { ok: true }; }
+    else {
+      assert.equal(action, '/reconcile');
+      value = { scope: ['owned'], health: { stateVerified: true, issues: [] }, tasks: [{
+        ...event, collected, discarded: false, recoveryRequired: [], journalIssues: [], pendingResults: [],
+      }] };
     }
-    return { ok: true, json: async () => urls.length === 2 ? { events: [], backupDue: [], settled: false } : done };
+    return { ok: true, json: async () => value };
   });
   try {
     await withDefaultConfig(f, async () => {
-      assert.deepEqual(await waitForTasks(['owned'], undefined, { retryDelays: [0] }), done);
+      if (entry === 'wait') assert.deepEqual(await waitForTasks(['owned'], undefined, { retryDelays: retries }), done);
+      else if (entry === 'review') {
+        const result = await reviewTask('owned', undefined, { retryDelays: retries });
+        assert.equal(result.review.content, content); assert.equal(result.review.integrity, 'verified');
+      } else if (entry === 'collect') {
+        const result = await collectTask('owned');
+        assert.equal(result.collected, true); assert.equal(result.integrity, 'verified');
+      } else {
+        const result = await reconcileTasks(undefined, { ids: ['owned'] });
+        assert.equal(result.tasks[0].integrity, 'verified'); assert.equal(result.tasks[0].collected, false);
+      }
     });
   } finally { observed.restore(); }
-  assert.deepEqual(urls, Array(3).fill('http://127.0.0.1:43139/wait?id=owned'));
+  const paths = entry === 'wait' ? Array(3).fill('/wait?id=owned')
+    : entry === 'review' ? [...Array(3).fill('/wait?id=owned'), '/reconcile?id=owned']
+    : entry === 'collect' ? ['/wait?id=owned', '/collect', '/reconcile?id=owned'] : ['/reconcile?id=owned'];
+  assert.deepEqual(urls, paths.map(path => 'http://127.0.0.1:43139' + path));
   readOnce(observed.evidence.config, Buffer.byteLength(JSON.stringify(f.config)));
-  assert.equal(observed.evidence.key.opens, 3); assert.equal(observed.evidence.key.closes, 3);
-  noReads(observed.evidence, ['input']);
+  assert.equal(observed.evidence.key.opens, paths.length); assert.equal(observed.evidence.key.closes, paths.length);
+  assert.equal(policyReads, ['wait', 'review'].includes(entry) ? 1 : 0);
+  noReads(observed.evidence, ['input', 'replacement']);
 });
