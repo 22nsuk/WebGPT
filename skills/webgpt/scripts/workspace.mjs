@@ -63,6 +63,7 @@ export function validateWorkspaceInput(input) {
   if (!input || typeof input.root !== 'string' || !isAbsolute(input.root)
       || !['read','edit'].includes(input.mode) || 'read' in input || 'write' in input) throw Error('use workspace root and mode only');
   if (!input.root.isWellFormed()) throw Error('workspace root must be well-formed Unicode');
+  if (input.root.includes('\0')) throw Error('workspace root must not contain NUL');
 }
 export function grantWorkspace(input) {
   validateWorkspaceInput(input);

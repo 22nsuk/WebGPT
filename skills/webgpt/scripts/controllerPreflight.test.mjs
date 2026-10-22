@@ -63,6 +63,7 @@ for (const denied of [false, true]) test(`invalid controller requests avoid stat
       { root: f.base, mode: 'read', write: [] }].map(workspace =>
       ['POST', '/register', { ...registration, workspace }, 400, 'use workspace root and mode only']),
     ['POST', '/register', { ...registration, workspace: { root: join(f.base, '\ud800'), mode: 'read' } }, 400, 'workspace root must be well-formed Unicode'],
+    ['POST', '/register', { ...registration, workspace: { root: join(f.base, 'project\0invalid'), mode: 'read' } }, 400, 'workspace root must not contain NUL'],
     ...[{}, null, [], { ...collection, extra: true }, { ...collection, id: 'bad/id' },
       { ...collection, expectedStatus: 'running' }, { ...collection, expectedSha256: 'bad' }]
       .map(value => ['POST', '/collect', value, 400, 'invalid conditional collection']),
