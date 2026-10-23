@@ -9,7 +9,7 @@ import { createServer, Server } from 'node:http';
 import { once } from 'node:events';
 import { start } from './worker.mjs';
 import { request } from './client.mjs';
-import { callTool, controllerProxy, replyJson } from './test-fixtures/worker-http.mjs';
+import { callTool, controllerProxy, replyJson, afterWaitBody, readScope } from './test-fixtures/worker-http.mjs';
 
 async function fixture(t, { tasks, countIds = false, now = Date.now } = {}) {
   const dir = fs.realpathSync.native(fs.mkdtempSync(join(tmpdir(), 'webgpt-scope-')));
@@ -51,7 +51,7 @@ async function fixture(t, { tasks, countIds = false, now = Date.now } = {}) {
   observer = t.mock.method(Server.prototype, 'emit', function(event, ...args) {
     const result = Reflect.apply(emit, this, [event, ...args]);
     if (event === 'request' && this.address()?.port === worker.controlPort && args[0].url.startsWith('/wait'))
-      accepted?.(args[1]);
+      afterWaitBody(args[0], args[1], response => accepted?.(response));
     return result;
   });
   const park = async (ids, signal) => {
@@ -121,7 +121,7 @@ for (const action of ['wait', 'reconcile']) test(`client ${action} validates a l
   const value = action === 'wait' ? { settled: false, events: ids.map(id => ({ id })), backupDue: ids,
     recoveryRequired: ids.map(id => ({ id })), resultRecoveryRequired: ids.map(id => ({ id })) }
     : { scope: ids, tasks: [...ids].reverse().map(id => ({ id })) };
-  const server = createServer((_req, res) => replyJson(res, value));
+  const server = createServer(async (req, res) => { await readScope(req); replyJson(res, value); });
   t.after(async () => { await new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }); fs.rmSync(dir, { recursive: true, force: true }); });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const observer = observeMembership('client-scope-');

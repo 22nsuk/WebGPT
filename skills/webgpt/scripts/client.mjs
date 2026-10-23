@@ -91,17 +91,21 @@ export async function request(action, payload, config, { signal, timeoutMs = act
     () => fault('CONFIG_INVALID', 'invalid controller.key'));
   if (storedKey === null) throw fault('ENOENT', 'controller.key does not exist');
   const key = storedKey.bytes.toString('utf8');
-  const query = ids ? '?' + new URLSearchParams(ids.map(id => ['id', id])) : '';
+  // Explicit scopes belong in a bounded JSON body, not the HTTP request target.
+  // Serialize the validated snapshot, never caller accessors or payload.toJSON.
+  const post = !read || ids !== undefined;
   const timeout = AbortSignal.timeout(timeoutMs);
-  const response = await fetch('http://127.0.0.1:' + config.controlPort + '/' + action + query, {
-    method: read ? 'GET' : 'POST',
+  const response = await fetch('http://127.0.0.1:' + config.controlPort + '/' + action, {
+    method: post ? 'POST' : 'GET',
     // A controller response must not reroute private input or select another action,
     // even on the same origin. Reject before following, not after response arrival.
     redirect: 'error',
     headers: { authorization: 'Bearer ' + key, 'content-type': 'application/json' },
-    body: read ? undefined : JSON.stringify(payload),
+    body: post ? JSON.stringify(ids ? { ids } : payload) : undefined,
     signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
   });
+  const unsupportedScope = ids !== undefined && response.status === 404;
+  const scopeMessage = 'task-scoped POST unavailable; check controller routing and update the idle worker and client together';
   let result;
   try { result = await response.json(); }
   catch (error) {
@@ -110,12 +114,12 @@ export async function request(action, payload, config, { signal, timeoutMs = act
     // broken. Do not turn a known rejection into a retry or collection probe.
     // Successful responses keep transport uncertainty for post-commit checks.
     if (response.ok) throw error;
-    throw Object.assign(Error('controller request failed: ' + response.status, { cause: error }), {
-      statusCode: response.status, retryable: false,
+    throw Object.assign(Error(unsupportedScope ? scopeMessage : 'controller request failed: ' + response.status, { cause: error }), {
+      statusCode: response.status, retryable: false, ...(unsupportedScope ? { code: 'SCOPED_READ_UNSUPPORTED' } : {}),
     });
   }
-  if (!response.ok) throw Object.assign(Error(result?.error ?? 'controller request failed: ' + response.status), {
-    statusCode: response.status, code: result?.code, details: result,
+  if (!response.ok) throw Object.assign(Error(unsupportedScope ? scopeMessage : result?.error ?? 'controller request failed: ' + response.status), {
+    statusCode: response.status, code: unsupportedScope ? 'SCOPED_READ_UNSUPPORTED' : result?.code, details: result,
     // Only explicit known transient refusals are retryable; this does not replay
     // mutations or turn an ambiguous transport failure into capacity evidence.
     retryable: response.status === 503 && ['SHUTTING_DOWN', 'HTTP_BODY_BUSY'].includes(result?.code) && result?.retryable === true,

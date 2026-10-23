@@ -61,6 +61,24 @@ budget. MCP and controller pools are independent, preserving administrative
 admission when MCP clients hold incomplete bodies. Health/readiness GET requests
 do not enter either body pool.
 
+Explicit task scopes use authenticated `POST /wait` and `POST /reconcile` with
+exactly `{"ids":[...]}`. Both share the existing controller body pool and all
+budgets above; there is no larger-header setting or unlimited scope allowance.
+POST scopes must be nonempty arrays of valid string IDs, with no query parameters
+or extra properties. Invalid scopes never become unscoped reads. Existing scoped
+and unscoped GET routes remain compatible.
+
+Admitted POST uploads finish parsing before state inspection or stopping checks.
+Reconciliation retains its diagnostic behavior while stopping or storage is
+unavailable; waits and mutations retain their shutdown refusal. Rejected uploads
+still use early, bounded refusal rather than unlimited draining. Body admission
+ends before a parsed wait is parked, not when its eventual response completes.
+The client serializes only its validated, ordered-deduplicated ID snapshot, and
+never retries a scoped POST as GET, broadens its scope, or splits it automatically.
+Update the idle client and worker together; a GET-only worker's 404 is reported as
+nonretryable `SCOPED_READ_UNSUPPORTED`, including for review/collection's internal
+scoped reads.
+
 The controller client's `request()` preserves `retryable:true` only for an HTTP
 503 with code `HTTP_BODY_BUSY` or `SHUTTING_DOWN` and a literal JSON boolean
 `retryable:true`. A bare 503, malformed response, unknown code or storage/state

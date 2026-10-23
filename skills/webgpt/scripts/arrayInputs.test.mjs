@@ -9,12 +9,13 @@ import { join } from 'node:path';
 import { request, waitForTasks, reconcileTasks } from './client.mjs';
 import { buildArtifactInput, MAX_WINDOW_BYTES } from './artifact-input.mjs';
 import { readFixture, observeFileRead } from './test-fixtures/file-read.mjs';
+import { readScope } from './test-fixtures/worker-http.mjs';
 
 async function controller(t) {
   const dir = readFixture(t), key = join(dir, 'controller.key'), calls = [];
   fs.writeFileSync(key, 'array-input-fixture-key');
-  const server = createServer((req, res) => {
-    const url = new URL(req.url, 'http://localhost'), ids = url.searchParams.getAll('id');
+  const server = createServer(async (req, res) => {
+    const url = new URL(req.url, 'http://localhost'), ids = await readScope(req);
     calls.push({ method: req.method, url: req.url, ids, authorization: req.headers.authorization });
     const value = url.pathname === '/wait' ? { events: [], backupDue: [], settled: true }
       : { health: { stateVerified: true, issues: [] },
@@ -82,7 +83,7 @@ for (const action of ['wait', 'reconcile']) test(`${action} preserves ordered de
   assert.equal(observed.evidence.opens, 1, 'valid scope opens its credential snapshot once');
   assert.equal(observed.evidence.closes, 1);
   assert.equal(observed.evidence.bytes, Buffer.byteLength('array-input-fixture-key'));
-  assert.deepEqual(f.calls, [{ method: 'GET', url: `/${action}?id=B-2&id=a_1&id=last`,
+  assert.deepEqual(f.calls, [{ method: 'POST', url: `/${action}`,
     ids: ['B-2', 'a_1', 'last'], authorization: 'Bearer array-input-fixture-key' }]);
   if (action === 'reconcile') assert.deepEqual(result.scope, ['B-2', 'a_1', 'last']);
   else assert.equal(result.settled, true);
@@ -94,6 +95,7 @@ test('an explicit full reconciliation remains unscoped', async t => {
   const result = await reconcileTasks(f.config);
   assert.equal(f.calls.length, 1);
   assert.equal(f.calls[0].url, '/reconcile');
+  assert.equal(f.calls[0].method, 'GET');
   assert.equal(Object.hasOwn(result, 'scope'), false);
 });
 

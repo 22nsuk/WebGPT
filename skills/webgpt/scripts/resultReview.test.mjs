@@ -15,6 +15,7 @@ import timers from 'node:timers/promises';
 import { reviewTask, waitForTasks, retryableControllerError, verifyResult, collectTask, request } from './client.mjs';
 import { readVerifiedResult } from './results.mjs';
 import { observeFileRead } from './test-fixtures/file-read.mjs';
+import { controllerObservation, assertScopedRead } from './test-fixtures/worker-http.mjs';
 
 const text = '\uFEFF한국어 🧪\r\n\u0000literal "quotes" \\ path\n';
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -30,11 +31,13 @@ async function fixture(t, { content = text, status = 'completed' } = {}) {
   const calls = [];
   let respond = (_req, res) => res.end(JSON.stringify({ ...empty(), events: [event], settled: true }));
   let reconcile = value => value;
-  const server = createServer((req, res) => {
+  const server = createServer(async (req, res) => {
+    const chunks = []; for await (const chunk of req) chunks.push(chunk);
+    assertScopedRead(controllerObservation(req, Buffer.concat(chunks)), ['owned']);
     calls.push({ method: req.method, path: req.url });
     if (req.headers.authorization !== 'Bearer fixture-only-key') { res.writeHead(401); res.end('{}'); return; }
     res.setHeader('content-type', 'application/json');
-    if (req.url === '/reconcile?id=owned') {
+    if (req.url === '/reconcile') {
       res.end(JSON.stringify(reconcile({ scope: ['owned'], health: { stateVerified: true, issues: [] },
         tasks: [{ ...event, collected: false, discarded: false, recoveryRequired: [], journalIssues: [], pendingResults: [] }] })));
       return;
@@ -85,7 +88,7 @@ test('review CLI export returns small metadata and exact full/chunk files withou
   assert.equal(result.browserChecked, false);
   assert.deepEqual(fs.readFileSync(result.review.saved.full.path), Buffer.from(content));
   assert.ok(result.review.saved.messageCount > 1);
-  assert.deepEqual(f.calls, [{ method: 'GET', path: '/wait?id=owned' }, { method: 'GET', path: '/reconcile?id=owned' }]);
+  assert.deepEqual(f.calls, [{ method: 'POST', path: '/wait' }, { method: 'POST', path: '/reconcile' }]);
   assert.equal(fs.readFileSync(join(f.dir, 'state.json'), 'utf8'), 'owned-evidence');
 });
 
@@ -133,7 +136,7 @@ for (const status of ['completed', 'failed', 'cancelled']) test(`review preserve
     assert.deepEqual(result.events, [f.event]);
   });
   assert.deepEqual(reads, { opens: 1, bytes: Buffer.byteLength(text) });
-  assert.deepEqual(f.calls, [{ method: 'GET', path: '/wait?id=owned' }, { method: 'GET', path: '/reconcile?id=owned' }]);
+  assert.deepEqual(f.calls, [{ method: 'POST', path: '/wait' }, { method: 'POST', path: '/reconcile' }]);
   assert.equal(fs.readFileSync(join(f.dir, 'state.json'), 'utf8'), 'owned-evidence');
   assert.equal(verifyResult(f.event, f.config), 'verified', 'legacy verification return stays compatible');
 });
@@ -143,8 +146,8 @@ test('review renews empty waits inside one call and reads no unrelated artifact'
   f.respond((_req, res) => res.end(JSON.stringify(f.calls.length < 3 ? empty() : { ...empty(), events: [f.event] })));
   assert.equal((await reviewTask('owned', f.config)).review.content, text);
   assert.equal(f.calls.length, 4);
-  assert.ok(f.calls.slice(0, 3).every(call => call.method === 'GET' && call.path === '/wait?id=owned'));
-  assert.deepEqual(f.calls[3], { method: 'GET', path: '/reconcile?id=owned' });
+  assert.ok(f.calls.slice(0, 3).every(call => call.method === 'POST' && call.path === '/wait'));
+  assert.deepEqual(f.calls[3], { method: 'POST', path: '/reconcile' });
 });
 
 for (const notice of [
@@ -250,7 +253,7 @@ test('review retains the finite wait retry budget across healthy empty renewals'
     if (f.calls.length % 2) req.socket.destroy(); else res.end(JSON.stringify(empty()));
   });
   await assert.rejects(reviewTask('owned', f.config, { retryDelays: [0, 0] }));
-  assert.equal(f.calls.length, 5); assert.ok(f.calls.every(call => call.method === 'GET'));
+  assert.equal(f.calls.length, 5); assert.ok(f.calls.every(call => call.method === 'POST'));
 });
 
 test('review CLI takes an ID, returns one JSON body and never resolves a same-named payload', async t => {
@@ -262,7 +265,7 @@ test('review CLI takes an ID, returns one JSON body and never resolves a same-na
       assert.equal(error.code, 1); assert.equal(error.stdout, ''); assert.match(error.stderr, /REVIEW_USAGE/); return true;
     });
   }
-  assert.deepEqual(f.calls, [{ method: 'GET', path: '/wait?id=owned' }, { method: 'GET', path: '/reconcile?id=owned' }]);
+  assert.deepEqual(f.calls, [{ method: 'POST', path: '/wait' }, { method: 'POST', path: '/reconcile' }]);
 });
 
 test('review CLI redacts native failures and rejected controller bodies without retries', async t => {
@@ -363,7 +366,7 @@ for (const field of ['recoveryRequired', 'journalIssues', 'pendingResults']) tes
     assert.equal(result.attention, field === 'pendingResults' ? 'inspect_uncommitted_result' : 'inspect_recovery');
   });
   assert.equal(reads.opens, 0); assert.equal(f.calls.length, 2);
-  assert.ok(f.calls.every(call => call.method === 'GET'));
+  assert.ok(f.calls.every(call => call.method === 'POST'));
 });
 
 for (const problem of ['unverified', 'invalid-state', 'collected', 'discarded', 'status', 'artifact', 'sha256',
@@ -407,7 +410,7 @@ test('review windows reconstruct exact lines and preserve terminal status and fu
     assert.deepEqual((await reviewTask('owned', f.config, { expectedSha256: f.event.sha256 })).review,
       { ...f.event, content, integrity: 'verified' }, 'a pin alone does not opt into a window');
     assert.equal(fs.readFileSync(join(f.dir, 'state.json'), 'utf8'), 'owned-evidence');
-    assert.ok(f.calls.every(call => call.method === 'GET'));
+    assert.ok(f.calls.every(call => call.method === 'POST'));
   }
   const f = await fixture(t, { content: '' });
   assert.deepEqual((await reviewTask('owned', f.config, { limit: 1 })).review,
@@ -462,7 +465,7 @@ test('review long-line errors guide export paging while other ranges retain thei
   assert.equal(fs.readFileSync(f.artifact, 'utf8'), content);
   assert.deepEqual(fs.readFileSync(join(f.dir, 'state.json')), state);
   assert.deepEqual(f.calls, Array.from({ length: 4 }, () => [
-    { method: 'GET', path: '/wait?id=owned' }, { method: 'GET', path: '/reconcile?id=owned' },
+    { method: 'POST', path: '/wait' }, { method: 'POST', path: '/reconcile' },
   ]).flat());
 });
 
@@ -480,7 +483,7 @@ test('review windows reduce returned bytes while still reading and verifying the
   assert.ok(windowBytes < fullBytes / 100);
   t.diagnostic(JSON.stringify({ sourceBytes: Buffer.byteLength(content), fullJsonBytes: fullBytes, windowJsonBytes: windowBytes,
     selectedCodeUnits: page.review.content.length, resultReads: reads.opens, bytesVerified: reads.bytes }));
-  assert.equal(f.calls.length, 4); assert.ok(f.calls.every(call => call.method === 'GET'));
+  assert.equal(f.calls.length, 4); assert.ok(f.calls.every(call => call.method === 'POST'));
 });
 
 test('review windows pin the whole revision and reject corruption outside the visible lines', async t => {
@@ -549,7 +552,7 @@ test('review windows retain recovery, current-state and abort gates before any r
     f.respond((_req, res) => res.end(JSON.stringify({ ...empty(), resultRecoveryRequired: [{ id: 'owned' }] })));
     assert.equal((await reviewTask('owned', f.config, options)).review, null);
   });
-  assert.deepEqual(reads, { opens: 0, bytes: 0 }); assert.ok(f.calls.every(call => call.method === 'GET'));
+  assert.deepEqual(reads, { opens: 0, bytes: 0 }); assert.ok(f.calls.every(call => call.method === 'POST'));
 });
 
 test('review API rejects unknown option names before any controller or result access', async t => {
@@ -586,7 +589,7 @@ test('review API retains the initially validated pin and bounds while caller opt
     });
     assert.deepEqual(reads, conflict ? { opens: 0, bytes: 0 } : { opens: 1, bytes: 13 });
   }
-  assert.equal(f.calls.length, 8); assert.ok(f.calls.every(call => call.method === 'GET'));
+  assert.equal(f.calls.length, 8); assert.ok(f.calls.every(call => call.method === 'POST'));
   assert.equal(fs.readFileSync(join(f.dir, 'state.json'), 'utf8'), 'owned-evidence');
 });
 
@@ -608,7 +611,7 @@ test('review API retains its original live abort signal through reconciliation',
   const pending = reviewTask('owned', f.config, options);
   options.signal = AbortSignal.abort(Error('another invocation stopped'));
   assert.equal((await pending).review.content, text, 'a replacement signal cannot cancel the original invocation');
-  assert.equal(f.calls.length, 6); assert.ok(f.calls.every(call => call.method === 'GET'));
+  assert.equal(f.calls.length, 6); assert.ok(f.calls.every(call => call.method === 'POST'));
   assert.equal(fs.readFileSync(join(f.dir, 'state.json'), 'utf8'), 'owned-evidence');
 });
 
@@ -639,7 +642,7 @@ for (const entry of ['wait', 'review']) {
       });
       const reads = await observeResultReads(t, f, () => rejectsRequest(run(f, { retryDelays }), retryableControllerError));
       assert.equal(f.calls.length, 2 * budget + 1);
-      assert.ok(f.calls.every(call => call.method === 'GET' && call.path === '/wait?id=owned'));
+      assert.ok(f.calls.every(call => call.method === 'POST' && call.path === '/wait'));
       assert.deepEqual(reads, { opens: 0, bytes: 0 });
       assert.equal(fs.readFileSync(join(f.dir, 'state.json'), 'utf8'), 'owned-evidence');
     }
@@ -664,7 +667,7 @@ for (const entry of ['wait', 'review']) {
         assert.deepEqual(value.events, [f.event]);
         if (entry === 'review') assert.equal(value.review.content, text);
         assert.equal(f.calls.length, entry === 'review' ? 3 : 2);
-        assert.ok(f.calls.every(call => call.method === 'GET'));
+        assert.ok(f.calls.every(call => call.method === 'POST'));
         assert.equal(fs.readFileSync(join(f.dir, 'state.json'), 'utf8'), 'owned-evidence');
       }
     } finally { mock.mock.restore(); syncBuiltinESMExports(); }
@@ -718,7 +721,7 @@ for (const entry of ['wait', 'review']) {
       assert.equal(outcome.rejected, true);
       assert.strictEqual(outcome.error, controller.signal.reason, 'backoff must preserve the exact abort reason');
       assert.deepEqual(reads, { opens: 0, bytes: 0 });
-      assert.deepEqual(f.calls, [{ method: 'GET', path: '/wait?id=owned' }]);
+      assert.deepEqual(f.calls, [{ method: 'POST', path: '/wait' }]);
       assert.equal(fs.readFileSync(join(f.dir, 'state.json'), 'utf8'), 'owned-evidence');
       assert.equal(fs.readFileSync(f.artifact, 'utf8'), text);
       // Stopping a local wait does not cancel or collect the owned task.
@@ -738,7 +741,7 @@ for (const entry of ['wait', 'review']) {
         const reads = await observeResultReads(t, f, () =>
           rejectsRequest(run(f, { signal, retryDelays: [0, 0, 0] }), error => error === failure));
         assert.deepEqual(reads, { opens: 0, bytes: 0 });
-        assert.deepEqual(f.calls, [{ method: 'GET', path: '/wait?id=owned' }]);
+        assert.deepEqual(f.calls, [{ method: 'POST', path: '/wait' }]);
         assert.equal(fs.readFileSync(join(f.dir, 'state.json'), 'utf8'), 'owned-evidence');
       }
       assert.equal(mock.mock.callCount(), 2);

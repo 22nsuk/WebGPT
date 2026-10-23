@@ -237,7 +237,10 @@ for (const value of ['invalid', [{ id: 'outside-scope' }]]) test(`new result rec
   const { waitForTasks } = await import('./client.mjs');
   const dir = mkdtempSync(join(tmpdir(), 'webgpt-result-scope-')); writeFileSync(join(dir, 'controller.key'), 'fixture-key');
   let calls = 0;
-  const server = createServer((req, res) => { calls++; res.end(JSON.stringify({ events: [], backupDue: [], settled: false, resultRecoveryRequired: value })); });
+  const server = createServer(async (req, res) => {
+    for await (const _chunk of req) { /* consume the scoped JSON body before replying */ }
+    calls++; res.end(JSON.stringify({ events: [], backupDue: [], settled: false, resultRecoveryRequired: value }));
+  });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   try {
     await rejectsRequest(waitForTasks(['a'], { dataDir: dir, controlPort: server.address().port }, { signal: AbortSignal.timeout(1000) }),

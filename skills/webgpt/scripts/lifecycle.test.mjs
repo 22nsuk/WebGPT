@@ -10,6 +10,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { start, tools } from './worker.mjs';
 import { request, waitForTasks, collectTask } from './client.mjs';
+import { readScope } from './test-fixtures/worker-http.mjs';
 
 const execute = promisify(execFile);
 const cli = fileURLToPath(new URL('./client.mjs', import.meta.url));
@@ -44,7 +45,9 @@ async function controllerFixture(replies, run) {
   const dir = mkdtempSync(join(tmpdir(), 'webgpt-controller-contract-'));
   writeFileSync(join(dir, 'controller.key'), 'fixture-only-key');
   const requests = [];
-  const server = createServer((req, res) => {
+  const server = createServer(async (req, res) => {
+    assert.equal(req.method, 'POST');
+    assert.deepEqual(await readScope(req), ['a']);
     requests.push(req.url);
     assert.equal(req.headers.authorization, 'Bearer fixture-only-key');
     res.writeHead(200, { 'content-type': 'application/json' });
@@ -74,7 +77,7 @@ test('quiet waits renew empty responses inside the client and return the first a
   const done = { events: [{ id: 'a', status: 'completed' }], backupDue: [], settled: true };
   return controllerFixture([{ ...snapshot, settled: false }, { ...snapshot, settled: false }, done], async ({ config, requests }) => {
     assert.deepEqual(await waitForTasks(['a'], config), done);
-    assert.deepEqual(requests, ['/wait?id=a', '/wait?id=a', '/wait?id=a']);
+    assert.deepEqual(requests, ['/wait', '/wait', '/wait']);
   });
 });
 

@@ -10,7 +10,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { start } from './worker.mjs';
 import { withStateWriteFailure } from './test-fixtures/state-write-failure.mjs';
-import { callTool, controllerProxy, replyJson as reply } from './test-fixtures/worker-http.mjs';
+import { callTool, controllerProxy, assertScopedRead, replyJson as reply } from './test-fixtures/worker-http.mjs';
 import { request, collectTask, reconcileTasks } from './client.mjs';
 
 const execute = promisify(execFile);
@@ -50,10 +50,13 @@ async function fixture(t, { status = 'completed', intercept = async () => false,
     const file = join(directory, 'unresolved.json'); fs.writeFileSync(file, '{}'); return file;
   };
   const f = { base, dir, root, task, artifact, state, admin, call, register, complete, evidence, direct };
-  proxy = await controllerProxy(direct, event => intercept({ ...f, ...event }));
+  proxy = await controllerProxy(direct, event => {
+    assertScopedRead(event.observation, ['owned']);
+    return intercept({ ...f, ...event });
+  });
   return { ...f, actions: proxy.actions, config: { ...direct, controlPort: proxy.port } };
 }
-const initial = resume => resume ? ['/reconcile?id=owned'] : ['/wait?id=owned'];
+const initial = resume => resume ? ['/reconcile'] : ['/wait'];
 const refused = resume => resume ? initial(true) : [...initial(false), '/collect'];
 function recoveryError(kind) {
   return error => {
@@ -96,7 +99,7 @@ for (const kind of ['pending-result', 'unresolved-journal', 'missing-backup']) {
       assert.equal(error.cause.code, 'COLLECTION_RECOVERY_REQUIRED');
       return true;
     });
-    assert.deepEqual(f.actions, [...initial(resume), '/collect', '/reconcile?id=owned']);
+    assert.deepEqual(f.actions, [...initial(resume), '/collect', '/reconcile']);
     const stored = JSON.parse(fs.readFileSync(f.state))[0];
     assert.equal(stored.collected, true); assert.equal(stored.token, undefined);
     assert.equal(fs.readFileSync(f.artifact, 'utf8'), text);
@@ -113,7 +116,7 @@ for (const kind of ['pending-result', 'unresolved-journal']) test(`unrelated ${k
   const f = await fixture(t), other = await f.register('other'); await f.complete(other);
   const candidate = f.evidence(kind, 'other'), bytes = fs.readFileSync(candidate);
   assert.equal((await collectTask('owned', f.config)).collected, true);
-  assert.deepEqual(f.actions, [...initial(false), '/collect', '/reconcile?id=owned']);
+  assert.deepEqual(f.actions, [...initial(false), '/collect', '/reconcile']);
   assert.deepEqual(fs.readFileSync(candidate), bytes);
   const snapshot = await reconcileTasks(f.direct);
   assert.equal(snapshot.tasks.find(task => task.id === 'other').attention,
@@ -123,7 +126,7 @@ for (const kind of ['pending-result', 'unresolved-journal']) test(`unrelated ${k
 for (const issue of ['unavailable', 'changed-identity', 'aborted']) test(`ordinary collection rejects ${issue} before guarded retirement`, async t => {
   const controller = new AbortController(), reason = Error('explicit fixture abort');
   const f = await fixture(t, { intercept: async ({ req, res, phase, data }) => {
-    if (issue === 'changed-identity' && req.url.startsWith('/wait?') && phase === 'after') {
+    if (issue === 'changed-identity' && req.url === '/wait' && phase === 'after') {
       data.events[0].status = 'failed'; reply(res, data); return true;
     }
     if (req.url !== '/collect' || phase !== 'before') return;
