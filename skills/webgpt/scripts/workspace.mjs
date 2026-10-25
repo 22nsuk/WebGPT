@@ -155,7 +155,8 @@ export function validateWorkspaceList(path,{cursor,limit=500}={}) {
     try {
       if(typeof cursor!=='string'||cursor.length>256||!cursor||!/^[A-Za-z0-9_-]+$/.test(cursor))throw Error();
       page=JSON.parse(Buffer.from(cursor,'base64url').toString('utf8'));
-      if(!page||page.v!==1||!Number.isSafeInteger(page.offset)||page.offset<1||typeof page.revision!=='string')throw Error();
+      if(!page||page.v!==1||!Number.isSafeInteger(page.offset)||page.offset<1
+          ||typeof page.revision!=='string'||!/^[a-f0-9]{64}$/.test(page.revision))throw Error();
     } catch {throw Error('invalid directory cursor');}
   }
   if(path!=='.')relativeFile(path);

@@ -86,6 +86,8 @@ test('pagination rejects malformed limits and cursors without enumerating the di
   const page = { v: 1, offset: 1, revision: 'a'.repeat(64) };
   const cursors = ['', '!', 'not-json', {}, null, 'x'.repeat(257), encode(null), encode({}),
     encode({ ...page, v: 2 }), encode({ ...page, revision: null }), encode({ v: 1, offset: 1 }),
+    ...['', 'a'.repeat(63), 'a'.repeat(65), 'g'.repeat(64), 'A'.repeat(64), 'a'.repeat(64) + '\n']
+      .map(revision => encode({ ...page, revision })),
     ...[0, -1, 1.5, '1', Number.MAX_SAFE_INTEGER + 1].map(offset => encode({ ...page, offset }))];
   const readdir = fs.readdirSync;
   const mock = t.mock.method(fs, 'readdirSync', (...args) => readdir(...args));
