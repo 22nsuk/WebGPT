@@ -3,9 +3,10 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, readdirSync, unlinkSync, mkdirSync, symlinkSync } from 'node:fs';
+import fs, { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, readdirSync, unlinkSync, mkdirSync, symlinkSync } from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, toNamespacedPath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { runService, requestServiceStop, restartDelay } from './service.mjs';
@@ -104,6 +105,74 @@ test('service cannot use a relative configuration or implicit account-profile ru
   await assert.rejects(runService(env), { code: 'CONFIG_INVALID' });
   assert.equal(existsSync(f.config.dataDir), false);
 }));
+
+for (const separator of ['\\', '/']) for (const field of ['WEBGPT_CONFIG', 'WEBGPT_DATA_DIR', 'saved dataDir'])
+  test(`Windows service rejects drive-less ${field} with ${separator} separators before runtime access`,
+    { skip: process.platform !== 'win32' }, t => fixture(async f => {
+      if (!/^[A-Za-z]:/.test(f.file)) return t.skip('drive-backed temporary fixture required');
+      const rooted = path => path.slice(2).replaceAll('\\', separator), env = { ...f.env };
+      if (field === 'WEBGPT_CONFIG') env.WEBGPT_CONFIG = rooted(f.file);
+      else if (field === 'WEBGPT_DATA_DIR') env.WEBGPT_DATA_DIR = rooted(f.config.dataDir);
+      else {
+        delete env.WEBGPT_DATA_DIR;
+        writeFileSync(f.file, JSON.stringify({ ...f.config, dataDir: rooted(f.config.dataDir) }));
+      }
+      const before = readFileSync(f.file), cwd = process.cwd();
+      // Keep the pre-fix rooted path inside this fixture even if TEMP and the
+      // checkout use different drives. Other test files have their own process.
+      process.chdir(f.base);
+      try {
+        for (const action of ['run', 'stop']) await t.test(action, async () => {
+          let launches = 0;
+          await assert.rejects(action === 'run'
+            ? runService(env, { record: () => {}, spawnWorker: () => { launches++; return exited(0); } })
+            : requestServiceStop(env), { code: 'CONFIG_INVALID' });
+          assert.equal(launches, 0);
+          assert.equal(existsSync(f.config.dataDir), false);
+          assert.deepEqual(readFileSync(f.file), before);
+        });
+      } finally { process.chdir(cwd); }
+    }));
+
+for (const format of ['forward slashes', 'extended'])
+  test(`Windows service accepts ${format} paths and a qualified runtime override`,
+    { skip: process.platform !== 'win32' }, () => fixture(async f => {
+      const qualify = path => format === 'extended' ? toNamespacedPath(path) : path.replaceAll('\\', '/');
+      // Validate the selected override, not the ignored saved data directory.
+      writeFileSync(f.file, JSON.stringify({ ...f.config, dataDir: '\\ignored-runtime' }));
+      f.env.WEBGPT_CONFIG = qualify(f.file); f.env.WEBGPT_DATA_DIR = qualify(f.config.dataDir);
+      const before = readFileSync(f.file), env = { ...f.env }, running = realService(f, { record: () => {} });
+      try {
+        await running.until(async () => (await request('ready', undefined, f.config)).ok);
+        assert.equal((await requestServiceStop(f.env)).accepted, true);
+        assert.equal(await running.service, 0);
+        assert.equal(existsSync(join(f.config.dataDir, 'worker.lock')), false);
+        assert.equal(existsSync(join(f.config.dataDir, 'service.lock')), false);
+        assert.deepEqual(readFileSync(f.file), before); assert.deepEqual(f.env, env);
+      } finally {
+        if (!running.finished) { await requestServiceStop(f.env).catch(() => {}); await running.service; }
+      }
+    }));
+
+test('Windows service admits qualified UNC configuration paths without rewriting them', { skip: process.platform !== 'win32' }, async t => {
+  const paths = ['\\\\server\\share\\config.json', '//server/share/config.json', '\\\\?\\UNC\\server\\share\\config.json'];
+  const stat = fs.statSync, observed = [];
+  const mock = t.mock.method(fs, 'statSync', (file, ...args) => {
+    if (!paths.includes(file)) return stat(file, ...args);
+    observed.push(file);
+    // Prove admission reaches configuration I/O without requiring a network share.
+    throw Object.assign(Error('fixture config access denied'), { code: 'EACCES' });
+  });
+  syncBuiltinESMExports();
+  try {
+    for (const file of paths) {
+      const env = { WEBGPT_CONFIG: file };
+      await assert.rejects(runService(env, { spawnWorker: () => assert.fail('must not launch') }), { code: 'CONFIG_INVALID' });
+      await assert.rejects(requestServiceStop(env), { code: 'CONFIG_INVALID' });
+    }
+    assert.deepEqual(observed, paths.flatMap(file => [file, file]));
+  } finally { mock.mock.restore(); syncBuiltinESMExports(); }
+});
 
 test('invalid service entry paths fail before runtime creation or child launch', () => fixture(async f => {
   for (const entryPath of [null, 12, 'service.mjs', join(f.base, 'missing.mjs'), f.file])
