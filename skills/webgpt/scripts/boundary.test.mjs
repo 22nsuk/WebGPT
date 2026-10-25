@@ -172,6 +172,8 @@ test('MCP admission rejects request-only errors before state reads or workspace 
       ['delete digest syntax', 'delete_file', { token, path: 'source.txt', expectedSha256: 'bad' }, 'expectedSha256 required (null only for create)'],
       ['cursor syntax', 'list_files', { token, path: '.', cursor: '!' }, 'invalid directory cursor'],
       ['cursor shape', 'list_files', { token, path: '.', cursor: Buffer.from('null').toString('base64url') }, 'invalid directory cursor'],
+      ...['', 'g'.repeat(64)].map(revision => ['cursor revision ' + JSON.stringify(revision), 'list_files',
+        { token, path: '.', cursor: Buffer.from(JSON.stringify({ v: 1, offset: 1, revision })).toString('base64url') }, 'invalid directory cursor']),
       ['list path', 'list_files', { token, path: '../escape' }, 'invalid path or Git metadata'],
       ['read path', 'read_file', { token, path: '../escape' }, 'invalid path or Git metadata'],
       ['write path', 'write_file', { token, path: '../escape', text: 'replacement', expectedSha256: null }, 'invalid path or Git metadata'],
@@ -222,6 +224,8 @@ test('MCP admission preserves semantic request errors without latching a state r
     for (const [label, name, args, message] of [
       ['digest', 'read_file', { path: 'source.txt', expectedSha256: 'bad' }, 'invalid expectedSha256'],
       ['cursor', 'list_files', { path: '.', cursor: '!' }, 'invalid directory cursor'],
+      ...['', 'g'.repeat(64)].map(revision => ['cursor revision ' + JSON.stringify(revision), 'list_files',
+        { path: '.', cursor: Buffer.from(JSON.stringify({ v: 1, offset: 1, revision })).toString('base64url') }, 'invalid directory cursor']),
       ['path', 'write_file', { path: '../escape', text: 'not written', expectedSha256: null }, 'invalid path or Git metadata'],
       ['summary', 'submit_result', { status: 'completed', summary: 'x'.repeat(2049), result: 'not saved' }, 'invalid result'],
     ]) await t.test(label, async () => {
