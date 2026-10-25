@@ -282,6 +282,25 @@ test('review CLI redacts native failures and rejected controller bodies without 
   assert.equal(f.calls.length, 3);
 });
 
+for (const format of ['JSON', 'malformed JSON']) test(`review CLI preserves safe scoped-read guidance for ${format} 404 refusals`, async t => {
+  const f = await fixture(t), privateRefusal = 'private-refusal-token ' + f.dir;
+  const body = format === 'JSON' ? JSON.stringify({ error: privateRefusal, code: 'private-error-code', issues: [privateRefusal] })
+    : privateRefusal + ' {not JSON';
+  f.respond((_req, res) => { res.writeHead(404); res.end(body); });
+  await assert.rejects(f.runCli(['review', 'owned']), error => {
+    assert.equal(error.code, 1); assert.equal(error.stdout, '');
+    assert.equal(error.stderr, 'WebGPT: ' + JSON.stringify({ code: 'SCOPED_READ_UNSUPPORTED',
+      message: 'task-scoped POST unavailable; check controller routing and update the idle worker and client together',
+    }) + '\n');
+    assert.doesNotMatch(error.stderr, /private-refusal-token|private-error-code/);
+    assert.ok(!error.stderr.includes(f.dir)); return true;
+  });
+  assert.deepEqual(f.calls, [{ method: 'POST', path: '/wait' }]);
+  assert.equal(fs.readFileSync(join(f.dir, 'state.json'), 'utf8'), 'owned-evidence');
+  assert.equal(fs.readFileSync(f.artifact, 'utf8'), text);
+  assert.equal(fs.readFileSync(join(f.dir, 'controller.key'), 'utf8'), 'fixture-only-key');
+});
+
 // Dynamic imports keep the client-only tests usable with a verified dependency
 // subset; CI always runs these real-worker tests in both repository/install layouts.
 for (const problem of ['none', 'pending-result', 'journal', 'changed-result']) test(`real worker review keeps tokens and guarded collection: ${problem}`, async t => {

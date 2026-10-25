@@ -8,6 +8,8 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { readWindowOptions, textWindow } from './text-window.mjs';
 import { saveReviewedResult, validExportPath } from './result-export.mjs';
 
+const scopedReadUnsupportedMessage = 'task-scoped POST unavailable; check controller routing and update the idle worker and client together';
+
 // Decode user-authored local JSON without silently replacing invalid wire bytes.
 // TextDecoder accepts one leading UTF-8 BOM; BOMs inside strings stay unchanged.
 function parseJsonBytes(bytes) {
@@ -105,7 +107,6 @@ export async function request(action, payload, config, { signal, timeoutMs = act
     signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
   });
   const unsupportedScope = ids !== undefined && response.status === 404;
-  const scopeMessage = 'task-scoped POST unavailable; check controller routing and update the idle worker and client together';
   let result;
   try { result = await response.json(); }
   catch (error) {
@@ -114,11 +115,11 @@ export async function request(action, payload, config, { signal, timeoutMs = act
     // broken. Do not turn a known rejection into a retry or collection probe.
     // Successful responses keep transport uncertainty for post-commit checks.
     if (response.ok) throw error;
-    throw Object.assign(Error(unsupportedScope ? scopeMessage : 'controller request failed: ' + response.status, { cause: error }), {
+    throw Object.assign(Error(unsupportedScope ? scopedReadUnsupportedMessage : 'controller request failed: ' + response.status, { cause: error }), {
       statusCode: response.status, retryable: false, ...(unsupportedScope ? { code: 'SCOPED_READ_UNSUPPORTED' } : {}),
     });
   }
-  if (!response.ok) throw Object.assign(Error(unsupportedScope ? scopeMessage : result?.error ?? 'controller request failed: ' + response.status), {
+  if (!response.ok) throw Object.assign(Error(unsupportedScope ? scopedReadUnsupportedMessage : result?.error ?? 'controller request failed: ' + response.status), {
     statusCode: response.status, code: unsupportedScope ? 'SCOPED_READ_UNSUPPORTED' : result?.code, details: result,
     // Only explicit known transient refusals are retryable; this does not replay
     // mutations or turn an ambiguous transport failure into capacity evidence.
@@ -548,8 +549,9 @@ if (executeCli) {
         message: 'Handoff preparation failed; inspect private inputs and references/worker-handoff.md.' }));
     } else if (action === 'review') {
       // Do not echo a controller body, native path, result content or credentials.
-      const code = ['REVIEW_USAGE', 'REVIEW_RANGE', 'REVIEW_REVISION_CONFLICT', 'REVIEW_UNCONFIRMED', 'REVIEW_EXPORT', 'RESULT_INVALID', 'STATE_INVALID', 'ENOENT'].includes(error.code) ? error.code : 'REVIEW_FAILED';
+      const code = ['REVIEW_USAGE', 'REVIEW_RANGE', 'REVIEW_REVISION_CONFLICT', 'REVIEW_UNCONFIRMED', 'REVIEW_EXPORT', 'RESULT_INVALID', 'STATE_INVALID', 'ENOENT', 'SCOPED_READ_UNSUPPORTED'].includes(error.code) ? error.code : 'REVIEW_FAILED';
       const message = code === 'REVIEW_USAGE' ? reviewUsage
+        : code === 'SCOPED_READ_UNSUPPORTED' ? scopedReadUnsupportedMessage
         : code === 'REVIEW_RANGE' ? reviewRangeMessage(error.cause)
         : code === 'REVIEW_REVISION_CONFLICT' ? 'saved result revision differs; inspect before starting a new review'
         : code === 'REVIEW_EXPORT' ? 'result export failed; preserve partial files and inspect the private destination'
