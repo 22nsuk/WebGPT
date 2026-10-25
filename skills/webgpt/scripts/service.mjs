@@ -3,7 +3,7 @@
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { mkdirSync } from 'node:fs';
-import { resolve, isAbsolute, dirname } from 'node:path';
+import { resolve, isAbsolute, dirname, parse } from 'node:path';
 import { isCliEntry } from './cli-entry.mjs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { configuration } from './client.mjs';
@@ -13,6 +13,10 @@ import { listenServiceControl, readServiceControl, sendServiceStop } from './ser
 
 const backoff = [1000, 5000, 15000];
 const report = entry => console.error(JSON.stringify(entry));
+// Windows \path and /path depend on the current drive, which can change when
+// the worker starts in dataDir or a later caller requests service stop.
+const servicePath = path => typeof path === 'string' && isAbsolute(path)
+  && (process.platform !== 'win32' || parse(path).root.length > 1);
 export function restartDelay(code, signal, attempt, platform = process.platform) {
   if (!Number.isSafeInteger(attempt) || attempt < 0 || attempt >= backoff.length) return null;
   // Windows Stop-Process/TerminateProcess can surface unsigned DWORD -1, not a
@@ -22,11 +26,13 @@ export function restartDelay(code, signal, attempt, platform = process.platform)
   return null; // Clean stop, configuration/data/storage/ownership errors: no restart.
 }
 function serviceConfig(env) {
-  if (!env.WEBGPT_CONFIG || !isAbsolute(env.WEBGPT_CONFIG)) throw fault('CONFIG_INVALID', 'service requires an explicit absolute WEBGPT_CONFIG');
+  if (!servicePath(env.WEBGPT_CONFIG)) throw fault('CONFIG_INVALID', 'service requires an explicit fully qualified WEBGPT_CONFIG');
   try {
     // Validate the explicit directory against the same strictly decoded snapshot.
-    return configuration(env, { requireExplicitDataDir: true });
-  } catch { throw fault('CONFIG_INVALID', 'service configuration requires an explicit absolute dataDir and valid ports'); }
+    const config = configuration(env, { requireExplicitDataDir: true });
+    if (!servicePath(config.dataDir)) throw Error('drive-dependent dataDir');
+    return config;
+  } catch { throw fault('CONFIG_INVALID', 'service configuration requires an explicit fully qualified dataDir and valid ports'); }
 }
 export async function requestServiceStop(env = process.env) {
   const config = serviceConfig(env);

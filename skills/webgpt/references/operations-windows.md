@@ -375,6 +375,17 @@ new service account's home directory. Paths to Node, scripts, working directory,
 config and logs are explicit in `deploy/windows/worker.xml.example`. Do not overwrite
 an existing configuration with the example or move active runtime data implicitly.
 
+On Windows, both `run` and `stop` require fully qualified paths such as
+`C:\WebGPT\config.json` or `\\server\share\WebGPT\config.json`. Drive-less rooted
+paths such as `\WebGPT\config.json` or `/WebGPT/runtime` are rejected with
+`CONFIG_INVALID` before runtime creation, child launch or service-control access:
+their meaning can change when the worker starts on another drive. Use the intended
+drive or share explicitly for both the configuration file and the selected data
+directory. `WEBGPT_DATA_DIR` still overrides the saved `dataDir`; ordinary drive,
+UNC and extended-length path syntax remains accepted. This does not change the
+requirement to keep runtime data on one local machine rather than a shared network
+drive. No configuration or runtime data is rewritten or moved.
+
 Prefer a dedicated non-administrator service identity with only the necessary
 rights; verify the actual token, not the username. Grant the reviewed executable,
 script and wrapper trees read/execute, not write. Grant runtime/log directories the
