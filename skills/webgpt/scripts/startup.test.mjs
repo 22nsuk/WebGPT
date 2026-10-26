@@ -15,6 +15,8 @@ for (const [name, key] of [
   ['trailing space', 'fixture-only '],
   ['trailing tab', 'fixture-only\t'],
   ['newline', 'fixture-only\n'],
+  ['interior newline', 'fixture-only\nx'],
+  ['invalid UTF-8', Buffer.from([0xff])],
   ['control character', 'fixture-\0-only'],
   ['DEL character', 'fixture-\x7f-only'],
   ['wide Unicode', 'fixture-한글'],
@@ -31,7 +33,7 @@ for (const [name, key] of [
       await assert.rejects(async () => {
         service = await start({ dir, port: 0, controlPort: 0 });
       }, { message: 'invalid controller.key' });
-      assert.equal(readFileSync(keyPath, 'utf8'), key);
+      assert.deepEqual(readFileSync(keyPath), Buffer.from(key));
       assert.equal(readFileSync(statePath, 'utf8'), state);
       assert.equal(existsSync(join(dir, 'worker.lock')), false);
 
@@ -55,6 +57,8 @@ for (const [name, key] of [
   ['leading space', ' fixture-only'],
   ['internal space', 'fixture only'],
   ['Latin-1', 'fixture-é'],
+  ['obs-text', 'fixture-\x80\xff'],
+  ['internal tab', 'fixture\tonly'],
 ]) {
   test(`startup preserves a header-compatible ${name} controller key`, async () => {
     const dir = mkdtempSync(join(tmpdir(), 'webgpt-startup-valid-key-'));
