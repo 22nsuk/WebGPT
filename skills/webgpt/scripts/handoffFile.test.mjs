@@ -2,12 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, toNamespacedPath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { buildHandoff, handoffCli } from './handoff.mjs';
-import { saveHandoffPacket, readHandoffPacket, handoffReadCli, HANDOFF_MAX_BYTES } from './handoff-file.mjs';
+import { saveHandoffPacket, readHandoffPacket, handoffReadCli, validHandoffPath, HANDOFF_MAX_BYTES } from './handoff-file.mjs';
 import { boundedTextPage } from './bounded-text-page.mjs';
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -62,6 +62,67 @@ test('the saved packet hash covers feedback and assignee excluded from the input
   fs.writeFileSync(f.file, JSON.stringify(changed));
   assert.throws(() => readHandoffPacket(f.file, { expectedSha256: saved.saved.sha256 }), { code: 'HANDOFF_FILE_CONFLICT' });
   assert.throws(() => readHandoffPacket(f.file, { expectedSha256: changed.assignment.inputIdentitySha256 }), { code: 'HANDOFF_FILE_CONFLICT' });
+});
+
+test('Windows extended drive paths save exact packet bytes and retain exclusive creation', { skip: process.platform !== 'win32' }, t => {
+  const f = fixture(t), namespaced = toNamespacedPath(f.file);
+  assert.match(namespaced, /^\\\\\?\\[a-z]:\\/i);
+  const saved = saveHandoffPacket(f.packet, namespaced);
+  assert.equal(saved.saved.sha256, hash(f.content));
+  assert.equal(saved.saved.bytes, Buffer.byteLength(f.content));
+  for (const file of [f.file, namespaced, saved.saved.path]) {
+    assert.deepEqual(fs.readFileSync(file), Buffer.from(f.content));
+    assert.equal(readHandoffPacket(file, { expectedSha256: saved.saved.sha256 }).content, f.content);
+    assert.throws(() => saveHandoffPacket(f.packet, file), { code: 'HANDOFF_FILE_INVALID' });
+  }
+  assert.deepEqual(fs.readFileSync(namespaced), Buffer.from(f.content));
+});
+
+test('Windows extended drive reads verify the same native packet and expected hash', { skip: process.platform !== 'win32' }, t => {
+  const f = fixture(t), namespaced = toNamespacedPath(f.file), sha = hash(f.content);
+  // Native I/O establishes that this spelling selects the same existing file.
+  fs.writeFileSync(f.file, f.content);
+  assert.deepEqual(fs.readFileSync(namespaced), fs.readFileSync(f.file));
+  assert.deepEqual(readHandoffPacket(namespaced, { expectedSha256: sha }),
+    readHandoffPacket(f.file, { expectedSha256: sha }));
+  assert.throws(() => readHandoffPacket(namespaced, { expectedSha256: hash('other packet') }),
+    { code: 'HANDOFF_FILE_CONFLICT' });
+  const child = f.run(['read-handoff', namespaced, '--expected-sha256', sha]);
+  assert.equal(child.status, 0, child.stderr);
+  assert.equal(JSON.parse(child.stdout).content, f.content);
+});
+
+test('Windows CLI saves and reads an extended drive path longer than MAX_PATH', { skip: process.platform !== 'win32' }, t => {
+  const f = fixture(t);
+  let dir = f.dir;
+  while (dir.length < 280) dir = join(dir, 'long-native-directory');
+  fs.mkdirSync(toNamespacedPath(dir), { recursive: true });
+  const ordinary = join(dir, '인계 # %.json'), namespaced = toNamespacedPath(ordinary);
+  assert.ok(ordinary.length > 260);
+  const child = f.run(['handoff', f.specPath, '--save', namespaced]);
+  assert.equal(child.status, 0, child.stderr);
+  const saved = JSON.parse(child.stdout);
+  assert.equal(saved.saved.sha256, hash(f.content));
+  assert.deepEqual(fs.readFileSync(namespaced), Buffer.from(f.content));
+  assert.deepEqual(fs.readFileSync(ordinary), Buffer.from(f.content));
+  for (const file of [ordinary, namespaced, saved.saved.path]) {
+    const read = f.run(['read-handoff', file, '--expected-sha256', saved.saved.sha256]);
+    assert.equal(read.status, 0, read.stderr);
+    assert.equal(JSON.parse(read.stdout).content, f.content);
+  }
+});
+
+test('handoff path validation preserves native spellings and input limits', () => {
+  const paths = process.platform === 'win32'
+    ? ['C:\\private\\packet.json', 'c:/private/packet.json', '\\\\server\\share\\packet.json',
+      '\\\\?\\C:\\private\\packet.json', '\\\\?\\c:\\private\\packet.json', '\\\\?\\UNC\\server\\share\\packet.json']
+    : ['/private/packet.json', '/private/C:packet.json', '/private/\\\\?\\C:packet.json'];
+  for (const file of paths) assert.equal(validHandoffPath(file), true, file);
+  const base = paths[0];
+  assert.equal(validHandoffPath(base + 'x'.repeat(4096 - base.length)), true);
+  for (const file of ['', 'relative.json', base + '\0', base + '\n', base + '\x7f',
+    base + '\ud800', base + '/', base + '\\', base + 'x'.repeat(4096)])
+    assert.equal(validHandoffPath(file), false, JSON.stringify(file));
 });
 
 test('existing files, directories and hardlinks cannot be overwritten or certified', t => {
@@ -153,11 +214,24 @@ test('exclusive handoff creation preserves a file arriving after the absence che
 
 test('Windows alternate streams cannot bypass new-file-only storage', { skip: process.platform !== 'win32' }, t => {
   const f = fixture(t); fs.writeFileSync(f.file, 'keep');
-  const stream = f.file + ':packet';
-  assert.throws(() => saveHandoffPacket(f.packet, stream), { code: 'HANDOFF_FILE_USAGE' });
-  assert.equal(fs.existsSync(stream), false);
+  const streams = [f.file + ':packet', toNamespacedPath(f.file) + ':packet',
+    toNamespacedPath(f.file) + ':packet:$DATA'];
+  const invalid = [...streams, toNamespacedPath(f.file) + '::$DATA', toNamespacedPath(f.dir) + ':packet\\child.json',
+    '\\\\?\\UNC\\server\\share\\packet.json:stream', '\\\\?\\UNC\\server:stream\\share\\packet.json',
+    '\\\\?\\C:relative.json', '\\\\?\\C:/private/packet.json', '\\\\.\\C:\\private\\packet.json',
+    '\\??\\C:\\private\\packet.json', '\\\\?\\GLOBALROOT\\Device\\C:\\private\\packet.json'];
+  let opens = 0, resolutions = 0;
+  const open = t.mock.method(fs, 'openSync', () => { opens++; throw Error('unexpected file open'); });
+  const realpath = t.mock.method(fs.realpathSync, 'native', () => { resolutions++; throw Error('unexpected path resolution'); });
+  for (const file of invalid) {
+    assert.equal(validHandoffPath(file), false, file);
+    assert.throws(() => saveHandoffPacket(f.packet, file), { code: 'HANDOFF_FILE_USAGE' });
+    assert.throws(() => readHandoffPacket(file, { expectedSha256: hash(f.content) }), { code: 'HANDOFF_FILE_USAGE' });
+  }
+  assert.equal(opens, 0); assert.equal(resolutions, 0);
+  open.mock.restore(); realpath.mock.restore();
+  for (const stream of streams) assert.equal(fs.existsSync(stream), false);
   assert.equal(fs.readFileSync(f.file, 'utf8'), 'keep');
-  assert.throws(() => readHandoffPacket(stream, { expectedSha256: hash(f.content) }), { code: 'HANDOFF_FILE_USAGE' });
 });
 
 test('failed flush retains evidence, redacts native errors and refuses an overwrite retry', t => {

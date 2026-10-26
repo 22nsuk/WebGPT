@@ -143,8 +143,10 @@ Exclusive creation remains required for a destination arriving after that check;
 the absence check is not a filesystem reservation.
 Windows alternate-stream paths are rejected. Native absolute file paths must be
 well-formed, at most 4,096 UTF-16 units and contain no control characters or trailing
-separator. Before creating the packet file, saving checks that the native canonical
-parent path is valid UTF-8, including the target of an ordinary parent alias.
+separator. Windows extended drive paths (`\\?\C:\...`) and extended UNC paths
+(`\\?\UNC\server\share\...`) follow the same rules; only a fully qualified drive
+root may contain a colon. Before creating the packet file, saving checks that the
+native canonical parent path is valid UTF-8, including the target of an ordinary parent alias.
 Non-UTF-8 native names are refused, never replaced with a different `U+FFFD` spelling.
 Normal Unicode, literal U+FFFD and parent aliases remain supported without name
 normalization or renaming. The receipt reports the canonical parent location. A failure preserves

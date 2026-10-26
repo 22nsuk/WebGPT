@@ -18,7 +18,8 @@ const failure = (code = 'HANDOFF_FILE_INVALID') => Object.assign(Error(messages[
 export const validHandoffPath = path => typeof path === 'string' && path.isWellFormed()
   && path.length <= 4096 && isAbsolute(path) && !/[\x00-\x1f\x7f]/.test(path)
   // NTFS alternate streams mutate an existing file despite an exclusive stream create.
-  && (process.platform !== 'win32' || !path.slice(/^[a-z]:[\\/]/i.test(path) ? 2 : 0).includes(':'))
+  // Only an ordinary or extended fully qualified drive root may contain a colon.
+  && (process.platform !== 'win32' || !path.replace(/^(?:[a-z]:[\\/]|\\\\\?\\[a-z]:\\)/i, '').includes(':'))
   && !/[\\/]$/.test(path) && !['', '.', '..'].includes(basename(path));
 const sameFile = (a, b) => a.dev === b.dev && a.ino === b.ino;
 function packetText(bytes) {
