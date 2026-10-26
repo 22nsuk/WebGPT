@@ -183,6 +183,49 @@ test('a missing parent key is ENOENT, not a request or permission to create a ke
   assert.deepEqual(fs.readdirSync(dir), []);
 });
 
+test('parent API and real CLI reject invalid controller key text without requests or secret diagnostics', async t => {
+  const dir = readFixture(t), keyFile = join(dir, 'controller.key'), marker = 'PRIVATE_FIXTURE_KEY';
+  const stateFile = join(dir, 'state.json'), state = '[\n]\n';
+  fs.writeFileSync(stateFile, state);
+  let requests = 0;
+  const server = createServer((req, res) => {
+    requests++; res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"ok":true}');
+  });
+  await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
+  try {
+    const config = { dataDir: dir, controlPort: server.address().port,
+      mcpPort: server.address().port === 43137 ? 43138 : 43137 };
+    const file = join(dir, 'config.json'), configBytes = JSON.stringify(config); fs.writeFileSync(file, configBytes);
+    for (const [name, text] of [['empty', ''], ['trailing space', marker + ' '], ['trailing tab', marker + '\t'],
+      ['trailing newline', marker + '\n'], ['interior newline', marker + '\nx'], ['interior CR', marker + '\rx'],
+      ['NUL', marker + '\0'], ['DEL', marker + '\x7f'], ['wide Unicode', marker + '한글'],
+      ['invalid UTF-8', Buffer.concat([Buffer.from(marker), Buffer.from([0xff])])]]) {
+      await t.test(name, async t => {
+        const bytes = Buffer.from(text); fs.writeFileSync(keyFile, bytes);
+        await t.test('API', async () => {
+          await assert.rejects(request('status', undefined, config), error => {
+            assert.equal(error.code, 'CONFIG_INVALID'); assert.equal(error.message, 'invalid controller.key');
+            assert.equal(error.cause, undefined); assert.equal(error.stack.includes(marker), false);
+            assert.equal(retryableControllerError(error), false); return true;
+          });
+        });
+        await t.test('CLI', async () => {
+          await assert.rejects(execute(process.execPath, [fileURLToPath(clientUrl), 'status'], {
+            env: { ...process.env, WEBGPT_CONFIG: file, WEBGPT_DATA_DIR: dir }, timeout: 10000,
+          }), error => {
+            assert.equal(error.code, 1); assert.equal(error.stdout, '');
+            assert.equal(error.stderr.trim(), 'WebGPT: invalid controller.key'); return true;
+          });
+        });
+        assert.deepEqual(fs.readFileSync(keyFile), bytes);
+        assert.equal(fs.readFileSync(stateFile, 'utf8'), state);
+        assert.equal(fs.readFileSync(file, 'utf8'), configBytes);
+        assert.equal(requests, 0, 'invalid key text must not reach the controller');
+      });
+    }
+  } finally { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
+});
+
 test('only a boolean explicit link opt-in can relax the shared reader', t => {
   const file = join(readFixture(t), 'missing');
   for (const allowLinks of [null, 0, 1, 'true', {}])
@@ -225,8 +268,10 @@ for (const adapter of adapters) for (const atOpen of [false, true])
       if (atOpen) assert.equal(fs.readFileSync(file + '.original', 'utf8'), adapter.text);
     });
 
-test('real client CLI sends a larger task JSON and an unchanged custom key over loopback', async t => {
-  const dir = readFixture(t), key = 'custom/non-UUID:key-é';
+for (const [name, key] of [['Latin-1', 'custom/non-UUID:key-é'], ['obs-text', 'fixture-\x80\xff'],
+  ['spaces and tab', ' fixture\twith space']])
+test(`real client CLI sends a larger task JSON and unchanged ${name} key over loopback`, async t => {
+  const dir = readFixture(t);
   fs.writeFileSync(join(dir, 'controller.key'), key);
   const received = [];
   const server = createServer(async (req, res) => {

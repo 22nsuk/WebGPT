@@ -7,6 +7,7 @@ import { readVerifiedResult, verifySavedResult } from './results.mjs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { readWindowOptions, textWindow } from './text-window.mjs';
 import { saveReviewedResult, validExportPath } from './result-export.mjs';
+import { validateControllerKey } from './controller-key.mjs';
 
 const scopedReadUnsupportedMessage = 'task-scoped POST unavailable; check controller routing and update the idle worker and client together';
 
@@ -92,7 +93,7 @@ export async function request(action, payload, config, { signal, timeoutMs = act
   const storedKey = readBoundedFile(join(config.dataDir, 'controller.key'), 4096,
     () => fault('CONFIG_INVALID', 'invalid controller.key'));
   if (storedKey === null) throw fault('ENOENT', 'controller.key does not exist');
-  const key = storedKey.bytes.toString('utf8');
+  const key = validateControllerKey(storedKey.bytes.toString('utf8'));
   // Explicit scopes belong in a bounded JSON body, not the HTTP request target.
   // Serialize the validated snapshot, never caller accessors or payload.toJSON.
   const post = !read || ids !== undefined;

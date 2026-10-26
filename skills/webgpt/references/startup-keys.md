@@ -15,6 +15,15 @@ unlimited length is intentionally no longer accepted. Existing decoding and
 header validation are retained; no trimming, normalization or format migration
 is performed. The public route's 64-byte allowance matches its generated format.
 
+The parent client applies the same controller-key text validation before sending
+any HTTP request. Empty keys, trailing whitespace, invalid header characters and
+malformed UTF-8 fail with `CONFIG_INVALID` and the fixed `invalid controller.key`
+message, without including key contents or a native header-error cause. A damaged
+key is not silently trimmed into a credential accepted by an already running
+worker. Header-compatible custom keys, including Latin-1 characters, retain their
+original spelling. The client still reports an initially missing key as `ENOENT`
+and never creates or repairs it.
+
 ## Read and failure contract
 
 The shared reader rejects non-regular files, symlinks and files with more than
@@ -51,6 +60,7 @@ Run the focused integration and shared-reader tests from the repository root:
 
 ```sh
 node --test skills/webgpt/scripts/startupKeys.test.mjs skills/webgpt/scripts/startup.test.mjs skills/webgpt/scripts/publicMcp.test.mjs skills/webgpt/scripts/boundedFile.test.mjs
+node --test skills/webgpt/scripts/configurationReads.test.mjs
 ```
 
 The new startup tests call the real `start()`, not an extracted read expression.
