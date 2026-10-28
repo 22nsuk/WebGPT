@@ -64,6 +64,8 @@ export function validateWorkspaceInput(input) {
       || !['read','edit'].includes(input.mode) || 'read' in input || 'write' in input) throw Error('use workspace root and mode only');
   if (!input.root.isWellFormed()) throw Error('workspace root must be well-formed Unicode');
   if (input.root.includes('\0')) throw Error('workspace root must not contain NUL');
+  // Rooted Windows paths inherit the worker's drive, which may differ from the parent's.
+  if (process.platform === 'win32' && parse(input.root).root.length === 1) throw Error('workspace root must be fully qualified');
 }
 export function grantWorkspace(input) {
   validateWorkspaceInput(input);

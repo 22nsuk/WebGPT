@@ -43,7 +43,7 @@ test('scope, read-only, traversal, protected files, directory links and hardlink
   assert.equal(after.sha256,before.sha256);assert.equal(after.text,before.text);
   assert.equal(existsSync(join(dir,'recovery')),false);
   assert.throws(()=>grantWorkspace({root,mode:'read',read:[],write:['source.txt']}),/root and mode only/);
-  assert.throws(()=>grantWorkspace({root:'/',mode:'edit'}),/project root/);
+  assert.throws(()=>grantWorkspace({root:'/',mode:'edit'}),process.platform==='win32'?/fully qualified/:/project root/);
   assert.throws(()=>grantWorkspace({root:parse(root).root,mode:'edit'}),/project root/);
   symlinkSync(dir,join(root,'new'),process.platform === 'win32' ? 'junction' : 'dir');
   assert.throws(()=>changeWorkspace(grant,dir,'task',{path:'new/fresh.txt',text:'escape',expectedSha256:null}),/symlink/);

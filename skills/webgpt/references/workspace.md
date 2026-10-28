@@ -49,6 +49,15 @@ Use `mode:"read"` for review/analysis; omit workspace for text-only work. Concur
 share the project, with disjoint responsibilities coordinated in prompts. Revision checks reject
 stale edits. Only the parent can choose the project root and mode.
 
+On Windows, `workspace.root` must be fully qualified: use a drive path such as
+`C:\project` or `C:/project`, a complete UNC path such as `\\server\share\project`,
+or its supported extended spelling (`\\?\C:\project`, `\\?\UNC\server\share\project`).
+Drive-less roots such as `\project`, `/project` and incomplete UNC `\\server` are
+rejected before state or workspace inspection. They otherwise inherit the worker's
+current drive, which can differ from the parent's and select a different project.
+Supply the intended full path; no drive is guessed or prepended. Existing stored
+canonical grants and POSIX absolute roots are unchanged.
+
 Send the returned **task token** privately to its WebGPT worker.
 
 Registration requires well-formed Unicode in `instructions`, every input name/value and
