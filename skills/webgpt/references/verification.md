@@ -83,6 +83,14 @@ readers; the controller may still perform its usual readiness canary and live qu
 observation. Reading the dispatch ledger briefly takes its existing cooperative lock.
 Do not run this checker concurrently with the parent's ledger mutation.
 
+`checkVerification(path, config)` first checks that the run path is a well-formed
+Unicode string and absolute, before reading omitted default configuration. Invalid
+input therefore reports `invalid verification input; preserve the private run directory`
+even when configuration is missing or malformed. Valid calls resolve omitted
+configuration once, then inspect the run directory and manifest; explicit configuration
+is used as-is. The CLI retains its fixed `unavailable or invalid input` error message
+without exposing private paths, file contents or native errors.
+
 For an eligible completed result, `check` uses the shared `readVerifiedResult` reader
 once: it verifies the owned path, file type/link/size and SHA, then parses those same
 UTF-8 bytes. One leading BOM is accepted for this JSON check, as before. The checker
