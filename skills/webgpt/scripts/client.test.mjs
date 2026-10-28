@@ -294,12 +294,13 @@ test('explicit collection resume verifies retired results without repeating ackn
   });
 }));
 
-test('resume CLI distinguishes discarded results, cancelled tasks without a result, and active tasks', () => fixture(async f => {
+test('resume CLI distinguishes discarded results, cancelled tasks without a result, and active tasks after restart', () => fixture(async f => {
   await completedTask(f, 'discarded'); await f.admin('cancel', { id: 'discarded' });
   await f.admin('register', { id: 'cancelled', instructions: 'Review', inputs: {} });
   await f.admin('cancel', { id: 'cancelled' });
   const active = await f.admin('register', { id: 'active', instructions: 'Review', inputs: {} });
   writeFileSync(join(f.dir, 'active.result.txt'), 'uncommitted candidate');
+  await f.restart();
   await controllerProxy(f, async ({ config, actions }) => {
     const file = join(f.dir, 'resume-config.json'); writeFileSync(file, JSON.stringify(config));
     const env = { ...process.env, WEBGPT_CONFIG: file, WEBGPT_DATA_DIR: f.dir };
