@@ -9,8 +9,9 @@ import { AUDIT_LIMIT, auditRecord, readDiagnosticBytes, validAuditTaskId } from 
 
 const stateLimitMessage = 'task state exceeds offline diagnostic limit (32 MiB); state not validated';
 
-export function diagnoseTask(id, config = configuration()) {
+export function diagnoseTask(id, config) {
   if (!validAuditTaskId(id)) throw Error('invalid task ID');
+  if (config === undefined) config = configuration();
   const stateFile = join(config.dataDir, 'state.json');
   let tasks;
   try {

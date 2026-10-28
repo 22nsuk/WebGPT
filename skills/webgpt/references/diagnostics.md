@@ -64,6 +64,12 @@ adds synchronous local I/O and should stay off when it is not needed.
 node <skill>/scripts/diagnose.mjs <owned-task-id>
 ```
 
+`diagnoseTask(id, config)` validates the task ID before reading omitted default
+configuration or task evidence. An invalid ID therefore remains `invalid task ID`
+even when configuration is missing or malformed. Valid calls resolve omitted
+configuration once; explicitly supplied configuration is used as-is. The CLI
+keeps its fixed error messages without echoing private input or native errors.
+
 The command is offline and read-only: no controller writes, acknowledgments, cancellation,
 re-registration, browser access, tunnel repair or automatic retries. It uses the existing
 private configuration, validates the persisted inventory, and rechecks a retained result

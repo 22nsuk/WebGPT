@@ -33,8 +33,11 @@ const invalid = () => Error('invalid verification input; preserve the private ru
 const decode = bytes => new TextDecoder('utf-8', { fatal: true }).decode(bytes);
 const readJson = (file, limit = 32768) => JSON.parse(decode(readDiagnosticBytes(file, limit) ?? Buffer.alloc(0)));
 const writeJson = (file, value) => writeFileSync(file, JSON.stringify(value, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
-function directory(path) {
+function validateDirectoryPath(path) {
   if (typeof path !== 'string' || !path.isWellFormed() || !isAbsolute(path)) throw invalid();
+}
+function directory(path) {
+  validateDirectoryPath(path);
   const info = lstatSync(path);
   if (!info.isDirectory() || info.isSymbolicLink()) throw invalid();
   const bytes = realpathSync.native(path, { encoding: 'buffer' });
@@ -52,8 +55,8 @@ function loadRun(path) {
 }
 
 export function prepareVerification(scenario, path, mode) {
-  if (!verificationScenarios.includes(scenario) || !['pro', 'xhigh'].includes(mode)
-      || typeof path !== 'string' || !path.isWellFormed() || !isAbsolute(path)) throw invalid();
+  if (!verificationScenarios.includes(scenario) || !['pro', 'xhigh'].includes(mode)) throw invalid();
+  validateDirectoryPath(path);
   // Never adopt an old run, register automatically, or delete a partial preparation.
   const dir = join(directory(dirname(path)), basename(path));
   mkdirSync(dir, { mode: 0o700 });
@@ -165,7 +168,9 @@ function resultCheck(run, task, config) {
   } catch { return 'FAIL'; }
 }
 
-export async function checkVerification(path, config = configuration()) {
+export async function checkVerification(path, config) {
+  validateDirectoryPath(path);
+  if (config === undefined) config = configuration();
   const { dir, run } = loadRun(path);
   const report = { version: 2, taskId: run.taskId, scenario: run.scenario, requestedMode: run.mode,
     scope: 'controller_and_fixture', browserChecked: false, liveVerdict: 'NOT_EVALUATED',
