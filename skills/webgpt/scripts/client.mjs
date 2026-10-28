@@ -1,5 +1,5 @@
 import { homedir } from 'node:os';
-import { join, isAbsolute } from 'node:path';
+import { join, isAbsolute, parse } from 'node:path';
 import { isCliEntry } from './cli-entry.mjs';
 import { readBoundedFile, readUnboundedFile } from './bounded-read.mjs';
 import { fault } from './runtime.mjs';
@@ -27,11 +27,18 @@ function readJsonFile(file) {
   return parseJsonBytes(saved.bytes);
 }
 
+function validateConfigurationPath(path, name) {
+  if (typeof path !== 'string' || !path.isWellFormed() || !isAbsolute(path))
+    throw fault('CONFIG_INVALID', name + ' must be absolute');
+  // Windows \path and /path select the current drive, which can differ between callers.
+  if (process.platform === 'win32' && parse(path).root.length === 1)
+    throw fault('CONFIG_INVALID', name + ' must be fully qualified');
+  return path;
+}
+
 // Shared by the worker and controller client; never store configuration in the skill.
 export function configurationFile(env = process.env) {
-  const file = env.WEBGPT_CONFIG ?? join(homedir(), '.config', 'webgpt', 'config.json');
-  if (typeof file !== 'string' || !file.isWellFormed() || !isAbsolute(file)) throw fault('CONFIG_INVALID', 'WEBGPT_CONFIG must be absolute');
-  return file;
+  return validateConfigurationPath(env.WEBGPT_CONFIG ?? join(homedir(), '.config', 'webgpt', 'config.json'), 'WEBGPT_CONFIG');
 }
 
 export function configuration(env = process.env, { requireExplicitDataDir = false } = {}) {
@@ -54,7 +61,7 @@ export function configuration(env = process.env, { requireExplicitDataDir = fals
     controlPort: saved.controlPort ?? 43139,
     publicMcp: saved.publicMcp ?? false,
   };
-  if (typeof config.dataDir !== 'string' || !config.dataDir.isWellFormed() || !isAbsolute(config.dataDir)) throw fault('CONFIG_INVALID', 'dataDir must be absolute');
+  validateConfigurationPath(config.dataDir, 'dataDir');
   if (typeof config.publicMcp !== 'boolean') throw fault('CONFIG_INVALID', 'publicMcp must be boolean');
   for (const key of ['mcpPort', 'controlPort']) {
     if (!Number.isInteger(config[key]) || config[key] < 1 || config[key] > 65535) throw fault('CONFIG_INVALID', 'invalid ' + key);

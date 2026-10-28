@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { rejectsRequest } from './test-fixtures/request-error.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
-import { join } from 'node:path';
+import { join, toNamespacedPath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { syncBuiltinESMExports } from 'node:module';
 import { execFile, execFileSync } from 'node:child_process';
@@ -127,6 +127,90 @@ test('configuration path validation classifies its own errors without exposing t
   assert.equal(network.mock.callCount(), 0);
   assert.deepEqual(fs.readdirSync(dir), []);
 });
+
+for (const separator of ['\\', '/']) for (const source of ['WEBGPT_CONFIG', 'WEBGPT_DATA_DIR', 'saved dataDir'])
+  test(`Windows common configuration rejects drive-less ${source} with ${separator} separators`,
+    { skip: process.platform !== 'win32' }, t => {
+      const dir = readFixture(t), file = join(dir, 'config.json'), runtime = join(dir, 'runtime');
+      assert.match(dir, /^[A-Za-z]:\\/, 'drive-backed fixture required to reproduce current-drive selection');
+      const rooted = path => path.slice(2).replaceAll('\\', separator);
+      const env = { WEBGPT_CONFIG: source === 'WEBGPT_CONFIG' ? rooted(file) : file };
+      if (source === 'WEBGPT_DATA_DIR') env.WEBGPT_DATA_DIR = rooted(runtime);
+      const bytes = JSON.stringify({ dataDir: source === 'saved dataDir' ? rooted(runtime) : runtime });
+      fs.writeFileSync(file, bytes);
+      const cwd = process.cwd(), network = denyNetwork(t);
+      process.chdir(dir);
+      try {
+        // The pre-fix loader can read this real fixture through its drive-less spelling.
+        assert.equal(fs.readFileSync(rooted(file), 'utf8'), bytes);
+        const observed = observeFileRead(t, env.WEBGPT_CONFIG), metadata = t.mock.method(fs, 'statSync');
+        syncBuiltinESMExports();
+        try {
+          const expected = { code: 'CONFIG_INVALID', retryable: false,
+            message: `${source === 'WEBGPT_CONFIG' ? source : 'dataDir'} must be fully qualified` };
+          assert.throws(() => configuration(env), expected);
+          if (source === 'WEBGPT_CONFIG') {
+            assert.throws(() => configurationFile(env), expected);
+            assert.equal(metadata.mock.callCount(), 0);
+            assert.deepEqual(observed.evidence, { opens: 0, closes: 0, bytes: 0, reads: 0 });
+          }
+        } finally { metadata.mock.restore(); observed.restore(); }
+        assert.equal(network.mock.callCount(), 0);
+        assert.equal(fs.readFileSync(file, 'utf8'), bytes);
+        assert.deepEqual(fs.readdirSync(dir), ['config.json']);
+      } finally { process.chdir(cwd); }
+    });
+
+test('Windows common configuration rejects bare and incomplete UNC roots', { skip: process.platform !== 'win32' }, t => {
+  const dir = readFixture(t), file = join(dir, 'config.json'), network = denyNetwork(t);
+  for (const path of ['\\', '/', '\\\\server', '//server']) {
+    assert.throws(() => configurationFile({ WEBGPT_CONFIG: path }), {
+      code: 'CONFIG_INVALID', retryable: false, message: 'WEBGPT_CONFIG must be fully qualified',
+    });
+    const bytes = JSON.stringify({ dataDir: path }); fs.writeFileSync(file, bytes);
+    assert.throws(() => configuration({ WEBGPT_CONFIG: file }), {
+      code: 'CONFIG_INVALID', retryable: false, message: 'dataDir must be fully qualified',
+    });
+    assert.equal(fs.readFileSync(file, 'utf8'), bytes);
+  }
+  assert.equal(network.mock.callCount(), 0);
+  assert.deepEqual(fs.readdirSync(dir), ['config.json']);
+});
+
+test('common configuration preserves qualified native path spellings and selected overrides', t => {
+  const dir = readFixture(t), file = join(dir, 'config.json'), runtime = join(dir, '한글-runtime');
+  const qualify = process.platform === 'win32'
+    ? [path => path, path => path.replaceAll('\\', '/'), toNamespacedPath] : [path => path];
+  const network = denyNetwork(t);
+  for (const format of qualify) {
+    const env = { WEBGPT_CONFIG: format(file) }, saved = { dataDir: format(runtime) };
+    const bytes = JSON.stringify(saved); fs.writeFileSync(file, bytes);
+    assert.equal(configurationFile(env), env.WEBGPT_CONFIG);
+    assert.equal(configuration(env, { requireExplicitDataDir: true }).dataDir, saved.dataDir);
+    assert.equal(fs.readFileSync(file, 'utf8'), bytes);
+    const ignored = JSON.stringify({ dataDir: process.platform === 'win32' ? '\\ignored-runtime' : 'ignored-runtime' });
+    fs.writeFileSync(file, ignored);
+    env.WEBGPT_DATA_DIR = format(runtime);
+    assert.equal(configuration(env, { requireExplicitDataDir: true }).dataDir, env.WEBGPT_DATA_DIR);
+    assert.equal(fs.readFileSync(file, 'utf8'), ignored);
+  }
+  assert.equal(network.mock.callCount(), 0);
+  assert.deepEqual(fs.readdirSync(dir), ['config.json']);
+});
+
+test('Windows common configuration admits qualified UNC spellings without resolving a share',
+  { skip: process.platform !== 'win32' }, t => {
+    const dir = readFixture(t), file = join(dir, 'config.json'), network = denyNetwork(t);
+    for (const path of ['\\\\server\\share\\webgpt', '//server/share/webgpt', '\\\\?\\UNC\\server\\share\\webgpt']) {
+      assert.equal(configurationFile({ WEBGPT_CONFIG: path }), path);
+      const bytes = JSON.stringify({ dataDir: path }); fs.writeFileSync(file, bytes);
+      assert.equal(configuration({ WEBGPT_CONFIG: file }).dataDir, path);
+      assert.equal(configuration({ WEBGPT_CONFIG: file, WEBGPT_DATA_DIR: path }).dataDir, path);
+      assert.equal(fs.readFileSync(file, 'utf8'), bytes);
+    }
+    assert.equal(network.mock.callCount(), 0);
+    assert.deepEqual(fs.readdirSync(dir), ['config.json']);
+  });
 
 test('configuration preserves defaults, explicit overrides and initial absence only', t => {
   const dir = readFixture(t), file = join(dir, '.config', 'webgpt', 'config.json');
