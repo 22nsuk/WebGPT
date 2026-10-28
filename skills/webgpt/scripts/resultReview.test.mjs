@@ -51,8 +51,8 @@ async function fixture(t, { content = text, status = 'completed' } = {}) {
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
   const config = { dataDir: dir, controlPort: server.address().port };
   const configFile = join(dir, 'config.json'); fs.writeFileSync(configFile, JSON.stringify(config));
-  const runCli = args => promisify(execFile)(process.execPath, [cli, ...args], {
-    cwd: dir, env: { ...process.env, WEBGPT_CONFIG: configFile, WEBGPT_DATA_DIR: dir }, timeout: 10000, maxBuffer: 8 * 1024 * 1024,
+  const runCli = (args, env = {}) => promisify(execFile)(process.execPath, [cli, ...args], {
+    cwd: dir, env: { ...process.env, WEBGPT_CONFIG: configFile, WEBGPT_DATA_DIR: dir, ...env }, timeout: 10000, maxBuffer: 8 * 1024 * 1024,
   });
   return { dir, artifact, event, config, calls, runCli, respond: callback => { respond = callback; }, reconcile: callback => { reconcile = callback; } };
 }
@@ -282,7 +282,16 @@ test('review CLI redacts native failures and rejected controller bodies without 
   assert.equal(f.calls.length, 3);
 });
 
-for (const source of ['controller key', 'configuration metadata', 'controller response'])
+for (const [source, configBytes] of [
+  ['controller key'], ['configuration metadata'], ['controller response'],
+  ['missing configuration', null],
+  ['configuration UTF-8', Buffer.from([0xff])],
+  ['configuration JSON', '{"private-configuration-value":'],
+  ['configuration shape', '[]'],
+  ['configuration port', '{"controlPort":0}'],
+  ['configuration boolean', '{"publicMcp":"false"}'],
+  ['relative dataDir', '{"dataDir":"private-configuration-relative"}'],
+])
   test(`review CLI preserves CONFIG_INVALID for ${source} without exposing private evidence`, async t => {
     const f = await fixture(t), keyFile = join(f.dir, 'controller.key'), configFile = join(f.dir, 'config.json');
     if (source === 'controller key') fs.writeFileSync(keyFile, 'private-controller-key\n');
@@ -291,14 +300,18 @@ for (const source of ['controller key', 'configuration metadata', 'controller re
       const bytes = Buffer.alloc(64 * 1024 + 1, 0x20);
       Buffer.from(JSON.stringify({ ...f.config, privateNote: 'private-configuration-value' })).copy(bytes);
       fs.writeFileSync(configFile, bytes);
-    } else f.respond((_req, res) => {
+    } else if (source === 'controller response') f.respond((_req, res) => {
       res.writeHead(400);
       res.end(JSON.stringify({ code: 'CONFIG_INVALID', error: 'private-controller-error ' + f.dir,
         issues: ['private-controller-issue'], cause: { message: 'private-controller-cause' } }));
     });
+    else if (configBytes === null) fs.unlinkSync(configFile);
+    else fs.writeFileSync(configFile, configBytes);
     const evidence = [keyFile, configFile, join(f.dir, 'state.json'), f.artifact]
-      .map(file => [file, fs.readFileSync(file)]);
-    await assert.rejects(f.runCli(['review', 'owned']), error => {
+      .map(file => [file, fs.lstatSync(file, { throwIfNoEntry: false }) ? fs.readFileSync(file) : null]);
+    // Only the invalid stored dataDir needs its otherwise protective fixture override removed.
+    const env = source === 'relative dataDir' ? { WEBGPT_DATA_DIR: undefined } : {};
+    await assert.rejects(f.runCli(['review', 'owned'], env), error => {
       assert.equal(error.code, 1); assert.equal(error.stdout, '');
       assert.equal(error.stderr, 'WebGPT: ' + JSON.stringify({ code: 'CONFIG_INVALID',
         message: 'WebGPT configuration or controller key is invalid; inspect the selected configuration and runtime key',
@@ -307,7 +320,10 @@ for (const source of ['controller key', 'configuration metadata', 'controller re
       assert.ok(!error.stderr.includes(f.dir)); return true;
     });
     assert.deepEqual(f.calls, source === 'controller response' ? [{ method: 'POST', path: '/wait' }] : []);
-    for (const [file, bytes] of evidence) assert.deepEqual(fs.readFileSync(file), bytes);
+    for (const [file, bytes] of evidence) {
+      if (bytes === null) assert.equal(fs.lstatSync(file, { throwIfNoEntry: false }), undefined);
+      else assert.deepEqual(fs.readFileSync(file), bytes);
+    }
   });
 
 for (const format of ['JSON', 'malformed JSON']) test(`review CLI preserves safe scoped-read guidance for ${format} 404 refusals`, async t => {
