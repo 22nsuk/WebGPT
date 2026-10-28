@@ -142,6 +142,15 @@ missing config is an error. Only an absent implicit config uses the existing def
 permission/I/O failures do not masquerade as an unconfigured installation. Environment
 overrides retain their precedence but do not make invalid config bytes acceptable.
 
+On Windows, both paths must be fully qualified, with an explicit drive or share,
+such as `C:\WebGPT\config.json`, `C:/WebGPT/runtime` or
+`\\server\share\WebGPT\config.json`. Drive-less rooted paths such as
+`\WebGPT\config.json` or `/WebGPT/runtime` are rejected with `CONFIG_INVALID`:
+their location depends on the caller's current drive. This applies to the ordinary
+worker, client and service. Qualified extended-length paths remain accepted, and
+`WEBGPT_DATA_DIR` still overrides the saved `dataDir`. Supply the intended path;
+configuration and runtime data are not rewritten or moved automatically.
+
 Configuration path, decoding and field validation errors use `CONFIG_INVALID`,
 including an explicitly selected missing file. Native filesystem failures retain
 their original codes; a later `ENOENT` does not select defaults. The review CLI
