@@ -181,7 +181,10 @@ process restart. A watchdog timeout also does not prove which component failed.
 
 Malformed/non-UTF-8 state, invalid structure, nonportable/duplicate IDs, duplicate
 active tokens and unsafe pending-result paths stop startup without resetting the
-file. Before the first state commit, the worker writes and flushes `state.initialized`.
+file. The optional `discarded` field may be absent in existing state, but when
+present it must be a boolean; other types, including explicit `null`, stop startup
+with `STATE_INVALID` before listeners open, preserving state, result and key evidence.
+Before the first state commit, the worker writes and flushes `state.initialized`.
 Existing valid legacy state receives this marker on startup without changing the
 task schema. A missing state file beside this marker, a temp state, result or recovery
 directory is not an empty deployment. A crash between marker creation and the first

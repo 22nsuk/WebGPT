@@ -13,7 +13,7 @@ import { createServer, Server, ServerResponse } from 'node:http';
 import { connect } from 'node:net';
 import { randomUUID } from 'node:crypto';
 import { start, tools } from './worker.mjs';
-import { request, waitForTasks, collectTask, reconcileTasks, retryableControllerError } from './client.mjs';
+import { request, waitForTasks, reviewTask, collectTask, reconcileTasks, retryableControllerError } from './client.mjs';
 import { acquireRuntimeLock, parseState, startupExitCode } from './runtime.mjs';
 
 const temporary = () => mkdtempSync(join(tmpdir(), 'webgpt-operations-'));
@@ -124,6 +124,74 @@ test('structural validation rejects duplicate IDs/tokens, path escapes and malfo
       assert.throws(() => parseState(Buffer.from(JSON.stringify(tasks)), dir), { code: 'STATE_INVALID' });
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+for (const discarded of ['false', '', 0, 1, {}, [], null]) for (const retired of [false, true])
+  test(`stored discarded ${JSON.stringify(discarded)} blocks ${retired ? 'retired' : 'uncollected'} task startup without changing evidence`, t => fixture(async f => {
+    const task = await f.register('owned');
+    assert.equal((await f.complete(task.token)).isError, false);
+    if (retired) await f.admin('cancel', { id: 'owned' });
+    await f.service.close();
+    const file = join(f.dir, 'state.json'), original = readFileSync(file), tasks = JSON.parse(original);
+    tasks[0].discarded = discarded;
+    writeFileSync(file, JSON.stringify(tasks, null, 2) + '\n');
+    const names = readdirSync(f.dir).sort(), evidence = names.map(name => [name, readFileSync(join(f.dir, name))]);
+    assert.ok(names.includes('owned.result.txt')); assert.ok(names.includes('controller.key'));
+    assert.ok(names.includes('mcp-path.key')); assert.ok(names.includes('state.initialized'));
+    const listen = t.mock.method(Server.prototype, 'listen');
+    try {
+      await assert.rejects(f.restart(), error => {
+        assert.equal(error.code, 'STATE_INVALID'); assert.equal(startupExitCode(error), 65);
+        assert.equal(error.message, 'invalid state.json structure; preserve evidence, do not reset');
+        return true;
+      });
+    } finally { listen.mock.restore(); }
+    assert.equal(listen.mock.callCount(), 0, 'neither MCP nor controller may start listening');
+    assert.deepEqual(readdirSync(f.dir).sort(), names, 'no replacement, migration or stale lock may remain');
+    for (const [name, bytes] of evidence) assert.deepEqual(readFileSync(join(f.dir, name)), bytes);
+    assert.equal(existsSync(join(f.dir, 'worker.lock')), false);
+    if (discarded === 'false' && !retired) {
+      // Only the fixture owner repairs the injected field; refusal itself never repairs state.
+      writeFileSync(file, original); await f.restart();
+      assert.equal((await f.call('get_task', { token: task.token })).isError, false);
+    }
+  }, { publicMcp: true }));
+
+for (const present of [false, true])
+  test(`stored discarded ${present ? 'false' : 'omission'} preserves review and collection across restart`, t => fixture(async f => {
+    const task = await f.register('owned');
+    assert.equal((await f.complete(task.token)).isError, false);
+    await f.service.close();
+    const file = join(f.dir, 'state.json'), tasks = JSON.parse(readFileSync(file));
+    assert.equal(Object.hasOwn(tasks[0], 'discarded'), false);
+    if (present) tasks[0].discarded = false;
+    tasks[0].retainedMetadata = { note: 'unrelated fields remain supported' };
+    // Valid startup already persists compact JSON; keep that existing representation.
+    writeFileSync(file, JSON.stringify(tasks));
+    const before = readFileSync(file), artifact = join(f.dir, 'owned.result.txt');
+    const retained = [artifact, join(f.dir, 'controller.key')].map(path => [path, readFileSync(path)]);
+    const listen = t.mock.method(Server.prototype, 'listen');
+    try { await f.restart(); } finally { listen.mock.restore(); }
+    assert.equal(listen.mock.callCount(), 2, 'the observer sees both listeners on valid startup');
+    const ready = await f.admin('ready');
+    assert.equal(ready.ok, true); assert.equal(ready.stateVerified, true); assert.deepEqual(ready.issues, []);
+    const inspected = (await reconcileTasks(f.config, { ids: ['owned'] })).tasks[0];
+    assert.equal(inspected.discarded, false); assert.equal(inspected.integrity, 'verified');
+    assert.equal(inspected.attention, 'collect_saved_result');
+    assert.equal((await reviewTask('owned', f.config)).review.content, retained[0][1].toString('utf8'));
+    assert.deepEqual(readFileSync(file), before, 'reading legacy state must not fill or normalize the optional field');
+    const collected = await collectTask('owned', f.config);
+    assert.equal(collected.collected, true); assert.equal(collected.integrity, 'verified');
+    const stored = JSON.parse(readFileSync(file))[0];
+    assert.equal(stored.token, undefined); assert.deepEqual(stored.inputs, {});
+    assert.equal(Object.hasOwn(stored, 'discarded'), present);
+    if (present) assert.equal(stored.discarded, false);
+    assert.deepEqual(stored.retainedMetadata, tasks[0].retainedMetadata);
+    const committed = readFileSync(file);
+    await f.restart();
+    assert.equal((await collectTask('owned', f.config, { resume: true })).disposition, 'already_collected');
+    assert.deepEqual(readFileSync(file), committed);
+    for (const [path, bytes] of retained) assert.deepEqual(readFileSync(path), bytes);
+  }));
 
 for (const evidence of ['state.json.tmp', 'a.result.txt', 'recovery']) test(`missing state beside ${evidence} does not silently become empty`, async () => {
   const dir = temporary(); if (evidence === 'recovery') mkdirSync(join(dir, evidence)); else writeFileSync(join(dir, evidence), 'evidence');

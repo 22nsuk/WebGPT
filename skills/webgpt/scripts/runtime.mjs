@@ -206,6 +206,7 @@ export function parseState(bytes, dir) {
         || /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(task.id) || ids.has(task.id.toLowerCase())
         || !['running', 'completed', 'failed', 'cancelled'].includes(task.status)
         || typeof task.collected !== 'boolean' || typeof task.instructions !== 'string'
+        || (Object.hasOwn(task, 'discarded') && typeof task.discarded !== 'boolean')
         || !record(task.inputs) || Object.values(task.inputs).some(value => typeof value !== 'string')
         || (task.changes !== undefined && (!Array.isArray(task.changes) || task.changes.some(value => !record(value))))
         || (task.recoveryRequired !== undefined && (!Array.isArray(task.recoveryRequired)
