@@ -142,6 +142,11 @@ missing config is an error. Only an absent implicit config uses the existing def
 permission/I/O failures do not masquerade as an unconfigured installation. Environment
 overrides retain their precedence but do not make invalid config bytes acceptable.
 
+Configuration path, decoding and field validation errors use `CONFIG_INVALID`,
+including an explicitly selected missing file. Native filesystem failures retain
+their original codes; a later `ENOENT` does not select defaults. The review CLI
+uses fixed configuration/key guidance without exposing private input details.
+
 Each configuration load decodes once. The service's explicit-directory check and its
 selected settings use that same read, rather than reopening the file. This is not a
 cross-process snapshot: a worker and a later stop request load configuration separately.

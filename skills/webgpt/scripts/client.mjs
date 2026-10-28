@@ -30,7 +30,7 @@ function readJsonFile(file) {
 // Shared by the worker and controller client; never store configuration in the skill.
 export function configurationFile(env = process.env) {
   const file = env.WEBGPT_CONFIG ?? join(homedir(), '.config', 'webgpt', 'config.json');
-  if (typeof file !== 'string' || !file.isWellFormed() || !isAbsolute(file)) throw Error('WEBGPT_CONFIG must be absolute');
+  if (typeof file !== 'string' || !file.isWellFormed() || !isAbsolute(file)) throw fault('CONFIG_INVALID', 'WEBGPT_CONFIG must be absolute');
   return file;
 }
 
@@ -41,22 +41,25 @@ export function configuration(env = process.env, { requireExplicitDataDir = fals
   const stored = readBoundedFile(file, 64 * 1024,
     () => fault('CONFIG_INVALID', 'invalid WebGPT configuration file; expected a regular file <=64 KiB'),
     { allowLinks: true });
-  if (stored === null && env.WEBGPT_CONFIG) throw Error('WEBGPT_CONFIG file does not exist');
-  const saved = stored === null ? {} : parseJsonBytes(stored.bytes);
-  if (!saved || typeof saved !== 'object' || Array.isArray(saved)) throw Error('invalid WebGPT configuration');
-  if (requireExplicitDataDir && !(env.WEBGPT_DATA_DIR ?? saved.dataDir)) throw Error('explicit dataDir required');
+  if (stored === null && env.WEBGPT_CONFIG) throw fault('CONFIG_INVALID', 'WEBGPT_CONFIG file does not exist');
+  // Classify only this configuration decode; native reads and task JSON keep their own errors.
+  let saved;
+  try { saved = stored === null ? {} : parseJsonBytes(stored.bytes); }
+  catch (error) { throw Object.assign(error, { code: 'CONFIG_INVALID', retryable: false }); }
+  if (!saved || typeof saved !== 'object' || Array.isArray(saved)) throw fault('CONFIG_INVALID', 'invalid WebGPT configuration');
+  if (requireExplicitDataDir && !(env.WEBGPT_DATA_DIR ?? saved.dataDir)) throw fault('CONFIG_INVALID', 'explicit dataDir required');
   const config = {
     dataDir: env.WEBGPT_DATA_DIR ?? saved.dataDir ?? join(homedir(), '.local', 'share', 'webgpt'),
     mcpPort: saved.mcpPort ?? 43137,
     controlPort: saved.controlPort ?? 43139,
     publicMcp: saved.publicMcp ?? false,
   };
-  if (typeof config.dataDir !== 'string' || !config.dataDir.isWellFormed() || !isAbsolute(config.dataDir)) throw Error('dataDir must be absolute');
-  if (typeof config.publicMcp !== 'boolean') throw Error('publicMcp must be boolean');
+  if (typeof config.dataDir !== 'string' || !config.dataDir.isWellFormed() || !isAbsolute(config.dataDir)) throw fault('CONFIG_INVALID', 'dataDir must be absolute');
+  if (typeof config.publicMcp !== 'boolean') throw fault('CONFIG_INVALID', 'publicMcp must be boolean');
   for (const key of ['mcpPort', 'controlPort']) {
-    if (!Number.isInteger(config[key]) || config[key] < 1 || config[key] > 65535) throw Error('invalid ' + key);
+    if (!Number.isInteger(config[key]) || config[key] < 1 || config[key] > 65535) throw fault('CONFIG_INVALID', 'invalid ' + key);
   }
-  if (config.mcpPort === config.controlPort) throw Error('MCP and controller ports must differ');
+  if (config.mcpPort === config.controlPort) throw fault('CONFIG_INVALID', 'MCP and controller ports must differ');
   return config;
 }
 

@@ -9,7 +9,7 @@ import { syncBuiltinESMExports } from 'node:module';
 import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createServer } from 'node:http';
-import { configuration, request, retryableControllerError } from './client.mjs';
+import { configuration, configurationFile, request, retryableControllerError } from './client.mjs';
 import { readBoundedFile } from './bounded-read.mjs';
 import { readFixture, observeFileRead } from './test-fixtures/file-read.mjs';
 
@@ -117,6 +117,17 @@ for (const adapter of adapters) {
   });
 }
 
+test('configuration path validation classifies its own errors without exposing the selected path', t => {
+  const dir = readFixture(t), network = denyNetwork(t);
+  for (const file of ['private-relative-config.json', 42, join(dir, '\ud800-private-config.json')]) {
+    const expected = { code: 'CONFIG_INVALID', message: 'WEBGPT_CONFIG must be absolute' };
+    assert.throws(() => configurationFile({ WEBGPT_CONFIG: file }), expected);
+    assert.throws(() => configuration({ WEBGPT_CONFIG: file }), expected);
+  }
+  assert.equal(network.mock.callCount(), 0);
+  assert.deepEqual(fs.readdirSync(dir), []);
+});
+
 test('configuration preserves defaults, explicit overrides and initial absence only', t => {
   const dir = readFixture(t), file = join(dir, '.config', 'webgpt', 'config.json');
   const home = t.mock.method(os, 'homedir', () => dir);
@@ -124,8 +135,12 @@ test('configuration preserves defaults, explicit overrides and initial absence o
   try {
     assert.deepEqual(configuration({}), { dataDir: join(dir, '.local', 'share', 'webgpt'),
       mcpPort: 43137, controlPort: 43139, publicMcp: false });
-    assert.throws(() => configuration({ WEBGPT_CONFIG: file }), /file does not exist/);
-    assert.throws(() => configuration({}, { requireExplicitDataDir: true }), /explicit dataDir/);
+    assert.throws(() => configuration({ WEBGPT_CONFIG: file }), {
+      code: 'CONFIG_INVALID', message: 'WEBGPT_CONFIG file does not exist',
+    });
+    assert.throws(() => configuration({}, { requireExplicitDataDir: true }), {
+      code: 'CONFIG_INVALID', message: 'explicit dataDir required',
+    });
     assert.deepEqual(fs.readdirSync(dir), []);
     fs.mkdirSync(join(dir, '.config', 'webgpt'), { recursive: true });
     const saved = { dataDir: join(dir, '한글'), mcpPort: 12340, controlPort: 12341, publicMcp: true };
@@ -146,12 +161,20 @@ test('bounded configuration retains strict UTF-8/JSON decoding and structural va
   for (const bytes of [Buffer.from([0xff]), Buffer.from('{'), Buffer.from('{}', 'utf16le'),
     Buffer.from('\ufeff\ufeff{}')]) {
     fs.writeFileSync(file, bytes);
-    assert.throws(() => configuration({ WEBGPT_CONFIG: file }), /invalid JSON or UTF-8 input file/);
+    assert.throws(() => configuration({ WEBGPT_CONFIG: file }), {
+      code: 'CONFIG_INVALID', message: 'invalid JSON or UTF-8 input file',
+    });
     assert.deepEqual(fs.readFileSync(file), bytes);
   }
-  for (const value of [null, [], { publicMcp: 'true' }, { dataDir: 'relative' }, { mcpPort: 43139 }]) {
+  for (const [value, message] of [
+    [null, 'invalid WebGPT configuration'], [[], 'invalid WebGPT configuration'],
+    [{ publicMcp: 'true' }, 'publicMcp must be boolean'],
+    [{ dataDir: 'relative' }, 'dataDir must be absolute'],
+    [{ mcpPort: 65536 }, 'invalid mcpPort'], [{ controlPort: 0 }, 'invalid controlPort'],
+    [{ mcpPort: 43139 }, 'MCP and controller ports must differ'],
+  ]) {
     const bytes = JSON.stringify(value); fs.writeFileSync(file, bytes);
-    assert.throws(() => configuration({ WEBGPT_CONFIG: file }));
+    assert.throws(() => configuration({ WEBGPT_CONFIG: file }), { code: 'CONFIG_INVALID', message });
     assert.equal(fs.readFileSync(file, 'utf8'), bytes);
   }
 });
