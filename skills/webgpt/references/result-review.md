@@ -92,6 +92,12 @@ result bytes, malformed scope and unsupported wait responses fail without
 collection. CLI errors use compact fixed diagnostics rather than raw controller
 bodies, native paths or credentials.
 
+The review CLI retains an existing `CONFIG_INVALID` code and gives fixed guidance
+to inspect the selected configuration and runtime key. The code may describe a
+local configuration/key check or a controller refusal; it does not identify a
+specific damaged file or prove that no request was sent. Original error messages,
+response details and causes remain private.
+
 The existing scoped wait reports recovery notices for running tasks. For a terminal
 result event, `review` therefore performs one additional **task-scoped, read-only
 reconciliation** before exposing its body. It requires freshly verified controller
