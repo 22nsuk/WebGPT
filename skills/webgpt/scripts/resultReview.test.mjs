@@ -282,6 +282,34 @@ test('review CLI redacts native failures and rejected controller bodies without 
   assert.equal(f.calls.length, 3);
 });
 
+for (const source of ['controller key', 'configuration metadata', 'controller response'])
+  test(`review CLI preserves CONFIG_INVALID for ${source} without exposing private evidence`, async t => {
+    const f = await fixture(t), keyFile = join(f.dir, 'controller.key'), configFile = join(f.dir, 'config.json');
+    if (source === 'controller key') fs.writeFileSync(keyFile, 'private-controller-key\n');
+    else if (source === 'configuration metadata') {
+      // Valid JSON with padding isolates the stored-byte allowance from JSON validation.
+      const bytes = Buffer.alloc(64 * 1024 + 1, 0x20);
+      Buffer.from(JSON.stringify({ ...f.config, privateNote: 'private-configuration-value' })).copy(bytes);
+      fs.writeFileSync(configFile, bytes);
+    } else f.respond((_req, res) => {
+      res.writeHead(400);
+      res.end(JSON.stringify({ code: 'CONFIG_INVALID', error: 'private-controller-error ' + f.dir,
+        issues: ['private-controller-issue'], cause: { message: 'private-controller-cause' } }));
+    });
+    const evidence = [keyFile, configFile, join(f.dir, 'state.json'), f.artifact]
+      .map(file => [file, fs.readFileSync(file)]);
+    await assert.rejects(f.runCli(['review', 'owned']), error => {
+      assert.equal(error.code, 1); assert.equal(error.stdout, '');
+      assert.equal(error.stderr, 'WebGPT: ' + JSON.stringify({ code: 'CONFIG_INVALID',
+        message: 'WebGPT configuration or controller key is invalid; inspect the selected configuration and runtime key',
+      }) + '\n');
+      assert.doesNotMatch(error.stderr, /private-controller|private-configuration/);
+      assert.ok(!error.stderr.includes(f.dir)); return true;
+    });
+    assert.deepEqual(f.calls, source === 'controller response' ? [{ method: 'POST', path: '/wait' }] : []);
+    for (const [file, bytes] of evidence) assert.deepEqual(fs.readFileSync(file), bytes);
+  });
+
 for (const format of ['JSON', 'malformed JSON']) test(`review CLI preserves safe scoped-read guidance for ${format} 404 refusals`, async t => {
   const f = await fixture(t), privateRefusal = 'private-refusal-token ' + f.dir;
   const body = format === 'JSON' ? JSON.stringify({ error: privateRefusal, code: 'private-error-code', issues: [privateRefusal] })

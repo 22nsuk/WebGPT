@@ -550,9 +550,10 @@ if (executeCli) {
         message: 'Handoff preparation failed; inspect private inputs and references/worker-handoff.md.' }));
     } else if (action === 'review') {
       // Do not echo a controller body, native path, result content or credentials.
-      const code = ['REVIEW_USAGE', 'REVIEW_RANGE', 'REVIEW_REVISION_CONFLICT', 'REVIEW_UNCONFIRMED', 'REVIEW_EXPORT', 'RESULT_INVALID', 'STATE_INVALID', 'ENOENT', 'SCOPED_READ_UNSUPPORTED'].includes(error.code) ? error.code : 'REVIEW_FAILED';
+      const code = ['REVIEW_USAGE', 'REVIEW_RANGE', 'REVIEW_REVISION_CONFLICT', 'REVIEW_UNCONFIRMED', 'REVIEW_EXPORT', 'RESULT_INVALID', 'STATE_INVALID', 'CONFIG_INVALID', 'ENOENT', 'SCOPED_READ_UNSUPPORTED'].includes(error.code) ? error.code : 'REVIEW_FAILED';
       const message = code === 'REVIEW_USAGE' ? reviewUsage
         : code === 'SCOPED_READ_UNSUPPORTED' ? scopedReadUnsupportedMessage
+        : code === 'CONFIG_INVALID' ? 'WebGPT configuration or controller key is invalid; inspect the selected configuration and runtime key'
         : code === 'REVIEW_RANGE' ? reviewRangeMessage(error.cause)
         : code === 'REVIEW_REVISION_CONFLICT' ? 'saved result revision differs; inspect before starting a new review'
         : code === 'REVIEW_EXPORT' ? 'result export failed; preserve partial files and inspect the private destination'
