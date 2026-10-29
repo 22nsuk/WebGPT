@@ -28,6 +28,8 @@ function readJsonFile(file) {
 }
 
 function validateConfigurationPath(path, name) {
+  if (typeof path === 'string' && path.includes('\0'))
+    throw fault('CONFIG_INVALID', name + ' must not contain NUL');
   if (typeof path !== 'string' || !path.isWellFormed() || !isAbsolute(path))
     throw fault('CONFIG_INVALID', name + ' must be absolute');
   // Windows \path and /path select the current drive, which can differ between callers.

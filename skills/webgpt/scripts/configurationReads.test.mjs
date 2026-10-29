@@ -128,6 +128,45 @@ test('configuration path validation classifies its own errors without exposing t
   assert.deepEqual(fs.readdirSync(dir), []);
 });
 
+for (const source of ['WEBGPT_CONFIG', 'WEBGPT_DATA_DIR', 'saved dataDir'])
+  test(`common configuration rejects NUL in ${source} before native path I/O`, async t => {
+    const dir = readFixture(t), file = join(dir, 'config.json'), runtime = join(dir, 'private-runtime');
+    const invalid = (source === 'WEBGPT_CONFIG' ? file : runtime) + '\0private-path-suffix';
+    const env = { WEBGPT_CONFIG: source === 'WEBGPT_CONFIG' ? invalid : file };
+    if (source === 'WEBGPT_DATA_DIR') env.WEBGPT_DATA_DIR = invalid;
+    const bytes = Buffer.from(JSON.stringify({ dataDir: source === 'saved dataDir' ? invalid : runtime }));
+    fs.writeFileSync(file, bytes);
+    const network = denyNetwork(t), configMetadata = t.mock.method(fs, 'statSync');
+    const runtimeMetadata = t.mock.method(fs, 'lstatSync'), runtimeCreation = t.mock.method(fs, 'mkdirSync');
+    const observed = observeFileRead(t, file);
+    try {
+      const expected = { code: 'CONFIG_INVALID', retryable: false,
+        message: `${source === 'WEBGPT_CONFIG' ? source : 'dataDir'} must not contain NUL` };
+      const reject = error => {
+        assert.equal(error.code, expected.code); assert.equal(error.message, expected.message);
+        assert.equal(error.retryable, false); assert.equal(retryableControllerError(error), false);
+        assert.equal(error.cause, undefined); assert.ok(!error.stack.includes(dir));
+        assert.ok(!error.stack.includes('private-path-suffix')); return true;
+      };
+      assert.throws(() => configuration(env), reject);
+      await assert.rejects(async () => request('status', undefined, configuration(env)), reject);
+      if (source === 'WEBGPT_CONFIG') {
+        assert.throws(() => configurationFile(env), reject);
+        assert.equal(configMetadata.mock.callCount(), 0);
+        assert.deepEqual(observed.evidence, { opens: 0, closes: 0, bytes: 0, reads: 0 });
+      } else {
+        assert.ok(configMetadata.mock.calls.every(call => call.arguments[0] === file));
+      }
+      assert.equal(runtimeMetadata.mock.callCount(), 0);
+      assert.equal(runtimeCreation.mock.callCount(), 0);
+      assert.equal(network.mock.callCount(), 0);
+    } finally {
+      configMetadata.mock.restore(); runtimeMetadata.mock.restore(); runtimeCreation.mock.restore(); observed.restore();
+    }
+    assert.deepEqual(fs.readFileSync(file), bytes);
+    assert.deepEqual(fs.readdirSync(dir), ['config.json']);
+  });
+
 for (const separator of ['\\', '/']) for (const source of ['WEBGPT_CONFIG', 'WEBGPT_DATA_DIR', 'saved dataDir'])
   test(`Windows common configuration rejects drive-less ${source} with ${separator} separators`,
     { skip: process.platform !== 'win32' }, t => {
@@ -188,11 +227,12 @@ test('common configuration preserves qualified native path spellings and selecte
     assert.equal(configurationFile(env), env.WEBGPT_CONFIG);
     assert.equal(configuration(env, { requireExplicitDataDir: true }).dataDir, saved.dataDir);
     assert.equal(fs.readFileSync(file, 'utf8'), bytes);
-    const ignored = JSON.stringify({ dataDir: process.platform === 'win32' ? '\\ignored-runtime' : 'ignored-runtime' });
-    fs.writeFileSync(file, ignored);
-    env.WEBGPT_DATA_DIR = format(runtime);
-    assert.equal(configuration(env, { requireExplicitDataDir: true }).dataDir, env.WEBGPT_DATA_DIR);
-    assert.equal(fs.readFileSync(file, 'utf8'), ignored);
+    for (const dataDir of [process.platform === 'win32' ? '\\ignored-runtime' : 'ignored-runtime', runtime + '\0ignored-suffix']) {
+      const ignored = JSON.stringify({ dataDir }); fs.writeFileSync(file, ignored);
+      env.WEBGPT_DATA_DIR = format(runtime);
+      assert.equal(configuration(env, { requireExplicitDataDir: true }).dataDir, env.WEBGPT_DATA_DIR);
+      assert.equal(fs.readFileSync(file, 'utf8'), ignored);
+    }
   }
   assert.equal(network.mock.callCount(), 0);
   assert.deepEqual(fs.readdirSync(dir), ['config.json']);

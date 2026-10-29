@@ -291,6 +291,7 @@ for (const [source, configBytes] of [
   ['configuration port', '{"controlPort":0}'],
   ['configuration boolean', '{"publicMcp":"false"}'],
   ['relative dataDir', '{"dataDir":"private-configuration-relative"}'],
+  ['NUL dataDir'],
 ])
   test(`review CLI preserves CONFIG_INVALID for ${source} without exposing private evidence`, async t => {
     const f = await fixture(t), keyFile = join(f.dir, 'controller.key'), configFile = join(f.dir, 'config.json');
@@ -305,14 +306,18 @@ for (const [source, configBytes] of [
       res.end(JSON.stringify({ code: 'CONFIG_INVALID', error: 'private-controller-error ' + f.dir,
         issues: ['private-controller-issue'], cause: { message: 'private-controller-cause' } }));
     });
+    else if (source === 'NUL dataDir') fs.writeFileSync(configFile,
+      JSON.stringify({ ...f.config, dataDir: f.dir + '\0private-configuration-suffix' }));
     else if (configBytes === null) fs.unlinkSync(configFile);
     else fs.writeFileSync(configFile, configBytes);
     const evidence = [keyFile, configFile, join(f.dir, 'state.json'), f.artifact]
       .map(file => [file, fs.lstatSync(file, { throwIfNoEntry: false }) ? fs.readFileSync(file) : null]);
-    // Only the invalid stored dataDir needs its otherwise protective fixture override removed.
-    const env = source === 'relative dataDir' ? { WEBGPT_DATA_DIR: undefined } : {};
+    const entries = fs.readdirSync(f.dir).sort();
+    // Invalid stored dataDir cases need their otherwise protective fixture override removed.
+    const env = source.endsWith('dataDir') ? { WEBGPT_DATA_DIR: undefined } : {};
     await assert.rejects(f.runCli(['review', 'owned'], env), error => {
-      assert.equal(error.code, 1); assert.equal(error.stdout, '');
+      assert.equal(error.code, 1); assert.equal(error.signal, null); assert.equal(error.killed, false);
+      assert.equal(error.stdout, '');
       assert.equal(error.stderr, 'WebGPT: ' + JSON.stringify({ code: 'CONFIG_INVALID',
         message: 'WebGPT configuration or controller key is invalid; inspect the selected configuration and runtime key',
       }) + '\n');
@@ -324,6 +329,7 @@ for (const [source, configBytes] of [
       if (bytes === null) assert.equal(fs.lstatSync(file, { throwIfNoEntry: false }), undefined);
       else assert.deepEqual(fs.readFileSync(file), bytes);
     }
+    assert.deepEqual(fs.readdirSync(f.dir).sort(), entries);
   });
 
 for (const format of ['JSON', 'malformed JSON']) test(`review CLI preserves safe scoped-read guidance for ${format} 404 refusals`, async t => {

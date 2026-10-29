@@ -136,7 +136,8 @@ of rewriting a live configuration. Windows PowerShell 5.1's `-Encoding UTF8` wri
 a BOM and is supported; its default `>` output is UTF-16LE and is not.
 
 The configuration pathname and effective `dataDir` must also be well-formed Unicode
-absolute paths; escaped unpaired surrogates are rejected before runtime creation.
+absolute paths without NUL characters; NUL and escaped unpaired surrogates are
+rejected with `CONFIG_INVALID` before runtime creation or controller-key access.
 A literal U+FFFD character in a valid UTF-8 path remains valid. An explicitly selected
 missing config is an error. Only an absent implicit config uses the existing defaults;
 permission/I/O failures do not masquerade as an unconfigured installation. Environment
