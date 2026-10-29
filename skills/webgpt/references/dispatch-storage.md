@@ -18,7 +18,9 @@ aliases, including literal U+FFFD names, still share the canonical ledger lock.
 An invalid native path returns `DISPATCH_LEDGER` at `ledger_path` with the fixed
 reason `native_path_not_utf8`; the private path is not included in the diagnostic.
 
-The final `.json` basename is retained, and a ledger symlink is refused. The
+The ledger must name a `.json` file below its filesystem or UNC share root; a share
+root is rejected even if the share name ends in `.json`. The final basename is
+retained, and a ledger symlink is refused. The
 canonical parent plus basename selects the shared `<ledger>.dispatch.lock`;
 filename case variants still share that lock on case-insensitive filesystems.
 The ledger itself is not passed to native realpath: its

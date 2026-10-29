@@ -4,7 +4,7 @@ import { basename, dirname, join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { readBoundedFile } from './bounded-read.mjs';
 import { boundedTextPage } from './bounded-text-page.mjs';
-import { isFullyQualifiedPath, nativeUtf8Path } from './native-path.mjs';
+import { isFullyQualifiedLeafPath, nativeUtf8Path } from './native-path.mjs';
 
 export const HANDOFF_MAX_BYTES = 128 * 1024;
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -15,12 +15,12 @@ const messages = {
   HANDOFF_FILE_RANGE: 'handoff offset is outside the text or splits a Unicode or CRLF boundary',
 };
 const failure = (code = 'HANDOFF_FILE_INVALID') => Object.assign(Error(messages[code]), { code });
-export const validHandoffPath = path => isFullyQualifiedPath(path)
+export const validHandoffPath = path => isFullyQualifiedLeafPath(path)
   && path.length <= 4096 && !/[\x00-\x1f\x7f]/.test(path)
   // NTFS alternate streams mutate an existing file despite an exclusive stream create.
   // Only an ordinary or extended fully qualified drive root may contain a colon.
   && (process.platform !== 'win32' || !path.replace(/^(?:[a-z]:[\\/]|\\\\\?\\[a-z]:\\)/i, '').includes(':'))
-  && !/[\\/]$/.test(path) && !['', '.', '..'].includes(basename(path));
+  && !/[\\/]$/.test(path);
 const sameFile = (a, b) => a.dev === b.dev && a.ino === b.ino;
 function packetText(bytes) {
   const content = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);

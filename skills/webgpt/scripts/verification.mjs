@@ -13,7 +13,7 @@ import { readDiagnosticBytes } from './audit.mjs';
 import { inspectDispatchEvidence } from './dispatch.mjs';
 import { grantWorkspace } from './workspace.mjs';
 import { normalizeWorkspaceIdentity } from './workspace-identity.mjs';
-import { isFullyQualifiedPath } from './native-path.mjs';
+import { isFullyQualifiedPath, isFullyQualifiedLeafPath } from './native-path.mjs';
 
 export const verificationScenarios = Object.freeze(['text', 'read', 'edit', 'resume', 'connection']);
 const metricNames = ['browserToolCalls', 'returnedBytes', 'parentInterventions', 'sendAttempts',
@@ -57,7 +57,7 @@ function loadRun(path) {
 
 export function prepareVerification(scenario, path, mode) {
   if (!verificationScenarios.includes(scenario) || !['pro', 'xhigh'].includes(mode)) throw invalid();
-  validateDirectoryPath(path);
+  if (!isFullyQualifiedLeafPath(path)) throw invalid();
   // Never adopt an old run, register automatically, or delete a partial preparation.
   const dir = join(directory(dirname(path)), basename(path));
   mkdirSync(dir, { mode: 0o700 });

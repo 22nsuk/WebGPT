@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import { createHash } from 'node:crypto';
 import { dirname, basename, join } from 'node:path';
 import { readBoundedFile } from './bounded-read.mjs';
-import { isFullyQualifiedPath, nativeUtf8Path } from './native-path.mjs';
+import { isFullyQualifiedPath, isFullyQualifiedLeafPath, nativeUtf8Path } from './native-path.mjs';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
 const fail = () => { throw Object.assign(Error('result export unavailable; preserve files and inspect'), { code: 'REVIEW_EXPORT' }); };
@@ -11,6 +11,7 @@ export const MESSAGE_MAX_CHARS = 20000;
 const PAYLOAD_CHARS = 18000; // Leave room for identity/sequence headers in each message file.
 
 export function validExportPath(path) {
+  // An existing package can occupy a UNC share root; creation requires a leaf.
   return isFullyQualifiedPath(path)
     && !['', '.', '..'].includes(basename(path));
 }
@@ -45,7 +46,7 @@ export function resultMessages(id, content, sha256) {
 // New directory only, manifest last. Failures retain partial evidence, never recursively delete.
 // The caller chooses a private parent directory; Windows ACLs inherit from that parent.
 export function saveReviewedResult(review, destination) {
-  if (!validExportPath(destination) || typeof review?.content !== 'string' || !review.content.isWellFormed()
+  if (!isFullyQualifiedLeafPath(destination) || typeof review?.content !== 'string' || !review.content.isWellFormed()
       || review.integrity !== 'verified' || review.partial !== undefined
       || !['completed', 'failed', 'cancelled'].includes(review.status)) fail();
   const parts = resultMessages(review.id, review.content, review.sha256);

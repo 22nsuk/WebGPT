@@ -7,7 +7,7 @@ import { closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync, writeF
 import { dirname, basename, join } from 'node:path';
 import { readBoundedFile } from './bounded-read.mjs';
 import { buildReviewEvidence, appendReviewEvidence, reviewEvidenceSummary } from './review-evidence.mjs';
-import { isFullyQualifiedPath } from './native-path.mjs';
+import { isFullyQualifiedPath, isFullyQualifiedLeafPath } from './native-path.mjs';
 
 const MAX_BYTES = 2 * 1024 * 1024;
 const phases = ['registered', 'prepared', 'sending', 'uncertain', 'submitted'];
@@ -73,7 +73,7 @@ const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const digest = v => typeof v === 'string' && /^[a-f0-9]{64}$/.test(v);
 const opaque = v => typeof v === 'string' && v.length > 0 && v.length <= 512 && !/[\x00-\x20\x7f]/.test(v) && v.isWellFormed();
 const messageId = v => v === null || opaque(v);
-const validLedgerPath = file => isFullyQualifiedPath(file)
+const validLedgerPath = file => isFullyQualifiedLeafPath(file)
   && file.endsWith('.json') && (process.platform !== 'win32' || !basename(file).includes(':'));
 // Share identity rules between stored evidence and new registration input without relabeling ledger failures.
 const validDispatchIdentity = d => typeof d.taskId === 'string' && /^[a-zA-Z0-9_-]{1,80}$/.test(d.taskId)

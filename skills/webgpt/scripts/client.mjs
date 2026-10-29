@@ -6,7 +6,8 @@ import { fault } from './runtime.mjs';
 import { readVerifiedResult, verifySavedResult } from './results.mjs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { readWindowOptions, textWindow } from './text-window.mjs';
-import { saveReviewedResult, validExportPath } from './result-export.mjs';
+import { saveReviewedResult } from './result-export.mjs';
+import { isFullyQualifiedLeafPath } from './native-path.mjs';
 import { validateControllerKey } from './controller-key.mjs';
 
 const scopedReadUnsupportedMessage = 'task-scoped POST unavailable; check controller routing and update the idle worker and client together';
@@ -226,7 +227,7 @@ function reviewReadOptions(options) {
       || Object.keys(options).some(key => !['offset', 'limit', 'maxChars', 'expectedSha256', 'saveResult', 'signal', 'retryDelays'].includes(key)))
     throw Object.assign(Error(reviewUsage), { code: 'REVIEW_USAGE' });
   const { offset, limit, maxChars, expectedSha256, saveResult, signal, retryDelays } = options;
-  if (saveResult !== undefined && (!validExportPath(saveResult)
+  if (saveResult !== undefined && (!isFullyQualifiedLeafPath(saveResult)
       || [offset, limit, maxChars].some(value => value !== undefined)))
     throw Object.assign(Error(reviewUsage), { code: 'REVIEW_USAGE' });
   if (expectedSha256 !== undefined && (typeof expectedSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(expectedSha256)))
