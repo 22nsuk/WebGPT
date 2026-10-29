@@ -75,7 +75,7 @@ const opaque = v => typeof v === 'string' && v.length > 0 && v.length <= 512 && 
 const messageId = v => v === null || opaque(v);
 const validLedgerPath = file => isFullyQualifiedPath(file)
   && file.endsWith('.json') && (process.platform !== 'win32' || !basename(file).includes(':'));
-// Share identity rules between stored evidence and new CLI input without relabeling ledger failures.
+// Share identity rules between stored evidence and new registration input without relabeling ledger failures.
 const validDispatchIdentity = d => typeof d.taskId === 'string' && /^[a-zA-Z0-9_-]{1,80}$/.test(d.taskId)
   && !/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(d.taskId) && ['pro', 'xhigh'].includes(d.mode);
 const keys = (v, required, optional = [], code = 'INPUT') => {
@@ -279,6 +279,7 @@ export async function registerDispatch(file, spec) {
     const d = { version: required ? 2 : 1, ...(required ? { requiredAttachments: required } : {}),
       taskId: spec.taskId, mode: spec.mode, connectorRequired: spec.connectorRequired ?? true,
       promptSha256: textDigest(spec.prompt), target: target(spec.target), state: 'registered', registeredAt: now() };
+    if (!validDispatchIdentity(d)) fail('INPUT');
     validateDispatch(d);
     if (Object.hasOwn(ledger, 'dispatch')) {
       const prior = ledger.dispatch;
