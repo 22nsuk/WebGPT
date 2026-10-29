@@ -5,8 +5,13 @@ canonical. No new task state, controller protocol or browser transport is introd
 
 ## Reads and creation
 
-Input paths must be well-formed Unicode. Canonical parent directories are resolved as
-native bytes and checked for valid UTF-8 before decoding, locking or writing.
+Ledger and payload paths must be well-formed Unicode, contain no NUL, and be fully
+qualified on the executing host. On Windows, use a drive or UNC path, including
+supported extended forms; `\dir\file.json` and `/dir/file.json` depend on the current
+drive and are rejected before file access. Invalid ledger paths also reject before
+reading a CLI payload. Existing records need no migration; use their explicit path.
+Canonical parent directories are resolved as native bytes and checked for valid
+UTF-8 before decoding, locking or writing.
 This prevents an unrepresentable directory name from selecting a different file
 whose name contains the replacement character U+FFFD. Normal Unicode directory
 aliases, including literal U+FFFD names, still share the canonical ledger lock.

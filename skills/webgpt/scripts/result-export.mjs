@@ -1,9 +1,9 @@
 // Parent-only presentation copies. The controller's result and lifecycle stay authoritative.
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
-import { dirname, basename, isAbsolute, join } from 'node:path';
+import { dirname, basename, join } from 'node:path';
 import { readBoundedFile } from './bounded-read.mjs';
-import { nativeUtf8Path } from './native-path.mjs';
+import { isFullyQualifiedPath, nativeUtf8Path } from './native-path.mjs';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
 const fail = () => { throw Object.assign(Error('result export unavailable; preserve files and inspect'), { code: 'REVIEW_EXPORT' }); };
@@ -11,7 +11,7 @@ export const MESSAGE_MAX_CHARS = 20000;
 const PAYLOAD_CHARS = 18000; // Leave room for identity/sequence headers in each message file.
 
 export function validExportPath(path) {
-  return typeof path === 'string' && path.isWellFormed() && isAbsolute(path) && !path.includes('\0')
+  return isFullyQualifiedPath(path)
     && !['', '.', '..'].includes(basename(path));
 }
 

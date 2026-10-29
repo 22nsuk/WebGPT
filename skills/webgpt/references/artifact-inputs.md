@@ -35,8 +35,11 @@ reviewed OS-isolated mode, not reinterpretation of existing `read`/`edit` grants
 The installed `scripts/artifact-input.mjs` uses Node.js 22+ built-ins only. The
 parent explicitly selects an authorized, stable local source and a new output file
 in a private directory it owns. Prefer a closed log or preserved artifact over a
-file still being written. Paths are absolute; the label is a shareable alias, not
-a path. Source/output strings must be well-formed Unicode: an unpaired surrogate
+file still being written. Source/output paths must be fully qualified on the executing
+host; on Windows, use a drive or UNC path, including supported extended forms.
+`\dir\file` and `/dir/file` depend on the current drive and reject before source or
+output access. The label is a shareable alias, not a path. Source/output strings
+must contain no NUL and be well-formed Unicode: an unpaired surrogate
 is rejected before filesystem access rather than silently selecting or creating a
 different replacement-character filename. Deliberate `�`, paired emoji and ordinary
 Unicode paths are preserved; no normalization is applied. This does not recover

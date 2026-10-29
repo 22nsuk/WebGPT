@@ -66,9 +66,11 @@ By default the command prints one JSON packet to stdout, preserving existing cal
 For long packets, use the explicit save mode below instead of routing that stdout
 through a tool with a shorter response limit. Review the packet before sharing.
 The default mode never writes files. Neither mode reads service configuration, contacts a controller, executes
-commands, uploads, registers tasks or changes acceptance. Source paths must be
-absolute native paths on the executing host; changing a WSL/Windows/cloud path string
-does not transfer bytes. Invalid input produces a generic path-redacted diagnostic.
+commands, uploads, registers tasks or changes acceptance. Spec, source and saved-packet
+paths must be fully qualified on the executing host. On Windows, use a drive or UNC
+path, including supported extended forms; `\dir\file` and `/dir/file` reject before
+file access because they select the current drive. Changing a WSL/Windows/cloud path
+string does not transfer bytes. Invalid input produces a generic path-redacted diagnostic.
 
 This example is a specification template, not a dispatch request. Replace all paths
 with authorized files readable by the parent. `delivery` describes the intended actual

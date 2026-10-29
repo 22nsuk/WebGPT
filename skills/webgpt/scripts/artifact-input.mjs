@@ -1,7 +1,7 @@
 // Parent-only evidence preparation. Never imported by the worker or controller.
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
-import { isAbsolute, resolve } from 'node:path';
+import { isAbsolute, parse, resolve } from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
@@ -11,8 +11,9 @@ export const MAX_WINDOW_BYTES = 8 * 1024;
 export const MAX_INPUT_BYTES = 64 * 1024;
 const MAX_WINDOWS = 8;
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
-const validPath = value => typeof value === 'string' && value.isWellFormed() &&
-  isAbsolute(value) && !value.includes('\0');
+// Keep native-path.mjs's lexical policy local for this standalone/symlink CLI.
+const validPath = value => typeof value === 'string' && value.isWellFormed() && !value.includes('\0')
+  && isAbsolute(value) && (process.platform !== 'win32' || parse(value).root.length > 1);
 
 class EvidenceError extends Error {
   constructor(code, message) { super(message); this.code = code; }
@@ -31,7 +32,7 @@ function regular(stat) {
 
 function options({ source, label, view, ranges, expectedSha256 }) {
   if (!validPath(source))
-    fail('INVALID_ARGUMENT', 'source must be a well-formed absolute local file path.');
+    fail('INVALID_ARGUMENT', 'source must be a well-formed fully qualified local file path.');
   if (typeof label !== 'string' || !/^[A-Za-z0-9_.-]{1,64}$/.test(label))
     fail('INVALID_ARGUMENT', 'label must contain 1-64 ASCII letters, digits, dots, underscores or hyphens.');
   if (!['metadata', 'text', 'hex'].includes(view) || !Array.isArray(ranges) || ranges.length > MAX_WINDOWS)
@@ -150,7 +151,7 @@ function run(argv) {
   }
   if (values.help && tokens.length === 1) { process.stdout.write(usage); return; }
   if (values.help || !validPath(values.out))
-    fail('INVALID_ARGUMENT', 'Provide a new well-formed absolute --out path, or --help alone.');
+    fail('INVALID_ARGUMENT', 'Provide a new well-formed fully qualified --out path, or --help alone.');
   // Exempt only a leading drive separator. A colon in any other component can
   // select an NTFS stream, including aliases hidden by dot-path normalization.
   if (process.platform === 'win32' && values.out.replace(/^(?:[\\/]{2}[?.][\\/])?[A-Za-z]:[\\/]/, '').includes(':'))

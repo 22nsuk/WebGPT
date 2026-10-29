@@ -91,6 +91,32 @@ test('ill-formed ledger paths cannot address literal replacement-character names
   }
 });
 
+test('dispatch rejects NUL and drive-less ledger paths before files, locks or browser callbacks', async t => {
+  const f = await fixture(t), paths = [join(f.dir, 'ledger\0.json')];
+  if (process.platform === 'win32') {
+    const rootOnly = /^[A-Za-z]:/.test(f.file) ? f.file.slice(2) : '\\private\\ledger.json';
+    paths.push(rootOnly, rootOnly.replaceAll('\\', '/'));
+  }
+  let accesses = 0, browserCalls = 0;
+  const forbidden = () => { accesses++; throw Error('invalid ledger reached filesystem'); };
+  forbidden.native = forbidden;
+  const methods = Object.fromEntries(['lstatSync', 'openSync', 'readSync', 'fstatSync', 'fsyncSync',
+    'writeFileSync', 'closeSync', 'renameSync', 'unlinkSync', 'realpathSync'].map(name => [name, forbidden]));
+  const browser = () => { browserCalls++; throw Error('invalid ledger reached browser'); };
+  await patched(t, methods, async () => {
+    for (const file of paths) {
+      await assert.rejects(registerDispatch(file, spec), { code: 'DISPATCH_INPUT', stage: 'input', reason: 'invalid_input' });
+      await assert.rejects(diagnoseDispatch(file), { code: 'DISPATCH_INPUT' });
+      await assert.rejects(dispatchPrompt(file, prompt, {
+        observeReady: browser, fillAndSend: browser, observeSent: browser,
+      }), { code: 'DISPATCH_INPUT' });
+    }
+  });
+  assert.equal(accesses, 0); assert.equal(browserCalls, 0);
+  assert.deepEqual(fs.readFileSync(f.file), f.before);
+  assert.deepEqual(fs.readdirSync(f.dir), ['ledger.json']);
+});
+
 test('a competing begin reaches the held lock without opening the ledger through native realpath', async t => {
   const f = await fixture(t), lock = f.file + '.dispatch.lock';
   let releaseReady, entered, sends = 0;

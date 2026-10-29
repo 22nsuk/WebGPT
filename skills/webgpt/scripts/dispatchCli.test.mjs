@@ -41,7 +41,7 @@ const inputFailure = (f, stage, reason, code = 'DISPATCH_INPUT') => error => {
   assert.equal(value.code, code); assert.equal(value.stage, stage); assert.equal(value.reason, reason);
   return true;
 };
-const payloadActions = ['register', 'prepare', 'begin', 'confirm'];
+const payloadActions = ['register', 'prepare', 'begin', 'confirm', 'record-review'];
 
 for (const [action, count] of Object.entries({ preflight: 1, inspect: 2, diagnose: 2, recover: 2, register: 3, prepare: 3, begin: 3, confirm: 3 }))
   test(`CLI ${action} diagnoses arity before payload or ledger access`, async t => {
@@ -70,10 +70,21 @@ test('CLI rejects non-string vectors and unknown/prototype actions without echoi
 
 for (const action of payloadActions) test(`CLI ${action} distinguishes paths, missing payload, UTF-8 and JSON without changing the ledger`, async t => {
   const f = fixture(t), before = fs.readFileSync(f.file);
-  for (const invalid of ['relative.json', join(f.dir, 'path-\ud800.json')]) {
-    await assert.rejects(dispatchCli([action, invalid, f.payload]), inputFailure(f, 'cli_arguments', action + '_ledger_path_invalid'));
-    await assert.rejects(dispatchCli([action, f.file, invalid]), inputFailure(f, 'cli_arguments', action + '_payload_path_invalid'));
+  const paths = ['relative.json', join(f.dir, 'path-\ud800.json'), join(f.dir, 'path-\0.json')];
+  if (process.platform === 'win32') {
+    const rootOnly = /^[A-Za-z]:/.test(f.file) ? f.file.slice(2) : '\\private\\ledger.json';
+    paths.push(rootOnly, rootOnly.replaceAll('\\', '/'));
   }
+  const original = fs.lstatSync;
+  let accesses = 0;
+  fs.lstatSync = () => { accesses++; throw Error(secret); }; syncBuiltinESMExports();
+  try {
+    for (const invalid of paths) {
+      await assert.rejects(dispatchCli([action, invalid, f.payload]), inputFailure(f, 'cli_arguments', action + '_ledger_path_invalid'));
+      await assert.rejects(dispatchCli([action, f.file, invalid]), inputFailure(f, 'cli_arguments', action + '_payload_path_invalid'));
+    }
+  } finally { fs.lstatSync = original; syncBuiltinESMExports(); }
+  assert.equal(accesses, 0);
   await assert.rejects(dispatchCli([action, f.file, f.payload]), inputFailure(f, 'payload_read', action + '_payload_missing'));
   for (const [bytes, suffix] of [[Buffer.from([0xff]), 'payload_utf8_invalid'], [Buffer.from('{"secret":"' + secret), 'payload_json_invalid']]) {
     fs.writeFileSync(f.payload, bytes);
@@ -183,8 +194,8 @@ test('CLI diagnose rejects invalid paths before ledger access and the client pre
   let accesses = 0;
   fs.lstatSync = () => { accesses++; throw Error(secret); }; syncBuiltinESMExports();
   try {
-    for (const file of [secret + '.json', join(f.dir, 'path-\ud800.json'), join(f.dir, 'wrong-extension.txt'),
-      ...(process.platform === 'win32' ? [f.file + ':stream.json'] : [])])
+    for (const file of [secret + '.json', join(f.dir, 'path-\ud800.json'), join(f.dir, 'path-\0.json'), join(f.dir, 'wrong-extension.txt'),
+      ...(process.platform === 'win32' ? [f.file + ':stream.json', '\\private\\ledger.json', '/private/ledger.json'] : [])])
       await assert.rejects(dispatchCli(['diagnose', file]), inputFailure(f, 'cli_arguments', 'diagnose_ledger_path_invalid'));
   } finally { fs.lstatSync = original; syncBuiltinESMExports(); }
   assert.equal(accesses, 0);
