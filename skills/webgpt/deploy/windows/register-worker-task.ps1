@@ -14,11 +14,18 @@ foreach ($path in @($NodePath, $ConfigPath, $DataPath, $runner, $powershell)) {
     if ($path -notmatch '^[A-Za-z]:[\\/]' -or $path -match '["\r\n]') { throw 'An explicit local absolute path is required.' }
     $null = Get-Item -LiteralPath $path -Force
 }
+function ConvertTo-TaskPathArgument([string]$Path) {
+    # These validated paths contain no quotes. Native argument parsing consumes
+    # backslashes before the closing quote, so double the entire trailing run.
+    '"' + ($Path -replace '(\\+)$', '$1$1') + '"'
+}
 # Never update an existing task or take over an unrelated restart owner.
 if (Get-ScheduledTask -TaskName $TaskName -TaskPath '\' -ErrorAction SilentlyContinue) { throw 'Task already exists; inspect it before making changes.' }
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent().Name
 $principal = New-ScheduledTaskPrincipal -UserId $identity -LogonType Interactive -RunLevel Limited
-$arguments = '-NoProfile -NonInteractive -WindowStyle Hidden -File "{0}" -NodePath "{1}" -ConfigPath "{2}" -DataPath "{3}"' -f $runner, $NodePath, $ConfigPath, $DataPath
+$arguments = '-NoProfile -NonInteractive -WindowStyle Hidden -File {0} -NodePath {1} -ConfigPath {2} -DataPath {3}' -f `
+    (ConvertTo-TaskPathArgument $runner), (ConvertTo-TaskPathArgument $NodePath), `
+    (ConvertTo-TaskPathArgument $ConfigPath), (ConvertTo-TaskPathArgument $DataPath)
 $action = New-ScheduledTaskAction -Execute $powershell -Argument $arguments -WorkingDirectory $DataPath
 # No outer restart policy: service.mjs owns the one lifetime budget. No default
 # 72-hour deadline, battery stop, idle stop, wakeup, or elevated run level.
