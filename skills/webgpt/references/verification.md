@@ -51,9 +51,11 @@ never use a new one to bypass an already attempted send. The static manifest ide
 an exercise; it is not another completion ledger. Keep the request/manifest unchanged.
 POSIX creation modes do not replace appropriate Windows ACLs on the private parent.
 
-`prepare` and `check` require well-formed Unicode input paths and a UTF-8 native
-canonical directory. Unrepresentable paths are refused before reading or creating
-run files; ordinary Unicode names, including literal U+FFFD, remain supported.
+`prepare` and `check` require well-formed, NUL-free, fully qualified input paths and
+a UTF-8 native canonical directory. On Windows, use a drive or UNC path, including
+supported extended forms; `\dir\run` and `/dir/run` depend on the current drive and
+reject before file access. Unrepresentable native paths are refused before reading
+or creating run files; ordinary Unicode names, including literal U+FFFD, remain supported.
 
 ## Run the existing delegation path
 
@@ -83,8 +85,8 @@ readers; the controller may still perform its usual readiness canary and live qu
 observation. Reading the dispatch ledger briefly takes its existing cooperative lock.
 Do not run this checker concurrently with the parent's ledger mutation.
 
-`checkVerification(path, config)` first checks that the run path is a well-formed
-Unicode string and absolute, before reading omitted default configuration. Invalid
+`checkVerification(path, config)` first checks that the run path is a well-formed,
+NUL-free, fully qualified string, before reading omitted default configuration. Invalid
 input therefore reports `invalid verification input; preserve the private run directory`
 even when configuration is missing or malformed. Valid calls resolve omitted
 configuration once, then inspect the run directory and manifest; explicit configuration

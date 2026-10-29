@@ -4,7 +4,7 @@
 import { isUtf8 } from 'node:buffer';
 import { randomUUID, createHash } from 'node:crypto';
 import { mkdirSync, writeFileSync, realpathSync, lstatSync, readdirSync } from 'node:fs';
-import { basename, dirname, isAbsolute, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { isCliEntry } from './cli-entry.mjs';
 import { isDeepStrictEqual } from 'node:util';
 import { configuration, request } from './client.mjs';
@@ -13,6 +13,7 @@ import { readDiagnosticBytes } from './audit.mjs';
 import { inspectDispatchEvidence } from './dispatch.mjs';
 import { grantWorkspace } from './workspace.mjs';
 import { normalizeWorkspaceIdentity } from './workspace-identity.mjs';
+import { isFullyQualifiedPath } from './native-path.mjs';
 
 export const verificationScenarios = Object.freeze(['text', 'read', 'edit', 'resume', 'connection']);
 const metricNames = ['browserToolCalls', 'returnedBytes', 'parentInterventions', 'sendAttempts',
@@ -34,7 +35,7 @@ const decode = bytes => new TextDecoder('utf-8', { fatal: true }).decode(bytes);
 const readJson = (file, limit = 32768) => JSON.parse(decode(readDiagnosticBytes(file, limit) ?? Buffer.alloc(0)));
 const writeJson = (file, value) => writeFileSync(file, JSON.stringify(value, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
 function validateDirectoryPath(path) {
-  if (typeof path !== 'string' || !path.isWellFormed() || !isAbsolute(path)) throw invalid();
+  if (!isFullyQualifiedPath(path)) throw invalid();
 }
 function directory(path) {
   validateDirectoryPath(path);

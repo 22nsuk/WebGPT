@@ -4,9 +4,10 @@
 import { isUtf8 } from 'node:buffer';
 import { createHash, randomUUID } from 'node:crypto';
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync, writeFileSync, renameSync, unlinkSync, realpathSync } from 'node:fs';
-import { dirname, basename, isAbsolute, join } from 'node:path';
+import { dirname, basename, join } from 'node:path';
 import { readBoundedFile } from './bounded-read.mjs';
 import { buildReviewEvidence, appendReviewEvidence, reviewEvidenceSummary } from './review-evidence.mjs';
+import { isFullyQualifiedPath } from './native-path.mjs';
 
 const MAX_BYTES = 2 * 1024 * 1024;
 const phases = ['registered', 'prepared', 'sending', 'uncertain', 'submitted'];
@@ -72,7 +73,7 @@ const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const digest = v => typeof v === 'string' && /^[a-f0-9]{64}$/.test(v);
 const opaque = v => typeof v === 'string' && v.length > 0 && v.length <= 512 && !/[\x00-\x20\x7f]/.test(v) && v.isWellFormed();
 const messageId = v => v === null || opaque(v);
-const validLedgerPath = file => typeof file === 'string' && file.isWellFormed() && isAbsolute(file)
+const validLedgerPath = file => isFullyQualifiedPath(file)
   && file.endsWith('.json') && (process.platform !== 'win32' || !basename(file).includes(':'));
 // Share identity rules between stored evidence and new CLI input without relabeling ledger failures.
 const validDispatchIdentity = d => typeof d.taskId === 'string' && /^[a-zA-Z0-9_-]{1,80}$/.test(d.taskId)
@@ -535,7 +536,7 @@ export async function dispatchCli(args) {
     if (action === 'preflight') return preflightDispatchRuntime();
     if (!validLedgerPath(file)) throw inputError('ledger_path_invalid', 'cli_arguments');
     if (Object.hasOwn(noPayload, action)) return await noPayload[action](file);
-    if (!payloadFile.isWellFormed() || !isAbsolute(payloadFile)) throw inputError('payload_path_invalid', 'cli_arguments');
+    if (!isFullyQualifiedPath(payloadFile)) throw inputError('payload_path_invalid', 'cli_arguments');
     let bytes;
     try { bytes = readBytes(payloadFile); }
     catch (error) {

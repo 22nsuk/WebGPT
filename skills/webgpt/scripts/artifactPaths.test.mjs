@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, sep, toNamespacedPath } from 'node:path';
+import { dirname, join, toNamespacedPath } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
@@ -300,14 +300,17 @@ test('CLI rejects malformed in-memory output paths without creating replacement-
   assert.equal(fs.readFileSync(source, 'utf8'), 'approved evidence\n');
 });
 
-// Exercise the Windows output policy through the real CLI on every host. The
-// source probe stops an invalid path from progressing to native output I/O on
-// unpatched code; native Windows stream behavior is checked separately below.
-function outputPathProbe(f, out) {
+// Use real win32 path parsing on every host; a POSIX fixture path would now fail
+// qualification before reaching the ADS policy. Stop at the first source stat.
+function artifactPathProbe(f, { source = String.raw`C:\fixture\source.txt`,
+  out = String.raw`C:\fixture\evidence.json`, api = false } = {}) {
   const preload = join(f.dir, 'output-path-preload.mjs'), observation = join(f.dir, 'path-access.json');
-  fs.writeFileSync(preload, `import fs from 'node:fs';
+  fs.writeFileSync(preload, `import fs from 'node:fs'; import path from 'node:path';
+    import { syncBuiltinESMExports } from 'node:module';
     Object.defineProperty(process, 'platform', { value: 'win32' });
-    const source = ${JSON.stringify(f.source)}, out = ${JSON.stringify(out)};
+    path.isAbsolute = path.win32.isAbsolute; path.parse = path.win32.parse;
+    syncBuiltinESMExports();
+    const source = ${JSON.stringify(source)}, out = ${JSON.stringify(out)};
     const stat = fs.lstatSync, open = fs.openSync, write = fs.writeFileSync;
     const calls = { sourceStats: 0, sourceOpens: 0, outputStats: 0, outputOpens: 0 };
     fs.lstatSync = (file, ...args) => {
@@ -322,8 +325,12 @@ function outputPathProbe(f, out) {
     };
     process.once('exit', () => write(${JSON.stringify(observation)}, JSON.stringify(calls)));
   `);
-  const result = node(['--import', pathToFileURL(preload).href, script,
-    '--source', f.source, '--label', 'fixture', '--out', out]);
+  const call = api ? ['--input-type=module', '--eval', `
+    import { buildArtifactInput } from ${JSON.stringify(pathToFileURL(script).href)};
+    try { buildArtifactInput({ source: ${JSON.stringify(source)}, label: 'fixture' }); }
+    catch (error) { process.stderr.write(JSON.stringify({ code: error.code, message: error.message })); process.exitCode = 1; }
+  `] : [script, '--source', source, '--label', 'fixture', '--out', out];
+  const result = node(['--import', pathToFileURL(preload).href, ...call]);
   assert.equal(result.error, undefined); assert.equal(result.signal, null);
   assert.equal(result.status, 1, result.stderr); assert.equal(result.stdout, '');
   assert.equal(result.stderr.includes(f.dir), false); assert.equal(result.stderr.includes(out), false);
@@ -334,9 +341,10 @@ for (const suffix of ['host.txt:evidence.json', 'host.txt:evidence.json:$DATA', 
   'BASEFI~1.TXT:evidence.json', 'folder:stream/evidence.json', 'folder::$INDEX_ALLOCATION/evidence.json',
   'host.txt:stream/.']) {
   test(`Windows output policy rejects ${suffix} before source or output access`, t => {
-    const f = fixture(t), out = f.dir + sep + suffix.replaceAll('/', sep);
-    const result = outputPathProbe(f, out);
+    const f = fixture(t), out = String.raw`C:\fixture` + '\\' + suffix.replaceAll('/', '\\');
+    const result = artifactPathProbe(f, { out });
     assert.equal(result.error.code, 'INVALID_ARGUMENT');
+    assert.match(result.error.message, /without stream syntax/);
     assert.deepEqual(result.calls, { sourceStats: 0, sourceOpens: 0, outputStats: 0, outputOpens: 0 });
     assert.equal(fs.readFileSync(f.source, 'utf8'), 'approved evidence\n');
     assert.deepEqual(fs.readdirSync(f.dir).sort(), ['output-path-preload.mjs', 'path-access.json', 'source.txt']);
@@ -344,20 +352,38 @@ for (const suffix of ['host.txt:evidence.json', 'host.txt:evidence.json:$DATA', 
 }
 
 test('Windows output policy rejects a colon in the UNC share before source or output access', t => {
-  const f = fixture(t), result = outputPathProbe(f, '//server/share:stream/evidence.json');
+  const f = fixture(t), result = artifactPathProbe(f, { out: '//server/share:stream/evidence.json' });
   assert.equal(result.error.code, 'INVALID_ARGUMENT');
+  assert.match(result.error.message, /without stream syntax/);
   assert.deepEqual(result.calls, { sourceStats: 0, sourceOpens: 0, outputStats: 0, outputOpens: 0 });
 });
 
-test('Windows output policy accepts drive and UNC prefixes without accessing the output', { skip: process.platform !== 'win32' }, t => {
-  const f = fixture(t), ordinary = join(f.dir, 'evidence.json');
-  for (const out of [ordinary, ordinary.replaceAll('\\', '/'), toNamespacedPath(ordinary),
-    '\\\\server\\share\\evidence.json', '\\\\?\\UNC\\server\\share\\evidence.json']) {
-    const result = outputPathProbe(f, out);
-    assert.equal(result.error.code, 'SOURCE_PROBE_REACHED');
-    assert.deepEqual(result.calls, { sourceStats: 1, sourceOpens: 0, outputStats: 0, outputOpens: 0 });
+const qualifiedWindowsPaths = [String.raw`C:\fixture\selected.json`, 'C:/fixture/selected.json',
+  String.raw`\\server\share\selected.json`, String.raw`\\?\C:\fixture\selected.json`,
+  String.raw`\\?\UNC\server\share\selected.json`];
+test('Windows source and output policies accept qualified drive and UNC prefixes', t => {
+  const f = fixture(t);
+  for (const path of qualifiedWindowsPaths) {
+    for (const selection of [{ out: path }, { source: path }, { source: path, api: true }]) {
+      const result = artifactPathProbe(f, selection);
+      assert.equal(result.error.code, 'SOURCE_PROBE_REACHED');
+      assert.deepEqual(result.calls, { sourceStats: 1, sourceOpens: 0, outputStats: 0, outputOpens: 0 });
+    }
   }
 });
+
+for (const path of [String.raw`\fixture\selected.json`, '/fixture/selected.json', String.raw`C:fixture\selected.json`]) {
+  test(`Windows artifact paths reject drive-dependent ${JSON.stringify(path)} before file access`, t => {
+    const f = fixture(t);
+    for (const selection of [{ out: path }, { source: path }, { source: path, api: true }]) {
+      const result = artifactPathProbe(f, selection);
+      assert.equal(result.error.code, 'INVALID_ARGUMENT');
+      assert.deepEqual(result.calls, { sourceStats: 0, sourceOpens: 0, outputStats: 0, outputOpens: 0 });
+    }
+    assert.equal(fs.readFileSync(f.source, 'utf8'), 'approved evidence\n');
+    assert.deepEqual(fs.readdirSync(f.dir).sort(), ['output-path-preload.mjs', 'path-access.json', 'source.txt']);
+  });
+}
 
 test('Windows CLI rejects stream outputs and preserves real hosts and existing streams', { skip: process.platform !== 'win32' }, t => {
   const f = fixture(t), host = join(f.dir, 'host.txt'), retained = host + ':retained';

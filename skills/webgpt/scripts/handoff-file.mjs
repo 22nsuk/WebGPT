@@ -1,10 +1,10 @@
 // Private presentation of an already built handoff. No task or execution authority.
 import fs from 'node:fs';
-import { basename, dirname, isAbsolute, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { readBoundedFile } from './bounded-read.mjs';
 import { boundedTextPage } from './bounded-text-page.mjs';
-import { nativeUtf8Path } from './native-path.mjs';
+import { isFullyQualifiedPath, nativeUtf8Path } from './native-path.mjs';
 
 export const HANDOFF_MAX_BYTES = 128 * 1024;
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -15,8 +15,8 @@ const messages = {
   HANDOFF_FILE_RANGE: 'handoff offset is outside the text or splits a Unicode or CRLF boundary',
 };
 const failure = (code = 'HANDOFF_FILE_INVALID') => Object.assign(Error(messages[code]), { code });
-export const validHandoffPath = path => typeof path === 'string' && path.isWellFormed()
-  && path.length <= 4096 && isAbsolute(path) && !/[\x00-\x1f\x7f]/.test(path)
+export const validHandoffPath = path => isFullyQualifiedPath(path)
+  && path.length <= 4096 && !/[\x00-\x1f\x7f]/.test(path)
   // NTFS alternate streams mutate an existing file despite an exclusive stream create.
   // Only an ordinary or extended fully qualified drive root may contain a colon.
   && (process.platform !== 'win32' || !path.replace(/^(?:[a-z]:[\\/]|\\\\\?\\[a-z]:\\)/i, '').includes(':'))
