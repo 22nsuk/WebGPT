@@ -181,6 +181,40 @@ test('extends the existing ledger without copying task completion authority', as
   if (process.platform !== 'win32') assert.equal(lstatSync(file).mode & 0o777, 0o600);
 });
 
+for (const existing of [false, true]) test(`registration rejects new identity errors as input without changing a ${existing ? 'sending' : 'missing'} ledger`, async t => {
+  const { file } = fixture(t);
+  if (existing) {
+    await registerDispatch(file, spec());
+    await beginDispatch(file, { prompt, observation: ready() });
+  }
+  const before = existing ? readFileSync(file) : null;
+  for (const [field, values] of [['taskId', [null, '../' + secret, 'a'.repeat(81), 'CON']], ['mode', [null, 'Pro', secret]]]) {
+    await t.test(field, async () => {
+      for (const value of values) {
+        await assert.rejects(registerDispatch(file, { ...spec(), [field]: value }), error => {
+          assert.deepEqual(safe(dispatchDiagnostic(error)), {
+            code: 'DISPATCH_INPUT', stage: 'input', reason: 'invalid_input', message: 'invalid private dispatch input',
+          });
+          return true;
+        });
+        if (existing) assert.deepEqual(readFileSync(file), before);
+        else assert.equal(existsSync(file), false);
+        assert.equal(existsSync(file + '.dispatch.lock'), false);
+      }
+    });
+  }
+  const input = spec(), reads = { taskId: 0, mode: 0 };
+  for (const field of Object.keys(reads)) {
+    const value = input[field];
+    Object.defineProperty(input, field, { enumerable: true, get: () => ++reads[field] === 1 ? value : secret });
+  }
+  const registered = await registerDispatch(file, input);
+  assert.deepEqual(reads, { taskId: 1, mode: 1 });
+  assert.equal(registered.state, existing ? 'sending' : 'registered');
+  assert.equal(registered.resendBlocked, existing);
+  if (existing) assert.deepEqual(readFileSync(file), before);
+});
+
 test('saves sending before side effects, confirms only a matching new user message', async t => {
   const { file } = fixture(t);
   await registerDispatch(file, spec());
@@ -477,13 +511,14 @@ test('client dispatch CLI output and malformed-input stderr are bounded and priv
   safe(run.stderr);
 });
 
-test('dangling state fields and invalid optional booleans cannot reset an attempted ledger', async t => {
+test('invalid optional booleans or retained dispatch fields cannot reset a ledger', async t => {
   const { file } = fixture(t);
   await assert.rejects(registerDispatch(file, { ...spec(), connectorRequired: null }), { code: 'DISPATCH_INPUT' });
   await registerDispatch(file, spec());
   const valid = read(file);
   for (const patch of [{ sendingAt: new Date().toISOString() }, { before: ready() },
-    { confirmation: sent() }, { uncertainAt: new Date().toISOString() }, { version: 99 }]) {
+    { confirmation: sent() }, { uncertainAt: new Date().toISOString() }, { version: 99 },
+    { taskId: 'CON' }, { mode: secret }]) {
     writeFileSync(file, JSON.stringify({ ...valid, dispatch: { ...valid.dispatch, ...patch } }));
     const original = readFileSync(file);
     await assert.rejects(registerDispatch(file, spec()), { code: 'DISPATCH_LEDGER' });

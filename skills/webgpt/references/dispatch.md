@@ -79,6 +79,12 @@ Register with this private shape (the prompt here is illustrative, not a protoco
 ```
 
 `mode` is `pro` or `xhigh`; never normalize an unverified selection to the requested mode.
+Invalid new `taskId` or `mode` values are `DISPATCH_INPUT`: `registerDispatch()` reports
+`input` / `invalid_input`, while CLI `register` reports `payload_validate` / `register_input_invalid`.
+Invalid identity values already stored in `dispatch` remain `DISPATCH_LEDGER`
+(`ledger_validate` / `invalid_ledger`). Direct registration still checks and locks the ledger
+before validating the spec; the CLI's identity precheck runs before locking.
+
 For an observed new, empty owned chat, `chatUrl` and the previous user message ID are `null`.
 After sending, retain the actual conversation URL in the confirmation evidence. Existing chat URLs
 must match exactly. An unrelated/reused tab is not an acceptable replacement target.
