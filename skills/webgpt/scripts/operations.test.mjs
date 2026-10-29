@@ -3,7 +3,7 @@ import { withStateWriteFailure } from './test-fixtures/state-write-failure.mjs';
 import { untilFixture } from './test-fixtures/worker-process.mjs';
 import assert from 'node:assert/strict';
 import { rejectsRequest } from './test-fixtures/request-error.mjs';
-import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, readdirSync, existsSync, unlinkSync, renameSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, readdirSync, lstatSync, existsSync, unlinkSync, renameSync } from 'node:fs';
 import { tmpdir, hostname } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -125,17 +125,32 @@ test('structural validation rejects duplicate IDs/tokens, path escapes and malfo
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-for (const discarded of ['false', '', 0, 1, {}, [], null]) for (const retired of [false, true])
-  test(`stored discarded ${JSON.stringify(discarded)} blocks ${retired ? 'retired' : 'uncollected'} task startup without changing evidence`, t => fixture(async f => {
-    const task = await f.register('owned');
-    assert.equal((await f.complete(task.token)).isError, false);
+for (const { discarded, retired = false, status = 'completed' } of [
+  ...['false', '', 0, 1, {}, [], null].flatMap(discarded => [false, true].map(retired => ({ discarded, retired }))),
+  ...['running', 'completed', 'failed', 'cancelled'].map(status => ({ discarded: true, status })),
+])
+  test(`stored discarded ${JSON.stringify(discarded)} blocks ${retired ? 'retired' : 'uncollected'} ${status} task startup without changing evidence`, t => fixture(async f => {
+    const task = await f.register('owned', discarded === true ? 'edit' : undefined);
+    if (discarded === true) {
+      // Retain a real journal and original backup beside the inconsistent state.
+      writeFileSync(join(f.root, 'owned.txt'), 'original fixture bytes');
+      const original = await f.call('read_file', { token: task.token, path: 'owned.txt' });
+      assert.equal(original.isError, false);
+      assert.equal((await f.call('delete_file', { token: task.token, path: 'owned.txt',
+        expectedSha256: original.structuredContent.sha256 })).isError, false);
+    }
+    if (status !== 'running') assert.equal((await f.complete(task.token, status)).isError, false);
     if (retired) await f.admin('cancel', { id: 'owned' });
     await f.service.close();
     const file = join(f.dir, 'state.json'), original = readFileSync(file), tasks = JSON.parse(original);
     tasks[0].discarded = discarded;
     writeFileSync(file, JSON.stringify(tasks, null, 2) + '\n');
-    const names = readdirSync(f.dir).sort(), evidence = names.map(name => [name, readFileSync(join(f.dir, name))]);
-    assert.ok(names.includes('owned.result.txt')); assert.ok(names.includes('controller.key'));
+    const names = readdirSync(f.dir, { recursive: true }).sort();
+    const evidence = names.filter(name => lstatSync(join(f.dir, name)).isFile())
+      .map(name => [name, readFileSync(join(f.dir, name))]);
+    if (status !== 'running') assert.ok(names.includes('owned.result.txt'));
+    if (discarded === true) assert.ok(names.some(name => name.endsWith('.before.txt')));
+    assert.ok(names.includes('controller.key'));
     assert.ok(names.includes('mcp-path.key')); assert.ok(names.includes('state.initialized'));
     const listen = t.mock.method(Server.prototype, 'listen');
     try {
@@ -146,10 +161,10 @@ for (const discarded of ['false', '', 0, 1, {}, [], null]) for (const retired of
       });
     } finally { listen.mock.restore(); }
     assert.equal(listen.mock.callCount(), 0, 'neither MCP nor controller may start listening');
-    assert.deepEqual(readdirSync(f.dir).sort(), names, 'no replacement, migration or stale lock may remain');
+    assert.deepEqual(readdirSync(f.dir, { recursive: true }).sort(), names, 'no replacement, migration or stale lock may remain');
     for (const [name, bytes] of evidence) assert.deepEqual(readFileSync(join(f.dir, name)), bytes);
     assert.equal(existsSync(join(f.dir, 'worker.lock')), false);
-    if (discarded === 'false' && !retired) {
+    if ((discarded === 'false' && !retired) || discarded === true) {
       // Only the fixture owner repairs the injected field; refusal itself never repairs state.
       writeFileSync(file, original); await f.restart();
       assert.equal((await f.call('get_task', { token: task.token })).isError, false);
