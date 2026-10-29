@@ -145,7 +145,8 @@ Exclusive creation remains required for a destination arriving after that check;
 the absence check is not a filesystem reservation.
 Windows alternate-stream paths are rejected. Native absolute file paths must be
 well-formed, at most 4,096 UTF-16 units and contain no control characters or trailing
-separator. Windows extended drive paths (`\\?\C:\...`) and extended UNC paths
+separator. A filesystem root or UNC share root is not a file name and is rejected
+before file access. Windows extended drive paths (`\\?\C:\...`) and extended UNC paths
 (`\\?\UNC\server\share\...`) follow the same rules; only a fully qualified drive
 root may contain a colon. Before creating the packet file, saving checks that the
 native canonical parent path is valid UTF-8, including the target of an ordinary parent alias.

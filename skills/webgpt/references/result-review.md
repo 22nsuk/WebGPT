@@ -174,7 +174,10 @@ A valid failed/cancelled result retains its status. A null review notification
 creates no package and is not a successful export.
 
 Choose a new directory inside an existing private parent. Creation is exclusive;
-existing files, directories and leaf links are refused. Export and `read-export`
+existing files, directories and leaf links are refused. The destination must name
+a directory below the filesystem root or UNC share root; the root itself is rejected
+before configuration, controller or file access. `read-export` can still read an
+existing package at a UNC share root. Export and `read-export`
 paths must be fully qualified. Windows drive and UNC paths, including supported
 extended forms, remain valid; `\dir\export` and `/dir/export` depend on the current
 drive and reject before configuration, controller or file access. Files use mode 0600 and

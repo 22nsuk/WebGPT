@@ -54,7 +54,9 @@ POSIX creation modes do not replace appropriate Windows ACLs on the private pare
 `prepare` and `check` require well-formed, NUL-free, fully qualified input paths and
 a UTF-8 native canonical directory. On Windows, use a drive or UNC path, including
 supported extended forms; `\dir\run` and `/dir/run` depend on the current drive and
-reject before file access. Unrepresentable native paths are refused before reading
+reject before file access. `prepare` also requires a directory name below the
+filesystem root or UNC share root, rejecting the root itself before file access.
+Unrepresentable native paths are refused before reading
 or creating run files; ordinary Unicode names, including literal U+FFFD, remain supported.
 
 ## Run the existing delegation path
