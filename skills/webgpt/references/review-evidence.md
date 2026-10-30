@@ -123,6 +123,14 @@ preserves prior evidence and fails; there is no automatic pruning, lock stealing
 resend or unbounded fallback. Keep the ledger and payload private. Existing
 [dispatch storage](dispatch-storage.md) assumptions and recovery limits apply.
 
+`record-review` reports `DISPATCH_EXPORT` when the complete pinned export cannot
+be read or verified, including a missing export, damaged content or SHA mismatch.
+Observation shape/contradiction failures and conflicting or stale new observations remain
+`DISPATCH_INPUT`; damaged retained history remains `DISPATCH_LEDGER`. Export
+failures leave prior observations and export files unchanged, even on an otherwise
+identical retry. The [bounded diagnostic](dispatch.md#cli-and-compact-output)
+uses fixed text without exposing export paths, content or raw exceptions.
+
 For manual workflows without confirmed dispatch metadata, import the read-only
 `buildReviewEvidence(spec)` and `reviewEvidenceSummary(receipt)` functions from
 `scripts/review-evidence.mjs`, then retain the receipt through existing parent

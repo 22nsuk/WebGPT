@@ -286,6 +286,7 @@ their meanings.
 | `payload_decode` | `<action>_payload_utf8_invalid`, `<action>_payload_json_invalid` | Payload bytes could not be decoded or parsed; no parser excerpt and no ledger mutation. |
 | `payload_validate` | `register_input_shape_invalid`, `begin_input_shape_invalid` | Wrong top-level routing fields, rejected before taking a ledger lock. |
 | `payload_validate` | `begin_input_invalid`, `prepare_input_invalid`, `register_input_invalid` | A core input/observation check rejected the value. Existing readiness, stored-ledger and conflict checks are not relabeled as input errors. |
+| `export_validate` | `invalid_export` | `record-review` could not verify the complete pinned export. `DISPATCH_EXPORT` preserves this distinction from invalid observation input; inspect the original export without changing prior review records. |
 | `ledger_path` | `native_path_not_utf8` | The canonical ledger path cannot be represented as UTF-8. `DISPATCH_LEDGER` refuses it before locking or writing; this is not a payload error. |
 
 A decodable but incomplete `confirm` observation deliberately keeps the existing behavior: it
