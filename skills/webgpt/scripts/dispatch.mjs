@@ -14,6 +14,7 @@ const phases = ['registered', 'prepared', 'sending', 'uncertain', 'submitted'];
 const reasons = ['send_unconfirmed', 'observation_unavailable', 'evidence_unconfirmed', 'interrupted'];
 const messages = {
   INPUT: 'invalid private dispatch input', OBSERVATION: 'invalid bounded dispatch observation',
+  EXPORT: 'saved result export verification failed; preserve it for inspection',
   LEDGER: 'invalid dispatch ledger; preserve it for inspection', STORAGE: 'dispatch storage unavailable; inspect private files',
   LOCKED: 'dispatch ledger locked; inspect the owner, never steal by age',
   CONFLICT: 'dispatch ledger changed outside its lock; preserve it for inspection',
@@ -25,6 +26,7 @@ const messages = {
 };
 const defaults = {
   INPUT: ['input', 'invalid_input'], OBSERVATION: ['observation', 'invalid_observation'],
+  EXPORT: ['export_validate', 'invalid_export'],
   LEDGER: ['ledger_validate', 'invalid_ledger'], STORAGE: ['ledger_read', 'io_failed'],
   LOCKED: ['lock_acquire', 'lock_exists'], CONFLICT: ['ledger_update', 'ledger_changed'],
   BLOCKED: ['ledger_update', 'resend_blocked'], NOT_READY: ['observation', 'ui_not_ready'],
@@ -467,7 +469,7 @@ export async function recordDispatchReview(file, spec) {
     reviewTarget(d, spec);
     let receipt, update;
     try { receipt = buildReviewEvidence(spec); update = appendReviewEvidence(entries, receipt); }
-    catch { fail('INPUT'); }
+    catch (error) { fail(error?.code === 'REVIEW_EVIDENCE_EXPORT' ? 'EXPORT' : 'INPUT'); }
     if (update.appended) { ledger.reviewEvidence = update.entries; save(); }
     return reviewSummary(update.entries, update.appended);
   });

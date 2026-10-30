@@ -19,6 +19,9 @@ const url = 'https://chatgpt.com/c/owned-review-chat';
 const prompt = 'Review the assigned fixture';
 const now = '2026-10-08T00:00:00.000Z';
 const cli = fileURLToPath(new URL('./client.mjs', import.meta.url));
+const runCli = (f, args) => promisify(execFile)(process.execPath, [cli, 'dispatch', ...args], {
+  windowsHide: true, timeout: 10000, env: { ...process.env, WEBGPT_CONFIG: join(f.root, 'absent.json') },
+});
 function fixture(t) {
   const root = fs.realpathSync.native(fs.mkdtempSync(join(tmpdir(), 'webgpt-review-evidence-')));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -125,6 +128,60 @@ test('record/inspect reuse the private ledger without changing dispatch or lifec
   assert.deepEqual(fs.readFileSync(f.ledger), bytes);
 });
 
+for (const [failure, damage] of [
+  ['missing export', f => { f.spec.result.directory = join(f.root, secret + '-missing'); }],
+  ['damaged message', f => { fs.writeFileSync(join(f.directory, 'message-001.txt'), secret + '-damaged'); }],
+  ['SHA mismatch', f => { f.spec.result.expectedSha256 = '0'.repeat(64); }],
+]) for (const route of ['API', 'CLI']) test(`${route} record-review preserves export failure classification: ${failure}`, async t => {
+  const f = fixture(t); await dispatched(f); await recordDispatchReview(f.ledger, f.spec);
+  damage(f);
+  const before = fs.readFileSync(f.ledger);
+  const exportBytes = () => fs.readdirSync(f.directory).sort().map(name => [name, fs.readFileSync(join(f.directory, name))]);
+  const savedExport = exportBytes();
+  const expected = { code: 'DISPATCH_EXPORT', stage: 'export_validate', reason: 'invalid_export',
+    message: 'saved result export verification failed; preserve it for inspection' };
+  if (route === 'API') {
+    await assert.rejects(recordDispatchReview(f.ledger, f.spec), error => {
+      assert.equal(error.code, expected.code); assert.deepEqual(dispatchDiagnostic(error), expected);
+      assert.equal(error.cause, undefined); assert.ok(!inspect(error).includes(f.root)); return true;
+    });
+  } else {
+    const payload = join(f.root, 'observation.json'), bytes = JSON.stringify(f.spec);
+    fs.writeFileSync(payload, bytes);
+    await assert.rejects(runCli(f, ['record-review', f.ledger, payload]), error => {
+      assert.equal(error.code, 1); assert.equal(error.stdout, '');
+      assert.deepEqual(JSON.parse(error.stderr.replace(/^WebGPT: /, '')), expected);
+      for (const privateValue of [secret, f.root, url, 'sent-message']) assert.ok(!error.stderr.includes(privateValue));
+      return true;
+    });
+    assert.equal(fs.readFileSync(payload, 'utf8'), bytes);
+  }
+  assert.deepEqual(fs.readFileSync(f.ledger), before); assert.deepEqual(exportBytes(), savedExport);
+  assert.equal(fs.existsSync(f.ledger + '.dispatch.lock'), false);
+  assert.equal((await inspectDispatchReview(f.ledger)).observationCount, 1);
+});
+
+test('record-review keeps invalid observations and append conflicts classified as input', async t => {
+  const f = fixture(t); await dispatched(f); await recordDispatchReview(f.ledger, f.spec);
+  const before = fs.readFileSync(f.ledger), payload = join(f.root, 'observation.json');
+  for (const change of [
+    s => { s.chat.message.truncated = true; s.result.directory = join(f.root, 'missing-export'); },
+    s => { s.chat.message.text += 'changed'; },
+    s => { s.observationId = 'stale'; s.observedAt = '2026-10-07T00:00:00.000Z'; },
+  ]) {
+    const spec = clone(f.spec); change(spec);
+    await assert.rejects(recordDispatchReview(f.ledger, spec), { code: 'DISPATCH_INPUT', stage: 'input', reason: 'invalid_input' });
+    fs.writeFileSync(payload, JSON.stringify(spec));
+    await assert.rejects(dispatchCli(['record-review', f.ledger, payload]), error => {
+      const d = dispatchDiagnostic(error);
+      assert.equal(d.code, 'DISPATCH_INPUT'); assert.equal(d.stage, 'payload_validate');
+      assert.equal(d.reason, 'record-review_input_invalid'); return true;
+    });
+    assert.deepEqual(fs.readFileSync(f.ledger), before);
+    assert.equal(fs.existsSync(f.ledger + '.dispatch.lock'), false);
+  }
+});
+
 test('later incomplete evidence remains incomplete and a duplicate old observation cannot replace it', async t => {
   const f = fixture(t); await dispatched(f); await recordDispatchReview(f.ledger, f.spec);
   const later = clone(f.spec); later.observationId = 'observation-2'; later.observedAt = '2026-10-08T00:01:00.000Z';
@@ -181,11 +238,8 @@ test('invalid retained history and an existing shared lock cannot be overwritten
 test('CLI records and inspects compact private-safe summaries without controller configuration', async t => {
   const f = fixture(t); await dispatched(f);
   const payload = join(f.root, 'observation.json'); fs.writeFileSync(payload, JSON.stringify(f.spec));
-  const run = args => promisify(execFile)(process.execPath, [cli, 'dispatch', ...args], {
-    windowsHide: true, timeout: 10000, env: { ...process.env, WEBGPT_CONFIG: join(f.root, 'absent.json') },
-  });
   for (const args of [['record-review', f.ledger, payload], ['inspect-review', f.ledger]]) {
-    const { stdout, stderr } = await run(args); assert.equal(stderr, ''); assert.ok(stdout.length < 2000);
+    const { stdout, stderr } = await runCli(f, args); assert.equal(stderr, ''); assert.ok(stdout.length < 2000);
     assert.equal(JSON.parse(stdout).review.reportedReviewComplete, true);
     for (const privateValue of [secret, f.root, url, 'sent-message']) assert.ok(!stdout.includes(privateValue));
   }
