@@ -320,6 +320,12 @@ Registration does not start or stop anything and refuses an existing task name.
   -ConfigPath 'C:/private/config.json' -DataPath 'C:/private/runtime' -AtLogon
 ```
 
+Registration preserves spaces, Unicode and trailing path separators when it
+serializes paths for `powershell.exe -File`, including a `DataPath` ending in `\`.
+The path values and working directory are not trimmed or rewritten. Updating this
+script does not update an existing task's saved arguments; inspect and replace
+an affected registration only through the authorized maintenance procedure below.
+
 Without `-AtLogon`, the task is manual-only. With it, it starts at this user's
 logon, **not before login**, and is not guaranteed to survive logoff. A built-in
 Administrator account is not made into a dedicated low-privilege identity by this
